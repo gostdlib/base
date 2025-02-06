@@ -1,0 +1,147 @@
+package {.PkgName}}
+
+import (
+	"context"
+
+	goinit "github.com/gostdlib/base/init"
+)
+
+/*
+func init() {
+    Add your initializers here.
+}
+*/
+
+// Called returns true if {{.Initer}}() has been called.
+func Called() bool {
+	return goinit.Called()
+}
+
+// InitArgs are the arguments that are passed to {{.Initer}}(). These are filtered down to
+// customer initialization functions and closers. Custom initializers and closers
+// should treat this as readonly.
+type InitArgs = goinit.InitArgs
+
+// WithValue adds an opaque key value pair to the InitArgs. This is used to pass
+// values to custom initializers and closers. The key must be comparable or this panics.
+// Returns a new InitArgs with the key value pair added. This works similar to context.WithValue().
+// You should use typed keys to avoid collisions.
+func WithValue(i InitArgs, key, value any) InitArgs {
+    return goinit.WithValue(i, key, value)
+}
+
+// Meta is metadata about the service.
+type Meta = gointt.Meta
+
+// InitFunc is a function that is called during {{.Initer}}() in order to setup various needs
+// for the service. These happen in the order they are registered, so if one has a dependency
+// on another, you have to register them in the correct order. For those that do not have a
+// dependency, these are usually done via a pacakge init() function. If this function returns
+// an error, then {{.Initer}}() will panic.
+type InitFunc = goinit.InitFunc
+
+// CloseFunc is a function that is called during Close() in order to close various clients or other
+// resources that were setup during {{.Initer}}(). These happen in parallel.
+type CloseFunc = goinit.CloseFunc
+
+// Register registers a function to be called during {{.Initer}}(). These functions are called in the order
+// they are registered. If one fails, then {{.Initer}}() will panic. These functions are called after
+// all other setup has been done by {{.Initer}}().
+// Normal use is within a package init() function. Often side effect imported.
+func RegisterInit(f InitFunc) {
+    goinit.RegisterInit(f)
+}
+
+// RegisterClose registers a function to be called during Close(). They are called in parallel.
+// All closers must be completed within 30 seconds. This is usually called along with RegisterInit()
+// within a package init() function and side effect imported.
+func RegisterClose(f CloseFunc) {
+    goinit.RegisterClose(f)
+}
+
+// Option is an optional argument to Init.
+type Option = goinit.Option
+
+// WithExtraFields sets extra fields to be added to the logger. These fields will always
+// be logged with every log message. These are not logged in non-production environments.
+func WithExtraFields(fieldPairs []any) Option {
+    return goinit.WithExtraFields(fieldPairs)
+}
+
+// WithLogger sets the logger in the base/log package to use the provided logger.
+// By default there is a JSON logger to stderr that records the source and uses an
+// adjustable level from the base/telemetry/log package.
+// If you require zap or zerolog, you can use the log/adapters package to
+// convert them to the slog.Logger type. If you provide a logger that outside of those,
+// you need to set your logger to use the LogLevel defined in the base/telemetry/log package.
+func WithLogger(l *slog.Logger) Option {
+    return goinit.WithLogger(l)
+}
+
+// WithMeterProvider sets the metric provider to use for the service. By default this will
+// be created for you. You may use the ("go.opentelemetry.io/otel/metric/noop") noop.NewMeterProvider()
+// to disable metrics.
+func WithMeterProvider(m metric.MeterProvider) Option {
+    return goinit.WithMeterProvider(m)
+}
+
+// WithDisableTrace disables tracing for the service.
+func WithDisableTrace() Option {
+    return goinit.WithDisableTrace()
+}
+
+// WithTraceProvider sets the trace provider to use for the service. By default this will
+// be created for you. If the environment variable "TracingEndpoint" is set, this will be
+// used to send traces to the OTEL provider endpoint. Otherwise it uses the stdout exporter
+// that is set to use stderr. You cannot use this and WithTraceSampleRate together or it will cause a panic.
+func WithTraceProvider(t *sdkTrace.TracerProvider) Option {
+    return goinit.WithTraceProvider(t)
+}
+
+// WithTraceSampleRate sets the sample rate for traces. This only applies if using the default trace provider
+// when the environmental variable "TracingEndpoint" is set. If using WithTraceProvider, using this will cause
+// a panic.
+func WithTraceSampleRate(r float64) Option {
+    return goinit.WithTraceSampleRate(r)
+}
+
+// WithMetricsPort sets the port to use for the metrics server. If not provided, then this defaults to
+// port 2223.
+func WithMetricsPort(p uint16) Option {
+    return goinit.WithMetricsPort(p)
+}
+
+// WithPool sets the worker pool to use for the service. If not provided, then this defaults to
+// a worker.Pool with runtime.NumCPUs() workers (this number is based on the Uber gomaxprocs package).
+// The pool grows and shrinks with use. See package worker documentation for more.  If you provide a pool,
+// this will set the default pool to this pool unless you set noDefault to true.
+func WithPool(p *worker.Pool, noDefault bool) Option {
+    return goinit.WithPool(p, noDefault)
+}
+
+// {{.Initer}} is the service initialization function for initing services.
+// This will set the logger with the service name and build tag if provided.
+//
+// {{.Initer}} CAN panic if something required for a production service or a bad option is provided.
+// To panic in production, the cause of the panic (outside a bad option passed to {{.Initer}}() which always panics)
+// should be an absolute no-go for the service to run, such as a critical service requirement.
+//
+// This will do the following (not inclusive):
+// - Set google/uuid to use a random pool
+// - Setup the logger
+// - Setup tracing
+// - Integrates various clients and error packages with each other
+// - Run user provided initializers
+func {{.Initer}}(args InitArgs, options ...Option) {
+    return goinit.Service(args, options...)
+}
+
+// Close is used as a defer function in the main function of a service after Init.
+// This will recover from a panics in order to log it via the base/log.Default() logger to
+// avoid any panics from escaping logs. However, it will still exit after logging the error.
+// This also closes the audit client in audit.Default(). All other closers that are registered
+// via RegisterClose() will be called in parallel. This will return in 30 seconds no matter
+// if all closers are done or not.
+func Close(args InitArgs) {
+    return goinit.Close(args)
+}

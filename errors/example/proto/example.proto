@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package github.com.gostdlib.base.proto.example;
+
+import "google/api/annotations.proto";
+import "google/protobuf/any.proto";
+
+option go_package = "github.com/gostdlib/base/errors/example/proto/example";
+
+// ErrorCategory defines the category of an error.
+enum ErrorCategory {
+    // The error is unknown. This is always a bug from the service.
+    EC_UNKNOWN = 0;
+    // The error is caused by the request being incorrect.
+    EC_REQUEST = 1;
+    // The error is caused by a safety issue.
+    EC_SAFETY = 2;
+    // The error is caused by a permission issue.
+    EC_PERMISSION = 3;
+    // The error is caused by a resource being exhausted.
+    EC_RESOURCE_EXHAUSTED = 4;
+    // The error is caused by an internal issue.
+    EC_INTERNAL = 5;
+}
+
+// ErrorType represents the type of the error.
+enum ErrorType {
+    // The error type is unknown. This is always a bug from the service.
+    ET_UNKNOWN = 0;
+
+    // 1-100 are RPC errors.
+    //
+    // The error is caused by a bad request.
+    ET_BAD_REQUEST = 1;
+
+    // 101-200 are safety errors.
+    //
+    // The error is caused by a dead timer.
+    ET_DEAD_TIMER = 101;
+    // The error is caused by the cluster being unhealthy.
+    ET_CLUSTER_HEALTH = 102;
+
+    // 201-300 are permission errors.
+    //
+    // The error is caused by permission being denied.
+    ET_PERMISSION_DENIED = 201;
+}
+
+// Error provides details on an error. When a request fails, this will be JSON encoded with jsonpb
+// in the status message that is returned.
+message Error {
+    // The ID of the request. This is the UUIDv7 identity of the request.
+    string Id = 1;
+    // The category of the error.
+    ErrorCategory Category = 2;
+    // The type of the error.
+    ErrorType Type = 3;
+    // The error message. This may be an error string, JSON encoded, or both.
+    string Msg = 4;
+    // The original request.
+    google.protobuf.Any Request = 5;
+}
+
+message HelloReq {
+    string Name = 1;
+}
+
+message HelloResp {
+    string Msg = 1;
+}
+
+service Hello {
+  // A simple RPC.
+  //
+  // Obtains the feature at a given position.
+  //
+  // A feature with an empty name is returned if there's no feature at the given
+  // position.
+  rpc Hello(HelloReq) returns (HelloResp) {
+	option (google.api.http) = {
+		post: "/api/v1/hello"
+		body: "*"
+	};
+  }
+}

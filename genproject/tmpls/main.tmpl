@@ -1,0 +1,20 @@
+// REPLACE THIS WITH SERVICE DESCRIPTION.
+package main
+
+import (
+	goinit "github.com/gostdlib/base/init"
+)
+
+var serviceMeta = goinit.Meta{
+	Service: "[your service name]",
+	Build:   "[your image tag]",
+}
+
+var initArgs = goinit.InitArgs{Meta: serviceMeta}
+
+func main() {
+	goinit.Service(initArgs)
+	defer goinit.Close(initArgs)
+
+	/* Insert the rest of your code */
+}

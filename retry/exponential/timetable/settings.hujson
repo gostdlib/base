@@ -1,0 +1,8 @@
+// DO NOT CHECK IN CHANGES TO THIS FILE
+
+{
+    "InitialInterval":     1000000000, // 100 * time.Millisecond
+    "Multiplier":          2,
+    "RandomizationFactor": 0.5,
+    "MaxInterval":         60000000000 // 60 * time.Second,
+}
