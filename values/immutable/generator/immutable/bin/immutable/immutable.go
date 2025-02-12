@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"log"
@@ -63,8 +64,13 @@ func main() {
 	// Generate the output file name dynamically
 	outputFileName := fmt.Sprintf("%s_immutable.go", *structType)
 
+	formatted, err := format.Source(builder.Bytes())
+	if err != nil {
+		log.Fatalf("Failed to format output: %v", err)
+	}
+
 	// Write the output to the dynamically named file
-	err = os.WriteFile(outputFileName, []byte(builder.String()), 0644)
+	err = os.WriteFile(outputFileName, formatted, 0644)
 	if err != nil {
 		log.Fatalf("Failed to write output file: %v", err)
 	}

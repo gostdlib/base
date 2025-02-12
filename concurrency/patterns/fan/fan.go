@@ -43,16 +43,11 @@ import (
 	"sync/atomic"
 
 	"github.com/gostdlib/base/concurrency/sync"
+	"github.com/gostdlib/base/values/generics/promises"
 )
 
 // Response is a response to some type of call that contains a value and an error.
-// TODO: When 1.24 is released, replace this with a type alias to generics/common.Response .
-type Response[T any] struct {
-	// V is the value.
-	V T
-	// Err is the error.
-	Err error
-}
+type Response[T any] = promises.Response[T]
 
 // Exec is used in Args.Input to send data to the Fanner.
 type Exec[InT any, OutT any] struct {

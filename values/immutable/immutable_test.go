@@ -3,6 +3,8 @@ package immutable
 import (
 	"testing"
 
+	"github.com/gostdlib/base/values/immutable/unsafe"
+
 	"github.com/kylelemons/godebug/pretty"
 )
 
@@ -30,7 +32,7 @@ func TestMapCopy(t *testing.T) {
 func TestUnsafeMap(t *testing.T) {
 	sl := NewMap(map[string]string{"hello": "world", "foo": "bar"})
 
-	real := UnsafeMap(sl)
+	real := unsafe.Map(sl)
 	real["hello"] = "modified"
 	if v, _ := sl.Get("hello"); v != "modified" {
 		t.Errorf("TestUnsafeMap:  Unsafe didn't modify original")
@@ -61,7 +63,7 @@ func TestSliceCopy(t *testing.T) {
 func TestUnsafeSlice(t *testing.T) {
 	sl := NewSlice([]string{"value1", "value2"})
 
-	real := UnsafeSlice(sl)
+	real := unsafe.Slice(sl)
 	real[0] = "modified"
 	if sl.Get(0) != "modified" {
 		t.Errorf("TestUnsafeSlice: Unsafe didn't modify original")
