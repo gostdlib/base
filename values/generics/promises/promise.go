@@ -7,8 +7,6 @@ import (
 )
 
 // Response is a response to some type of call that contains the value and an error.
-// NOTE: Remove this once Go 1.24 is released. This is here until we can do a type
-// assertion on a generic type. This should be equal to generics/common.Response.
 type Response[T any] struct {
 	// V is the value.
 	V T
@@ -20,8 +18,6 @@ type Response[T any] struct {
 // that can be used to return a value from a goroutine. This is designed to be used with the
 // base/concurrency/sync.Pool type. It will automatically call Reset() when put back in the pool and should save
 // memory by not allocation a new Promise or channel.
-// NOTE: Remove this once Go 1.24 is released. This is here until we can do a type
-// assertion on a generic type. This should be equal to generics/common.Response.
 type Promise[I, O any] struct {
 	// In is the value being sent.
 	In I
@@ -36,7 +32,7 @@ type opts struct {
 	pool any
 }
 
-// PromiseOption is an option for NewPromise.
+// Option is an option for NewPromise.
 type Option func(o opts) opts
 
 // WithPool sets a *sync.Pool[chan Response[T]] that is used to recycle the channel in the promise after it

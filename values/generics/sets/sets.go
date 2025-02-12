@@ -2,14 +2,16 @@
 package sets
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 )
 
 // Set is a generic set type.
-type Set[E comparable] map[E]struct{}
+type Set[E cmp.Ordered] map[E]struct{}
 
 // New creates a new Set with the given values.
-func New[E comparable](vals ...E) Set[E] {
+func New[E cmp.Ordered](vals ...E) Set[E] {
 	s := Set[E]{}
 	for _, v := range vals {
 		s[v] = struct{}{}
@@ -41,6 +43,8 @@ func (s Set[E]) Members() []E {
 	for v := range s {
 		result = append(result, v)
 	}
+
+	slices.Sort(result)
 	return result
 }
 

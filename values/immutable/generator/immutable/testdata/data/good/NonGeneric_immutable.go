@@ -6,8 +6,8 @@ package data
 import (
 	"github.com/gostdlib/base/values/immutable"
 	
-	"io"
 	"fmt"
+	"io"
 )
 
 // ImNonGeneric is an immutable version of NonGeneric.
