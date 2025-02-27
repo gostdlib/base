@@ -259,6 +259,7 @@ type Error struct {
 
 type eOpts struct {
 	suppressTraceErr bool
+	callNum          int
 }
 
 // EOption is an optional argument for E().
@@ -274,16 +275,26 @@ func WithSuppressTraceErr() EOption {
 	}
 }
 
+// WithCallNum is used if you need to set the runtime.CallNum() in order to get the correct filename and line.
+// This can happen if you create a call wrapper around E(), because you would then need to look up one more stack frame
+// for every wrapper. This defaults to 1 which sets to the frame of the caller of E().
+func WithCallNum(i int) EOption {
+	return func(e eOpts) eOpts {
+		e.callNum = i
+		return e
+	}
+}
+
 var now = time.Now
 
 // E creates a new Error with the given parameters. If the message is already an Error, it will be returned instead.
 func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) Error {
-	opts := eOpts{}
+	opts := eOpts{callNum: 1}
 	for _, o := range options {
 		opts = o(opts)
 	}
 
-	_, filename, line, ok := runtime.Caller(1)
+	_, filename, line, ok := runtime.Caller(opts.callNum)
 	if !ok {
 		filename = "unknown"
 	}
