@@ -3,6 +3,8 @@ package sync
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"runtime"
 	"sync"
 
 	internalCtx "github.com/gostdlib/base/internal/context"
@@ -35,6 +37,8 @@ type Pool[T any] struct {
 	buffer chan T
 
 	getCalls, putCalls, newAllocated, bufferAllocated metric.Int64Counter
+
+	isPtr bool
 
 	mu sync.Mutex // For CopyLocks error
 }
@@ -88,8 +92,13 @@ func WithMeterPrefixLevel(l int) Option {
 //	"[package path]/[package name]:sync.Pool([type stored])/[name]".
 //
 // If you are providing a type that implementing Resetter, use the ./reset package to validate your reset in tests.
-func NewPool[T any](ctx context.Context, name string, n func() T, options ...Option) Pool[T] {
+func NewPool[T any](ctx context.Context, name string, n func() T, options ...Option) *Pool[T] {
 	var t T
+
+	isPtr := false
+	if reflect.TypeOf(t).Kind() == reflect.Ptr {
+		isPtr = true
+	}
 	opts := opts{}
 	var err error
 	for _, o := range options {
@@ -130,6 +139,7 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		putCalls:        pc,
 		newAllocated:    na,
 		bufferAllocated: ba,
+		isPtr:           isPtr,
 	}
 
 	p.p = sync.Pool{
@@ -140,10 +150,7 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 			return n()
 		},
 	}
-	// Note; CopyLocks warning is fine here, because we haven't used the pool yet. It is safe to copy.
-	// We want to treat it as normal sync.Pool. The user can decide if they want to use a reference.
-	// We put a mutex in our struct to cause a CopyLocks warning.
-	return p
+	return &p
 }
 
 // Get returns a value from the pool or creates a new one if the pool is empty.
@@ -180,4 +187,41 @@ func (p *Pool[T]) Put(ctx context.Context, v T) {
 	default:
 	}
 	p.p.Put(v)
+}
+
+// Cleanup is a wrapper around a pointer to a value can be used with a Pool
+// in order to automatically call Pool.Put() on the value.
+// It is important to always pass the Cleanup and not the underlying Value. This is because
+// the Cleanup is being tracked for going out of scope, not the underlying value.
+// Otherwise when Cleanup goes out of scope, the underlying value will return to the Pool
+// while is is still in use. Aka, that is bad.
+type Cleanup[T any] struct {
+	v *T
+}
+
+// V returns the value.
+func (x Cleanup[T]) V() *T {
+	return x.v
+}
+
+// NewCleanup creates a new Cleanup where *T will be put in *sync.Pool when Cleanup goes out of scope.
+// This is not as efficient as using Pool.Put(), however if the value needs to span multiple functions, this
+// is much safer. Read the usage on CleanupValue for more information on safe usage.
+// Note that due to the slight signature differences of Pool storing non-pointer values and
+// Cleanup only allowing pointer values, a NewCleanup call looks like: NewCleanup[int](ctx, &pool)
+func NewCleanup[T any](ctx context.Context, pool *Pool[*T]) *Cleanup[T] {
+	// Design note: I really wanted to put Cleanup() as a method on Pool, but
+	// that would require changing sync.Pool to use *T instead of T. This would diverge
+	// from the stdlib, and I don't want to do that. So this can't be a method on Pool.
+
+	x := &Cleanup[T]{v: pool.Get(ctx)}
+
+	runtime.AddCleanup(
+		x,
+		func(y *T) {
+			pool.Put(ctx, y)
+		},
+		x.v,
+	)
+	return x
 }
