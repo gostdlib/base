@@ -30,7 +30,7 @@ func TestPromiseWithPool(t *testing.T) {
 	}{
 		{
 			name: "With pool",
-			pool: &pool,
+			pool: pool,
 		},
 		{
 			name: "Without pool",
