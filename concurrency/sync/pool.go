@@ -3,7 +3,6 @@ package sync
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"runtime"
 	"sync"
 
@@ -37,8 +36,6 @@ type Pool[T any] struct {
 	buffer chan T
 
 	getCalls, putCalls, newAllocated, bufferAllocated metric.Int64Counter
-
-	isPtr bool
 
 	mu sync.Mutex // For CopyLocks error
 }
@@ -95,10 +92,6 @@ func WithMeterPrefixLevel(l int) Option {
 func NewPool[T any](ctx context.Context, name string, n func() T, options ...Option) *Pool[T] {
 	var t T
 
-	isPtr := false
-	if reflect.TypeOf(t).Kind() == reflect.Ptr {
-		isPtr = true
-	}
 	opts := opts{}
 	var err error
 	for _, o := range options {
@@ -139,7 +132,6 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		putCalls:        pc,
 		newAllocated:    na,
 		bufferAllocated: ba,
-		isPtr:           isPtr,
 	}
 
 	p.p = sync.Pool{
