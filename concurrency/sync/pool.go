@@ -198,7 +198,7 @@ func (x Cleanup[T]) V() *T {
 
 // NewCleanup creates a new Cleanup where *T will be put in *sync.Pool when Cleanup goes out of scope.
 // This is not as efficient as using Pool.Put(), however if the value needs to span multiple functions, this
-// is much safer. Read the usage on CleanupValue for more information on safe usage.
+// is much safer. Read the usage on Cleanup for more information on safe usage.
 // Note that due to the slight signature differences of Pool storing non-pointer values and
 // Cleanup only allowing pointer values, a NewCleanup call looks like: NewCleanup[int](ctx, &pool)
 func NewCleanup[T any](ctx context.Context, pool *Pool[*T]) *Cleanup[T] {
