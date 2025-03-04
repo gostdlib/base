@@ -19,6 +19,9 @@ var defaultLog *slog.Logger
 // that needs to log messages or you need to pass the logger to a function outside of medbay.
 // Anything other use of this logger (or any logger) is verboten.
 func Default() *slog.Logger {
+	if defaultLog == nil {
+		return slog.Default()
+	}
 	return defaultLog
 }
 
