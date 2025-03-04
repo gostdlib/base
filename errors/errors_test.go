@@ -273,6 +273,35 @@ func (f fakeSpan) SpanContext() otelTrace.SpanContext {
 	return f.spanContext
 }
 
+func TestStackTrace(t *testing.T) {
+	tests := []struct {
+		name      string
+		withTrace bool
+	}{
+		{
+			name:      "with stack trace",
+			withTrace: true,
+		},
+		{
+			name: "without stack trace",
+		},
+	}
+
+	for _, test := range tests {
+		opts := []EOption{}
+		if test.withTrace {
+			opts = append(opts, WithStackTrace())
+		}
+		e := E(context.Background(), CatReq, TypeBadRequest, fmt.Errorf("something went wrong"), opts...)
+		if test.withTrace && e.StackTrace == "" {
+			t.Errorf("TestStackTrace(%s): got no stack trace, want stack trace", test.name)
+		}
+		if !test.withTrace && e.StackTrace != "" {
+			t.Errorf("TestStackTrace(%s): got stack trace, want no stack trace", test.name)
+		}
+	}
+}
+
 func TestLog(t *testing.T) {
 	// Do not do t.Parallel().
 
@@ -368,6 +397,32 @@ func TestLog(t *testing.T) {
 				"ErrTime":    ti.UTC(),
 				"TraceID":    "",
 				"Type":       "BadRequest",
+				"level":      "ERROR",
+				"msg":        "something went wrong",
+			},
+		},
+		{
+			name: "Error with everything and a stack trace",
+			e: Error{
+				Category:   CatReq,
+				Filename:   "filename",
+				Line:       123,
+				Type:       TypeBadRequest,
+				ErrTime:    ti,
+				Msg:        fmt.Errorf("something went wrong"),
+				StackTrace: "stack trace",
+			},
+			want: map[string]any{
+				"Category":   "Request",
+				"CustomerID": "customerID",
+				"Filename":   "filename",
+				"Line":       123,
+				"Request":    "<nil>",
+				"CallID":     "callID",
+				"ErrTime":    ti.UTC(),
+				"TraceID":    "",
+				"Type":       "BadRequest",
+				"StackTrace": "stack trace",
 				"level":      "ERROR",
 				"msg":        "something went wrong",
 			},

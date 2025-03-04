@@ -178,6 +178,7 @@ import (
 	"log/slog"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"time"
 	"unsafe"
 
@@ -255,11 +256,15 @@ type Error struct {
 	// ErrTime is the time that the error was created. This is automatically filled
 	// in by E(). This is in UTC.
 	ErrTime time.Time
+	// StackTrace is the stack trace of the error. This is automatically filled
+	// in by E() if WithStackTrace() is used.
+	StackTrace string
 }
 
 type eOpts struct {
 	suppressTraceErr bool
 	callNum          int
+	stackTrace       bool
 }
 
 // EOption is an optional argument for E().
@@ -281,6 +286,16 @@ func WithSuppressTraceErr() EOption {
 func WithCallNum(i int) EOption {
 	return func(e eOpts) eOpts {
 		e.callNum = i
+		return e
+	}
+}
+
+// WithStackTrace will add a stack trace to the error. This is useful for debugging in certain rare
+// cases. This is not recommended for general use as it can cause performance issues when errors
+// are created frequently.
+func WithStackTrace() EOption {
+	return func(e eOpts) eOpts {
+		e.stackTrace = true
 		return e
 	}
 }
@@ -307,13 +322,19 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 		return e
 	}
 
+	var st string
+	if opts.stackTrace {
+		st = bytesToStr(debug.Stack())
+	}
+
 	e := Error{
-		Category: c,
-		Type:     t,
-		Filename: filename,
-		Line:     line,
-		Msg:      msg,
-		ErrTime:  now().UTC(),
+		Category:   c,
+		Type:       t,
+		Filename:   filename,
+		Line:       line,
+		Msg:        msg,
+		ErrTime:    now().UTC(),
+		StackTrace: st,
 	}
 
 	e.trace(ctx, opts.suppressTraceErr)
@@ -383,6 +404,9 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 		slog.Int("Line", e.Line),
 		slog.Time("ErrTime", e.ErrTime.UTC()),
 		slog.String("TraceID", traceID),
+	}
+	if e.StackTrace != "" {
+		attrs = append(attrs, slog.String("StackTrace", e.StackTrace))
 	}
 
 	return attrs
@@ -460,7 +484,6 @@ const meterName = "github.com/gostdlib/base/errors"
 // metrics records the error in the metrics system using the Category() and Type() as the metric name
 // in the format: <Category>.<Type>.
 func (e Error) metrics() {
-	log.Println(e.Msg)
 	var mp = metrics.Default()
 	if mp == nil {
 		return // No metrics system, nothing to do.
