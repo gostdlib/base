@@ -7,11 +7,12 @@ package context
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
 	internalCtx "github.com/gostdlib/base/internal/context"
+	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 
 	"go.opentelemetry.io/otel/metric"
@@ -55,12 +56,12 @@ func Attach(ctx Context) Context {
 }
 
 // Log returns the logger attached to the context. If no logger is attached, it returns log.Default().
-func Log(ctx Context) *log.Logger {
+func Log(ctx Context) *slog.Logger {
 	a := ctx.Value(loggerKey{})
 	if a == nil {
 		return log.Default()
 	}
-	l, ok := a.(*log.Logger)
+	l, ok := a.(*slog.Logger)
 	if !ok {
 		return log.Default()
 	}

@@ -2,10 +2,11 @@ package context
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"testing"
 
 	"github.com/gostdlib/base/concurrency/background"
+	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 
 	"go.opentelemetry.io/otel/metric"
@@ -29,7 +30,7 @@ func TestLog(t *testing.T) {
 	tests := []struct {
 		name string
 		ctx  context.Context
-		want *log.Logger
+		want *slog.Logger
 	}{
 		{
 			name: "LoggerAttached",
