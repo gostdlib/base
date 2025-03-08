@@ -12,6 +12,8 @@ import (
 	"github.com/tidwall/shardmap"
 
 	"github.com/gostdlib/base/concurrency/sync"
+
+	redux "github.com/gostdlib/base/concurrency/sync/internal/shardmap"
 )
 
 func randKey(rnd *rand.Rand, n int) string {
@@ -168,6 +170,32 @@ func main() {
 	print("del: ")
 	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
 		com.Delete(keys[i])
+	})
+
+	println()
+
+	println("-- github.com/tidwall/shardmap(redux) --")
+	var reduxMap redux.Map[string, int]
+	print("set: ")
+	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
+		reduxMap.Set(keys[i], i)
+	})
+
+	print("get: ")
+	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
+		v, _ := reduxMap.Get(keys[i])
+		if v != i {
+			panic("bad news")
+		}
+	})
+	print("rng:       ")
+	lotsa.Ops(100, runtime.NumCPU(), func(i, _ int) {
+		for range reduxMap.All() {
+		}
+	})
+	print("del: ")
+	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
+		reduxMap.Delete(keys[i])
 	})
 
 	println()
