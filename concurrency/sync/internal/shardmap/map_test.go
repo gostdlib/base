@@ -182,120 +182,55 @@ func TestRandomData(t *testing.T) {
 	}
 }
 
-func TestSetAccept(t *testing.T) {
-	var m Map[string, any]
-	m.Set("hello", "world")
-	prev, replaced := m.SetAccept("hello", "planet", nil)
-	if !replaced {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-	if v, _ := m.Get("hello"); v.(string) != "planet" {
-		t.Fatalf("expected '%v', got '%v'", "planet", v)
-	}
-	prev, replaced = m.SetAccept("hello", "world", func(prev interface{}, replaced bool) bool {
-		if !replaced {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "planet" {
-			t.Fatalf("expected '%v', got '%v'", "planet", prev)
-		}
-		return true
-	})
-	if !replaced {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "planet" {
-		t.Fatalf("expected '%v', got '%v'", "planet", prev)
-	}
-	prev, replaced = m.SetAccept("hello", "planet", func(prev interface{}, replaced bool) bool {
-		if !replaced {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "world" {
-			t.Fatalf("expected '%v', got '%v'", "world", prev)
-		}
-		return false
-	})
-	if replaced {
-		t.Fatal("expected false")
-	}
-	if prev != nil {
-		t.Fatalf("expected '%v', got '%v'", nil, prev)
-	}
-	if v, _ := m.Get("hello"); v.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", v)
+func TestCompareAndSwap(t *testing.T) {
+	var m Map[string, string]
+	m.IsEqual = func(old, new string) bool {
+		return old == new
 	}
 
-	prev, replaced = m.SetAccept("hi", "world", func(prev interface{}, replaced bool) bool {
-		if replaced {
-			t.Fatal("expected false")
-		}
-		if prev != nil {
-			t.Fatalf("expected '%v', got '%v'", nil, prev)
-		}
-		return false
-	})
-	if replaced {
-		t.Fatal("expected false")
+	if !m.CompareAndSwap("hello", "", "world") {
+		t.Fatal("TestCompareAndSwap: expeced the first swap to succeed")
 	}
-	if prev != nil {
-		t.Fatalf("expected '%v', got '%v'", nil, prev)
+	if v, ok := m.Get("hello"); !ok || v != "world" {
+		t.Fatalf("TestCompareAndSwap: got %q, want %q", v, "world")
+	}
+
+	if !m.CompareAndSwap("hello", "world", "planet") {
+		t.Fatal("TestCompareAndSwap: expected the second swap to succeed")
+	}
+
+	if v, ok := m.Get("hello"); !ok || v != "planet" {
+		t.Fatalf("TestCompareAndSwap: got %q, want %q", v, "planet")
+	}
+
+	if m.CompareAndSwap("hello", "world", "planet") {
+		t.Fatal("TestCompareAndSwap: expected the third swap to fail")
 	}
 }
 
 func TestDeleteAccept(t *testing.T) {
-	var m Map[string, any]
-	m.Set("hello", "world")
-	prev, deleted := m.DeleteAccept("hello", nil)
-	if !deleted {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-	m.Set("hello", "world")
-	prev, deleted = m.DeleteAccept("hello", func(prev interface{}, deleted bool) bool {
-		if !deleted {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "world" {
-			t.Fatalf("expected '%v', got '%v'", "world", prev)
-		}
-		return true
-	})
-	if !deleted {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-	m.Set("hello", "world")
-	prev, deleted = m.DeleteAccept("hello", func(prev interface{}, deleted bool) bool {
-		if !deleted {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "world" {
-			t.Fatalf("expected '%v', got '%v'", "world", prev)
-		}
-		return false
-	})
-	if deleted {
-		t.Fatal("expected false")
-	}
-	if prev != nil {
-		t.Fatalf("expected '%v', got '%v'", nil, prev)
-	}
-	prev, ok := m.Get("hello")
-	if !ok {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
+	var m Map[string, string]
+	m.IsEqual = func(old, new string) bool {
+		return old == new
 	}
 
+	if !m.CompareAndDelete("hello", "world") {
+		t.Fatal("TestDeleteAccept: expected the first delete to succeed")
+	}
+
+	m.Set("hello", "world")
+	if swapped := m.CompareAndDelete("hello", "world"); !swapped {
+		t.Fatal("TestDeleteAccept: expected the second delete to succeed")
+	}
+
+	if v, ok := m.Get("hello"); ok || v != "" {
+		t.Fatalf("TestDeleteAccept: got %q, want %q", v, "")
+	}
+
+	m.Set("hello", "world")
+	if m.CompareAndDelete("hello", "planet") {
+		t.Fatal("TestDeleteAccept: expected the third delete to fail")
+	}
 }
 
 func TestClear(t *testing.T) {

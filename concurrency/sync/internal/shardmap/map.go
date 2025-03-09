@@ -13,11 +13,14 @@ import (
 
 // Map is a hashmap. Like map[string]interface{}, but sharded and thread-safe.
 type Map[K comparable, V any] struct {
-	init   sync.Once
-	cap    int
-	shards int
-	mus    []sync.RWMutex
-	maps   []*rhh.Map[K, V]
+	// IsEqual is a function that determines if two values are equal. This is not required unless using
+	// CompareAndSwap or CompareAndDelete.
+	IsEqual func(old, new V) bool
+	init    sync.Once
+	cap     int
+	shards  int
+	mus     []sync.RWMutex
+	maps    []*rhh.Map[K, V]
 
 	seed maphash.Seed
 
@@ -53,31 +56,25 @@ func (m *Map[K, V]) Set(key K, value V) (prev V, replaced bool) {
 	return prev, replaced
 }
 
-// SetAccept assigns a value to a key. The "accept" function can be used to
-// inspect the previous value, if any, and accept or reject the change.
-// It's also provides a safe way to block other others from writing to the
-// same shard while inspecting.
-// Returns the previous value, or false when no value was assigned.
-func (m *Map[K, V]) SetAccept(key K, value V, accept func(prev V, replaced bool) bool) (prev V, replaced bool) {
+// CompareAndSwap assigns a value to a key if the previous value is equal to
+// old. If the key doesn't exist and old is the zero value, then the key will be created.
+// Must have set Map.IsEqual or this will panic.
+func (m *Map[K, V]) CompareAndSwap(k K, old, new V) (swapped bool) {
 	m.initDo()
-	shard := m.choose(key)
+	if m.IsEqual == nil {
+		panic("shardmap.Map.IsEqual must be set to use CompareAndSwap")
+	}
+
+	shard := m.choose(k)
 	m.mus[shard].Lock()
 	defer m.mus[shard].Unlock()
-	prev, replaced = m.maps[shard].Set(key, value)
-	if accept != nil {
-		if !accept(prev, replaced) {
-			// revert unaccepted change
-			if !replaced {
-				// delete the newly set data
-				m.maps[shard].Delete(key)
-			} else {
-				// reset updated data
-				m.maps[shard].Set(key, prev)
-			}
-			prev, replaced = m.zeroV, false
-		}
+
+	prev, _ := m.maps[shard].Set(k, new)
+	if m.IsEqual(prev, old) {
+		return true
 	}
-	return prev, replaced
+	m.maps[shard].Set(k, prev)
+	return false
 }
 
 // Get returns a value for a key.
@@ -102,29 +99,29 @@ func (m *Map[K, V]) Delete(key K) (prev V, deleted bool) {
 	return prev, deleted
 }
 
-// DeleteAccept deletes a value for a key. The "accept" function can be used to
-// inspect the previous value, if any, and accept or reject the change.
-// It's also provides a safe way to block other others from writing to the
-// same shard while inspecting.
-// Returns the deleted value, or false when no value was assigned.
-func (m *Map[K, V]) DeleteAccept(key K, accept func(prev V, replaced bool) bool) (prev V, deleted bool) {
+// CompareAndDelete deletes a key/value if the value is equal to
+// old. If the key doesn't exist this will return true. Must have set Map.IsEqual
+// or this will panic.
+func (m *Map[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 	m.initDo()
-	shard := m.choose(key)
-	m.mus[shard].Lock()
-	defer m.mus[shard].Unlock()
-	prev, deleted = m.maps[shard].Delete(key)
-	if accept != nil {
-		if !accept(prev, deleted) {
-			// revert unaccepted change
-			if deleted {
-				// reset updated data
-				m.maps[shard].Set(key, prev)
-			}
-			prev, deleted = m.zeroV, false
-		}
+	if m.IsEqual == nil {
+		panic("shardmap.Map.IsEqual must be set to use CompareAndSwap")
 	}
 
-	return prev, deleted
+	shard := m.choose(k)
+	m.mus[shard].Lock()
+	defer m.mus[shard].Unlock()
+
+	prev, deleted := m.maps[shard].Delete(k)
+	if !deleted { // This means it didn't exist.
+		return true
+	}
+	if m.IsEqual(prev, old) {
+		return true
+	}
+	// It wasn't equal, so we need to put it back.
+	m.maps[shard].Set(k, prev)
+	return false
 }
 
 // Len returns the number of values in map.
@@ -160,7 +157,6 @@ func (m *Map[K, V]) choose(key K) int {
 
 func (m *Map[K, V]) initDo() {
 	m.init.Do(func() {
-
 		m.shards = 1
 		for m.shards < runtime.NumCPU()*16 {
 			m.shards *= 2
