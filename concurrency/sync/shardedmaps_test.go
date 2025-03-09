@@ -2,7 +2,6 @@ package sync
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 	"testing"
 )
@@ -52,8 +51,4 @@ func TestShardedMapConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
-
-	if len(m.locks) != runtime.NumCPU() || len(m.maps) != len(m.locks) {
-		t.Fatalf("TestShardedMapConcurrentAccess: you've got major problems, check this line")
-	}
 }

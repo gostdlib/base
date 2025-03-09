@@ -1,105 +1,66 @@
 package sync
 
 import (
-	"fmt"
-	"hash/maphash"
-	"runtime"
-	"sync"
+	"github.com/gostdlib/base/concurrency/sync/internal/shardmap"
 )
 
 // ShardedMap is a map that is sharded by a hash of the key. This allows for multiple readers and writers to
 // access the map without blocking as long as they are accessing different maps. This is useful for when you
-// have a large number of keys and you want to reduce contention on the map. There is no iteration over the map
-// because there is no good way to do this without locking all maps and worrying about deadlocks.
+// have a large number of keys and you want to reduce contention on the map. This map also shrinks with deleted
+// keys, so it will not grow indefinitely like a standard map. This is faster than sync.Map in most cases
+// (even in 1.24) and is more memory efficient.
 type ShardedMap[K comparable, V any] struct {
-	// N is the number of maps in the ShardedMap. If N is 0, it will be set to runtime.NumCPU().
-	N int
-
-	locks []*sync.RWMutex
-	maps  []map[K]V
-	seed  maphash.Seed
-
-	once sync.Once
+	rw   *RWMutex
+	once Once
+	sm   shardmap.Map[K, V]
 }
 
-func (s *ShardedMap[K, V]) init() {
-	s.once.Do(s.setup)
-}
-
-func (s *ShardedMap[K, V]) setup() {
-	n := s.N
-	if n < 1 {
-		n = runtime.NumCPU()
-	}
-	locks := make([]*sync.RWMutex, n)
-	var maps []map[K]V
-	for i := range locks {
-		locks[i] = &sync.RWMutex{}
-		maps = append(maps, make(map[K]V))
-	}
-
-	s.locks = locks
-	s.maps = maps
-	s.seed = maphash.MakeSeed()
-}
-
-func (s *ShardedMap[K, V]) getShard(k K) int {
-	s.init() // Causes setup to be called only once.
-	var h maphash.Hash
-	h.SetSeed(s.seed)
-	h.WriteString(fmt.Sprintf("%v", k)) // Even unsafe methods don't beat fmt.Sprintf here.
-	return int(h.Sum64() % uint64(len(s.locks)))
+func (s *ShardedMap[K, V]) Len() int {
+	s.once.Do(s.init)
+	s.rw.RLock()
+	defer s.rw.RUnlock()
+	return s.sm.Len()
 }
 
 // Get returns the value for the given key. If ok is false, the key was not found.
 func (s *ShardedMap[K, V]) Get(k K) (value V, ok bool) {
-	i := s.getShard(k)
-	s.locks[i].RLock()
-	v, ok := s.maps[i][k]
-	s.locks[i].RUnlock()
-	return v, ok
+	s.once.Do(s.init)
+	s.rw.RLock()
+	defer s.rw.RUnlock()
+	return s.sm.Get(k)
 }
 
 // Set sets the value for the given key. This will return the previous value and if the key existed.
 // If ok is false, prev is the zero value for the value type.
 func (s *ShardedMap[K, V]) Set(k K, v V) (prev V, ok bool) {
-	i := s.getShard(k)
-	s.locks[i].Lock()
-	prev, ok = s.maps[i][k]
-	s.maps[i][k] = v
-	s.locks[i].Unlock()
-	return prev, ok
+	s.once.Do(s.init)
+	s.rw.RLock()
+	defer s.rw.RUnlock()
+	return s.sm.Set(k, v)
 }
 
 // Del deletes the value for the given key. It returns the previous value and if the key existed.
 // If ok is false, prev is the zero value for the value type.
 func (s *ShardedMap[K, V]) Del(k K) (prev V, ok bool) {
-	i := s.getShard(k)
-	s.locks[i].Lock()
-	prev, ok = s.maps[i][k]
-	delete(s.maps[i], k)
-	s.locks[i].Unlock()
-	return prev, ok
+	s.once.Do(s.init)
+	s.rw.RLock()
+	defer s.rw.RUnlock()
+	return s.sm.Delete(k)
 }
 
 // Map will take all maps and merge them into a single map. This is a blocking operation that must lock all maps.
 func (s *ShardedMap[K, V]) Map() map[K]V {
-	size := 0
-	for i, l := range s.locks {
-		l.RLock()
-		size += len(s.maps[i])
-	}
-	defer func() {
-		for _, l := range s.locks {
-			l.RUnlock()
-		}
-	}()
+	s.once.Do(s.init)
+	s.rw.Lock()
+	defer s.rw.Unlock()
 
-	nMap := make(map[K]V, size)
-	for _, m := range s.maps {
-		for k, v := range m {
-			nMap[k] = v
-		}
+	m := make(map[K]V, s.sm.Len())
+	for k, v := range s.sm.All() {
+		m[k] = v
 	}
-	return nMap
+	return m
+}
+
+func (s *ShardedMap[K, V]) init() {
+	s.rw = &RWMutex{}
 }
