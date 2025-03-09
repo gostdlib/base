@@ -5,7 +5,6 @@ go 1.24.0
 require (
 	github.com/Azure/retry v0.0.0-20250129232305-c0fbb0a41399
 	github.com/CAFxX/httpcompression v0.0.9
-	github.com/cespare/xxhash v1.1.0
 	github.com/go-json-experiment/json v0.0.0-20250211222650-7564cc53b040
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/google/uuid v1.6.0
@@ -18,7 +17,6 @@ require (
 	github.com/samber/slog-zap/v2 v2.6.2
 	github.com/samber/slog-zerolog/v2 v2.7.3
 	github.com/tailscale/hujson v0.0.0-20241010212012-29efb4a0184b
-	github.com/tidwall/hashmap v1.8.1
 	github.com/tidwall/lotsa v1.0.3
 	github.com/tidwall/shardmap v0.0.0-20190927132224-c190691bd211
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0
@@ -47,6 +45,7 @@ require (
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/ebitengine/purego v0.8.2 // indirect
@@ -70,7 +69,6 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
-	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/lufia/plan9stats v0.0.0-20240909124753-873cd0166683 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
@@ -97,7 +95,6 @@ require (
 	github.com/valyala/tcplisten v1.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.34.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.5.0 // indirect
