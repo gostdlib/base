@@ -29,10 +29,9 @@ func TestSet(t *testing.T) {
 	}
 
 	var skeys []int
-	s.Scan(func(key int) bool {
-		skeys = append(skeys, key)
-		return true
-	})
+	for k := range s.All() {
+		skeys = append(skeys, k)
+	}
 	if len(skeys) != s.Len() {
 		t.Fatalf("expected %d got %d", len(skeys), s.Len())
 	}

@@ -22,9 +22,12 @@ func TestShardedMap(t *testing.T) {
 	}
 	wg.Wait()
 
-	all := m.Map()
-	if len(all) != 1000 {
-		t.Errorf("expected map size 1000, got %d", len(all))
+	n := 0
+	for range m.All() {
+		n++
+	}
+	if n != 1000 {
+		t.Errorf("expected map size 1000, got %d", n)
 	}
 }
 

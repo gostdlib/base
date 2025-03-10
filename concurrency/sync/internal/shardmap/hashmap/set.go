@@ -1,5 +1,7 @@
 package hashmap
 
+import "iter"
+
 type Set[K comparable] struct {
 	base Map[K, struct{}]
 }
@@ -15,20 +17,25 @@ func (tr *Set[K]) Contains(key K) bool {
 	return ok
 }
 
-// Len returns the number of items in the tree
+// Len returns the number of items in the tree.
 func (tr *Set[K]) Len() int {
 	return tr.base.Len()
 }
 
-// Delete an item
+// Delete an item.
 func (tr *Set[K]) Delete(key K) {
 	tr.base.Delete(key)
 }
 
-func (tr *Set[K]) Scan(iter func(key K) bool) {
-	tr.base.Scan(func(key K, value struct{}) bool {
-		return iter(key)
-	})
+// All returns all items in the st.
+func (tr *Set[K]) All() iter.Seq[K] {
+	return func(yield func(K) bool) {
+		for k := range tr.base.All() {
+			if !yield(k) {
+				return
+			}
+		}
+	}
 }
 
 // Keys returns all keys as a slice
