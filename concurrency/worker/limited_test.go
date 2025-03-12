@@ -23,10 +23,7 @@ func TestLimited(t *testing.T) {
 		panic(err)
 	}
 
-	l, err := p.Limited(4)
-	if err != nil {
-		panic(err)
-	}
+	l := p.Limited(4)
 
 	l.Submit(ctx, f)
 	l.Submit(ctx, f)

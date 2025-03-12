@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -12,13 +11,13 @@ import (
 )
 
 // Limited creates a Limited pool from the Pool. "size" is the number of goroutines that can execute concurrently.
-func (p *Pool) Limited(size int) (*Limited, error) {
+func (p *Pool) Limited(size int) *Limited {
 	if size < 1 {
-		return nil, fmt.Errorf("cannot have a Limited Pool with size < 1")
+		panic("cannot have a Limited Pool with size < 1")
 	}
 
 	ch := make(chan struct{}, size)
-	return &Limited{p: p, limit: ch}, nil
+	return &Limited{p: p, limit: ch}
 }
 
 // Limited is a worker pool that limits the number of concurrent jobs that can be run.

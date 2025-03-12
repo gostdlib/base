@@ -20,10 +20,7 @@ func TestGroupBasic(t *testing.T) {
 	}
 	defer pool.Close(context.Background())
 
-	limit, err := pool.Limited(5)
-	if err != nil {
-		panic(err)
-	}
+	limit := pool.Limited(5)
 
 	tests := []struct {
 		desc string

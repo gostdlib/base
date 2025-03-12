@@ -96,12 +96,7 @@ func (d *Slicer[T]) Run(ctx context.Context, s []T, options ...RunOption) error 
 	}
 
 	if d.Group == nil {
-		var err error
-		p, err := worker.Default().Limited(runtime.NumCPU())
-		if err != nil {
-			spanner.Span.RecordError(err)
-			return err
-		}
+		p := worker.Default().Limited(runtime.NumCPU())
 		g := p.Group()
 		d.Group = &g
 	}
