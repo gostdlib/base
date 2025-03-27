@@ -4,11 +4,15 @@ package context
 import (
 	"context"
 
+	ierr "github.com/gostdlib/base/internal/errors"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 
 	"go.opentelemetry.io/otel/metric"
 	metricsnoop "go.opentelemetry.io/otel/metric/noop"
 )
+
+// EOptionKey is a key for the context that stores an errors.EOption.
+type EOptionKey struct{}
 
 // MetricsKey is a key for the context that stores a metrics.MeterProvider.
 type MetricsKey struct{}
@@ -50,4 +54,22 @@ func ShouldTrace(ctx context.Context) bool {
 // be traced. This only works if done before the trace is started.
 func SetShouldTrace(ctx context.Context, b bool) context.Context {
 	return context.WithValue(ctx, ShouldTraceKey{}, b)
+}
+
+// EOptions returns the error options attached to the context. If no options are attached, it returns nil.
+// This allows for setting per call error options. These will override local options if the same options are set.
+// An example of this is writing a traceback to errors on a specific call or all calls.
+func EOptions(ctx context.Context) []ierr.EOption {
+	opts, ok := ctx.Value(EOptionKey{}).([]ierr.EOption)
+	if ok {
+		return opts
+	}
+	return nil
+}
+
+// SetEOptions attaches error options to the context. This allows for setting per call error options.
+// These will override local options if the same options are set. An example of this is writing a traceback
+// to errors on a specific call or all calls.
+func SetEOptions(ctx context.Context, options ...ierr.EOption) context.Context {
+	return context.WithValue(ctx, EOptionKey{}, options)
 }

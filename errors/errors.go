@@ -182,6 +182,8 @@ import (
 	"time"
 	"unsafe"
 
+	ictx "github.com/gostdlib/base/internal/context"
+	ierr "github.com/gostdlib/base/internal/errors"
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 	"github.com/gostdlib/base/telemetry/otel/trace/span"
@@ -261,21 +263,15 @@ type Error struct {
 	StackTrace string
 }
 
-type eOpts struct {
-	suppressTraceErr bool
-	callNum          int
-	stackTrace       bool
-}
-
 // EOption is an optional argument for E().
-type EOption func(eOpts) eOpts
+type EOption func(ierr.EOpts) ierr.EOpts
 
 // WithSuppressTraceErr will prevent the trace as being recorded with an error status.
 // The trace will still receive the error message. This is useful for errors that are
 // retried and you only want to get a status of error if the error is not resolved.
 func WithSuppressTraceErr() EOption {
-	return func(e eOpts) eOpts {
-		e.suppressTraceErr = true
+	return func(e ierr.EOpts) ierr.EOpts {
+		e.SuppressTraceErr = true
 		return e
 	}
 }
@@ -284,8 +280,8 @@ func WithSuppressTraceErr() EOption {
 // This can happen if you create a call wrapper around E(), because you would then need to look up one more stack frame
 // for every wrapper. This defaults to 1 which sets to the frame of the caller of E().
 func WithCallNum(i int) EOption {
-	return func(e eOpts) eOpts {
-		e.callNum = i
+	return func(e ierr.EOpts) ierr.EOpts {
+		e.CallNum = i
 		return e
 	}
 }
@@ -294,8 +290,8 @@ func WithCallNum(i int) EOption {
 // cases. This is not recommended for general use as it can cause performance issues when errors
 // are created frequently.
 func WithStackTrace() EOption {
-	return func(e eOpts) eOpts {
-		e.stackTrace = true
+	return func(e ierr.EOpts) ierr.EOpts {
+		e.StackTrace = true
 		return e
 	}
 }
@@ -304,12 +300,19 @@ var now = time.Now
 
 // E creates a new Error with the given parameters. If the message is already an Error, it will be returned instead.
 func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) Error {
-	opts := eOpts{callNum: 1}
+	opts := ierr.EOpts{CallNum: 1}
+
+	// Apply local options.
 	for _, o := range options {
 		opts = o(opts)
 	}
 
-	_, filename, line, ok := runtime.Caller(opts.callNum)
+	// Apply call specific options.
+	for _, o := range ictx.EOptions(ctx) {
+		opts = o(opts)
+	}
+
+	_, filename, line, ok := runtime.Caller(opts.CallNum)
 	if !ok {
 		filename = "unknown"
 	}
@@ -323,7 +326,7 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 	}
 
 	var st string
-	if opts.stackTrace {
+	if opts.StackTrace {
 		st = bytesToStr(debug.Stack())
 	}
 
@@ -337,7 +340,7 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 		StackTrace: st,
 	}
 
-	e.trace(ctx, opts.suppressTraceErr)
+	e.trace(ctx, opts.SuppressTraceErr)
 	e.metrics()
 	return e
 }
