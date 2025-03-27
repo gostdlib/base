@@ -12,6 +12,7 @@ import (
 	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
 	internalCtx "github.com/gostdlib/base/internal/context"
+	ierr "github.com/gostdlib/base/internal/errors"
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 
@@ -24,6 +25,7 @@ type (
 	loggerKey      struct{}
 	poolKey        struct{}
 	tasksKey       struct{}
+	eOptionKey     = internalCtx.EOptionKey
 	metricsKey     = internalCtx.MetricsKey
 	shouldTraceKey = internalCtx.ShouldTraceKey
 )
@@ -135,4 +137,18 @@ func SetShouldTrace(ctx context.Context, b bool) context.Context {
 // ShouldTrace returns true if the request has had SetShouldTrace called on it.
 func ShouldTrace(ctx context.Context) bool {
 	return internalCtx.ShouldTrace(ctx)
+}
+
+// EOptions returns the error options attached to the context. If no options are attached, it returns nil.
+// This allows for setting per call error options. These will override local options if the same options are set.
+// An example of this is writing a traceback to errors on a specific call or all calls.
+func EOptions(ctx context.Context) []ierr.EOption {
+	return internalCtx.EOptions(ctx)
+}
+
+// SetEOptions attaches error options to the context. This allows for setting per call error options.
+// These will override local options if the same options are set. An example of this is writing a traceback
+// to errors on a specific call or all calls.
+func SetEOptions(ctx context.Context, options ...ierr.EOption) context.Context {
+	return internalCtx.SetEOptions(ctx, options...)
 }

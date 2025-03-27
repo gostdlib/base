@@ -62,9 +62,39 @@ type LogAttrer = errors.LogAttrer
 // Error is the error type for this service. Error implements github.com/gostdlib/base/errors.E .
 type Error = errors.Error
 
+type EOption = errors.EOption
+
+// WithSuppressTraceErr will prevent the trace as being recorded with an error status.
+// The trace will still receive the error message. This is useful for errors that are
+// retried and you only want to get a status of error if the error is not resolved.
+func WithSuppressTraceErr() EOption {
+	return errors.WithSuppressTraceErr()
+}
+
+// WithCallNum is used if you need to set the runtime.CallNum() in order to get the correct filename and line.
+// This can happen if you create a call wrapper around E(), because you would then need to look up one more stack frame
+// for every wrapper. This defaults to 1 which sets to the frame of the caller of E().
+func WithCallNum(i int) EOption {
+	return errors.WithCallNum(i)
+}
+
+// WithStackTrace will add a stack trace to the error. This is useful for debugging in certain rare
+// cases. This is not recommended for general use as it can cause performance issues when errors
+// are created frequently.
+func WithStackTrace() EOption {
+	return errors.WithStackTrace()
+}
+
 // E creates a new Error with the given parameters.
 /* YOU CAN REPLACE this with your own base error constructor. See github.com/gostdlib/base/errors for more info. */
 func E(ctx context.Context, c errors.Category, t errors.Type, msg error, options ...errors.EOption) Error {
+    // Because we are wrapping errors.E(), we need to change which stack frame we get our line number from.
+    // However, we still want to honor the user's request for a different call number. This will set the call number
+    // unless the user has already set it.
+    opts := make([]errors.EOption, 0, len(options)+1)
+	opts = append(opts, WithCallNum(2))
+	opts = append(opts, options...)
+
     return errors.E(ctx, c, t, msg, options...)
 }
 

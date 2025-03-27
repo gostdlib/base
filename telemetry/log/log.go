@@ -34,9 +34,9 @@ func Set(l *slog.Logger) {
 }
 
 // LogLevel is the log level for the program. This is used to set the log level for the program.
-// This is automatically set for the default logger unless it was changed. If the new logger is created
-// from the adapter package, it uses this LogLevel. If not, you must pass this to your logger manually.
-// If you don't, this will have no function.
+// This is automatically set for the default logger unless .Set() is used to switch out that logger.
+// If the new logger is created from the adapter package, it uses this LogLevel.
+// If not, you must pass this to your logger manually.
 var LogLevel = new(slog.LevelVar) // Info by default
 
 func init() {

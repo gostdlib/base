@@ -84,6 +84,23 @@ func ShouldTrace(ctx context.Context) bool {
 	return context.ShouldTrace(ctx)
 }
 
+// EOptions returns the error options attached to the context. If no options are attached, it returns nil.
+// This allows for setting per call error options. These will override local options if the same options are set.
+// An example of this is writing a traceback to errors on a specific call or all calls.
+func EOptions(ctx context.Context) []ierr.EOption {
+	return context.EOptions(ctx)
+}
+
+// SetEOptions attaches error options to the context. This allows for setting per call error options.
+// These will override local options if the same options are set. An example of this is writing a traceback
+// to errors on a specific call or all calls.
+func SetEOptions(ctx context.Context, options ...ierr.EOption) context.Context {
+	return context.SetEOptions(ctx, options...)
+}
+
+// Everything below here is a wrapper around the stdlib context package.
+// We do this to prevent having to import the stdlib ctonext package in every file that needs it.
+
 var (
 	// Canceled is the error returned by [Context.Err] when the context is canceled.
 	Canceled = context.Canceled
