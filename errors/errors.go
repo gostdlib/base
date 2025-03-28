@@ -264,7 +264,7 @@ type Error struct {
 }
 
 // EOption is an optional argument for E().
-type EOption func(ierr.EOpts) ierr.EOpts
+type EOption = ierr.EOption
 
 // WithSuppressTraceErr will prevent the trace as being recorded with an error status.
 // The trace will still receive the error message. This is useful for errors that are
@@ -300,6 +300,10 @@ var now = time.Now
 
 // E creates a new Error with the given parameters. If the message is already an Error, it will be returned instead.
 func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) Error {
+	if e, ok := msg.(Error); ok {
+		return e
+	}
+
 	opts := ierr.EOpts{CallNum: 1}
 
 	// Apply local options.
@@ -319,10 +323,6 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 
 	if msg == nil {
 		msg = errors.New("bug: nil error")
-	}
-
-	if e, ok := msg.(Error); ok {
-		return e
 	}
 
 	var st string
