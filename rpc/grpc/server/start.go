@@ -11,7 +11,8 @@ import (
 	"time"
 
 	baseContext "github.com/gostdlib/base/context"
-	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors"
+	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/stream"
+	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/unary"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 
 	"github.com/CAFxX/httpcompression"
@@ -50,8 +51,10 @@ type fn func(ctx context.Context) (fn, error)
 type starter struct {
 	server *Server
 
-	lis     net.Listener
-	options []StartOption
+	lis                net.Listener
+	options            []StartOption
+	unaryInterceptors  []unary.Intercept
+	streamInterceptors []stream.Intercept
 
 	opts startOptions
 }
@@ -87,14 +90,21 @@ func (s *starter) start(ctx context.Context) (fn, error) {
 // setOptions sets our default server options and then calls the options
 // provided by the user.
 func (s *starter) setOptions(ctx context.Context) (fn, error) {
-	u := &interceptors.Unary{
-		ErrConvert: s.opts.errConverter,
+	ui, err := unary.New(ctx, unary.ErrConvert(s.opts.errConverter), unary.WithIntercept(s.unaryInterceptors...))
+	if err != nil {
+		return nil, err
+	}
+
+	si, err := stream.New(ctx, stream.ErrConvert(s.opts.errConverter), stream.WithIntercepts(s.streamInterceptors...))
+	if err != nil {
+		return nil, err
 	}
 
 	// Setup a base for the options that gets modified.
 	s.opts = startOptions{
 		serverOptions: []grpc.ServerOption{
-			grpc.UnaryInterceptor(u.Intercept),
+			grpc.UnaryInterceptor(ui.Intercept),
+			grpc.StreamInterceptor(si.Intercept),
 			grpc.StatsHandler(otelgrpc.NewServerHandler()),
 			grpc.KeepaliveParams(defaultKeepalive),
 			grpc.MaxConcurrentStreams(100),          // Limit concurrent streams
@@ -103,7 +113,6 @@ func (s *starter) setOptions(ctx context.Context) (fn, error) {
 		gwDial: []grpc.DialOption{grpc.WithBlock()},
 	}
 
-	var err error
 	for _, o := range s.options {
 		s.opts, err = o(s.opts)
 		if err != nil {
@@ -292,7 +301,6 @@ func (s *starter) router() http.Handler {
 			if len(s.opts.certs) > 0 && r.TLS == nil {
 				http.Error(w, "TLS required", http.StatusUpgradeRequired)
 			}
-			log.Printf("Incoming request: Proto: %s, Content-Type: %s, Path: %s", r.Proto, r.Header.Get("Content-Type"), r.URL.Path)
 			if r.ProtoMajor == 2 {
 				switch r.Header.Get("Content-Type") {
 				case "application/grpc":

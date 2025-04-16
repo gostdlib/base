@@ -1,32 +1,56 @@
-// Package grpc provides a wrapper around the google.golang.org/grpc package that integrates features
-// into our gRPC servers. This takes advantage of all the packages in base/ to ease the developer experience.
-// Here is a list of some of the features that are integrated:
-//   - grpc reflection is enabled by default.
-//   - grpc metrics are collected by default.
-//   - Tracing is enabled by default and a default span is created at each endpoint ingress.
-//   - Error logging is enabled to automatically log an error in the RPC path.
-//   - Context values are attached at the ingress point for all RPCs.
-//   - Compression is enabled for gzip on gRPC if specified by the client.
-//   - Compression support for gzip, brotil, defalte and zstd are supported for http.
-//   - Sets up the default health check service and exposes it via Health() to allow for the user to manipulate.
-//
-// It also defines some sane defaults for gRPC that can be overridden by passing options to WithServerOptions().
-// Here is a list:
-//   - Keepalive is set to 1 minute idle, 10 second ping interval, and 5 second ping timeout.
-//   - Limit of 100 concurrent connections.
-//   - Connection timeout of 5 seconds.
-//
-// It also defines some sane defaults for an HTTP server if not specified by the user. Here is a list:
-//   - ReadHeaderTimeout is set to 5 seconds.
-//   - IdleTimeout is set to 1 minute.
-//   - MaxHeaderBytes is set to 1MB.
-//   - ErrorLog is set to a /dev/null logger
-//   - BaseContext is set to our base/context.Background()
-//
-// This package also offers other ammenities such as:
-//   - gRPC Gateway integration.
-//   - HTTP port sharing with gRPC. This avoids CORS issues if your app uses the Gateway.
-//   - Support for H2C (HTTP/2 Cleartext) with port sharing when using non-TLS connections.
+/*
+Package grpc provides a wrapper around the google.golang.org/grpc package that integrates features
+into our gRPC servers. This takes advantage of all the packages in base/ to ease the developer experience.
+Here is a list of some of the features that are integrated:
+  - grpc reflection is enabled by default.
+  - grpc metrics are collected by default.
+  - Tracing is enabled by default and a default span is created at each endpoint ingress for unary RPCs.
+  - Tracing is NOT ENABLED for streaming RPCs by default. You will need to use an interceptor to do this.
+  - Error logging is enabled to automatically log an error in the RPC path.
+  - Context values are attached at the ingress point for all RPCs.
+  - Compression is enabled for gzip on gRPC if specified by the client.
+  - Compression support for gzip, brotil, defalte and zstd are supported for http.
+  - Sets up the default health check service and exposes it via Health() to allow for the user to manipulate.
+
+It also defines some sane defaults for gRPC that can be overridden by passing options to WithServerOptions().
+Here is a list:
+  - Keepalive is set to 1 minute idle, 10 second ping interval, and 5 second ping timeout.
+  - Limit of 100 concurrent connections.
+  - Connection timeout of 5 seconds.
+
+It also defines some sane defaults for an HTTP server if not specified by the user. Here is a list:
+  - ReadHeaderTimeout is set to 5 seconds.
+  - IdleTimeout is set to 1 minute.
+  - MaxHeaderBytes is set to 1MB.
+  - ErrorLog is set to a /dev/null logger
+  - BaseContext is set to our base/context.Background()
+
+This package also offers other ammenities such as:
+  - gRPC Gateway integration.
+  - HTTP port sharing with gRPC. This avoids CORS issues if your app uses the Gateway.
+  - Support for H2C (HTTP/2 Cleartext) with port sharing when using non-TLS connections.
+
+To use this package successfully, you must use HTTP headers to indicate the type of request you are making.
+Here is the logic for what will process what:
+
+	if r.ProtoMajor == 2 {
+		switch r.Header.Get("Content-Type") {
+		case "application/grpc":
+			s.server.server.ServeHTTP(w, r)
+		case "application/grpc-gateway", "application/jsonpb":
+			s.opts.mux.ServeHTTP(w, r)
+		default:
+			s.opts.httpHandler.ServeHTTP(w, r)
+		}
+	} else {
+		switch r.Header.Get("Content-Type") {
+		case "application/grpc-gateway", "application/jsonpb":
+			s.opts.mux.ServeHTTP(w, r)
+		default:
+			s.opts.httpHandler.ServeHTTP(w, r)
+		}
+	}
+*/
 package grpc
 
 import (
@@ -39,6 +63,8 @@ import (
 	"time"
 
 	grpcContext "github.com/gostdlib/base/context/grpc"
+	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/stream"
+	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/unary"
 
 	"github.com/gostdlib/base/errors"
 	goinit "github.com/gostdlib/base/init"
@@ -67,15 +93,57 @@ type reg struct {
 // Server is a gRPC server. It provides automatic integration with logging, tracing and metrics for gRPC servers.
 // It also integrates the base/context package to attach various values to the context.
 type Server struct {
-	mu            sync.Mutex
-	registrations []reg
-	server        *grpc.Server
-	health        grpc_health_v1.HealthServer
-	done          chan error
+	mu                 sync.Mutex
+	registrations      []reg
+	unaryInterceptors  []unary.Intercept
+	streamInterceptors []stream.Intercept
+	server             *grpc.Server
+	health             grpc_health_v1.HealthServer
+	done               chan error
 }
 
 // Option is an optional argument to New.
 type Option func(*Server) error
+
+// UnaryIntercept is a unary interceptor for gRPC that can be provided by the user.
+// It returns the request or an error. This allows modification of the request before it
+// is sent to the handler.
+type UnaryIntercept = unary.Intercept
+
+// WithUnaryInterceptor adds a unary interceptor to the server. These intercept a
+// call to a gRPC method and allow you to modify the request or response.
+func WithUnaryInterceptors(interceptors ...UnaryIntercept) Option {
+	return func(s *Server) error {
+		for _, interceptor := range interceptors {
+			if interceptor == nil {
+				return fmt.Errorf("interceptor cannot be nil")
+			}
+		}
+		s.unaryInterceptors = interceptors
+		return nil
+	}
+}
+
+// StreamIntercept is a user provided interceptor for a streaming RPC.
+// If it returns an error, the call is aborted and the error is returned to the client.
+// and the error is returned to the client. It should be noted that interceptors on Send
+// are called before the message is sent and interceptors on Recv are called after the
+// message is received.
+type StreamIntercept = stream.Intercept
+
+// WithStreamInterceptor adds a stream interceptor to the server. These intercept a
+// call to a gRPC method and allow you to modify the request or response.
+func WithStreamInterceptors(interceptors ...stream.Intercept) Option {
+	return func(s *Server) error {
+		for _, interceptor := range interceptors {
+			if interceptor == nil {
+				return fmt.Errorf("interceptor cannot be nil")
+			}
+		}
+		s.streamInterceptors = interceptors
+		return nil
+	}
+}
 
 // New creates a new gRPC server.
 func New(options ...Option) (*Server, error) {
@@ -203,7 +271,13 @@ func (s *Server) RegisterService(desc *grpc.ServiceDesc, impl any) {
 // This returns an error in most cases, however if you called RegisterService with something incorrect,
 // this will cause gRPC to panic.
 func (s *Server) Start(ctx context.Context, lis net.Listener, options ...StartOption) error {
-	start := starter{server: s, lis: lis, options: options}
+	start := starter{
+		server:             s,
+		lis:                lis,
+		options:            options,
+		unaryInterceptors:  s.unaryInterceptors,
+		streamInterceptors: s.streamInterceptors,
+	}
 	return start.Run(ctx)
 }
 
