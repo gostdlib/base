@@ -14,9 +14,8 @@ import (
 
 // Intercept is a user provided interceptor for the stream.
 // If it returns an error, the call is aborted and the error is returned to the client.
-// and the error is returned to the client. It should be noted that interceptors on Send
-// are called before the message is sent and interceptors on Recv are called after the
-// message is received.
+// It should be noted that interceptors on Send are called before the message is sent
+// and interceptors on Recv are called after the message is received.
 type Intercept interface {
 	// Send is called before a message is sent. The grpc.ServerStream has methods that can only be used
 	// at certain times. Like SetHeader() which can only be used before the first message is sent, which
