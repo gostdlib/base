@@ -1,4 +1,4 @@
-package interceptors
+package unary
 
 import (
 	stdErr "errors"
@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestUnaryIntercept(t *testing.T) {
+func TestIntercept(t *testing.T) {
 	t.Parallel()
 
 	var resultCtx context.Context
@@ -64,7 +64,7 @@ func TestUnaryIntercept(t *testing.T) {
 	req := &pb.HelloReq{Name: "world"}
 
 	for _, test := range tests {
-		unary := &Unary{}
+		unary := &Interceptor{}
 
 		_, err := unary.Intercept(test.ctx, req, info, test.handler)
 
