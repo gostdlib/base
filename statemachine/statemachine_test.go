@@ -195,6 +195,74 @@ func TestExecState(t *testing.T) {
 	}
 }
 
+func TestExecDefer(t *testing.T) {
+	t.Parallel()
+
+	parentCtx := context.Background()
+
+	deferFn := func(ctx context.Context, d data, err error) data {
+		if err != nil {
+			d.Num = -5
+			return d
+		}
+		d.Num += 10
+		return d
+	}
+
+	tests := []struct {
+		name        string
+		req         Request[data]
+		wantRequest Request[data]
+	}{
+		{
+			name: "No Defer function",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 5},
+			},
+			wantRequest: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 5},
+			},
+		},
+		{
+			name: "Defer function modifies data without error",
+			req: Request[data]{
+				Ctx:   parentCtx,
+				Data:  data{Num: 5},
+				Defer: deferFn,
+			},
+			wantRequest: Request[data]{
+				Ctx:   parentCtx,
+				Data:  data{Num: 15},
+				Defer: deferFn,
+			},
+		},
+		{
+			name: "Defer function modifies data with error",
+			req: Request[data]{
+				Ctx:   parentCtx,
+				Data:  data{Num: 5},
+				Err:   fmt.Errorf("initial error"),
+				Defer: deferFn,
+			},
+			wantRequest: Request[data]{
+				Ctx:   parentCtx,
+				Data:  data{Num: -5},
+				Err:   fmt.Errorf("initial error"),
+				Defer: deferFn,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		gotRequest := execDefer(test.req)
+		if diff := pretty.Compare(test.wantRequest, gotRequest); diff != "" {
+			t.Errorf("TestExecDefer(%s): Request: -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
 func functionA() {
 	fmt.Println("Function A")
 }

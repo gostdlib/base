@@ -230,6 +230,11 @@ type Request[T any] struct {
 	// Must be set to the initial state to execute before calling Run().
 	Next State[T]
 
+	// Defer is a function that is called when the state machine stops. This function can change the data
+	// passed an it will modify Request.Data before it is returned by Run(). err indicates if you had an
+	// error and what it was, otherwise the Request completed.
+	Defer func(ctx context.Context, data T, err error) T
+
 	// seenStages tracks what stages have been called in this Request. This is used to
 	// detect cyclic errors. If nil, cyclic errors are not checked.
 	seenStages *seenStages
@@ -342,11 +347,32 @@ func Run[T any](name string, req Request[T], options ...Option[T]) (Request[T], 
 		var stateName string
 		stateName, req = execState(req)
 		if req.Err != nil {
+			req = execDefer(req)
 			req.span.Status(codes.Error, fmt.Sprintf("error in State(%s): %s", stateName, req.Err.Error()))
 			return req, req.Err
 		}
 	}
-	return req, nil
+
+	return execDefer(req), nil
+}
+
+// execDefer executes the Request.Defer function if it is not nil.
+func execDefer[T any](req Request[T]) Request[T] {
+	if req.Defer == nil {
+		return req
+	}
+	if req.span.Span != nil && req.span.Span.IsRecording() {
+		parentCtx := req.Ctx
+		parentSpan := req.span
+		defer func() {
+			req.Ctx = parentCtx
+			req.span = parentSpan
+		}()
+
+		req.Ctx, req.span = span.New(req.Ctx, span.WithName("Defer call"))
+	}
+	req.Data = req.Defer(req.Ctx, req.Data, req.Err)
+	return req
 }
 
 var execReqNextNil = fmt.Errorf("bug: execState received Request.Next == nil")
