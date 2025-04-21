@@ -28,7 +28,7 @@ func steer(req Request[data]) Request[data] {
 }
 
 func addDefer(req Request[data]) Request[data] {
-	req = Defer(req, func(ctx context.Context, d data, err error) data {
+	req.Defers = append(req.Defers, func(ctx context.Context, d data, err error) data {
 		d.Num += 90
 		return d
 	})
@@ -37,7 +37,7 @@ func addDefer(req Request[data]) Request[data] {
 }
 
 func addDefer2(req Request[data]) Request[data] {
-	req = Defer(req, func(ctx context.Context, d data, err error) data {
+	req.Defers = append(req.Defers, func(ctx context.Context, d data, err error) data {
 		d.Num = d.Num * 2
 		return d
 	})
@@ -138,7 +138,7 @@ func TestRun(t *testing.T) {
 		case err != nil && !test.wantErr:
 			t.Errorf("TestRun(%s) got err == %s, want err == nil", test.name, err)
 		}
-		gotReq.defers = nil // Reset defers to nil after execution to avoid comparison.
+		gotReq.Defers = nil // Reset defers to nil after execution to avoid comparison.
 		if diff := pretty.Compare(test.wantReq, gotReq); diff != "" {
 			t.Errorf("TestRun(%s) got diff (-want +got):\n%s", test.name, diff)
 		}
@@ -287,9 +287,9 @@ func TestExecDefer(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test.req.defers = test.defers
+		test.req.Defers = test.defers
 		got := execDefer(test.req)
-		got.defers = nil // Reset defers to nil after execution to avoid comparison.
+		got.Defers = nil // Reset defers to nil after execution to avoid comparison.
 		if diff := pretty.Compare(test.want, got); diff != "" {
 			t.Errorf("TestExecDefer(%s): Request: -want/+got:\n%s", test.name, diff)
 		}
