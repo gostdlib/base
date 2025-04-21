@@ -212,7 +212,7 @@ func (s *seenStages) reset() *seenStages {
 }
 
 // Defer is a function that is called when the state machine stops. This function can change the data
-// passed an it will modify Request.Data before it is returned by Run(). err indicates if you had an
+// passed and it will modify Request.Data before it is returned by Run(). err indicates if you had an
 // error and what it was, otherwise the Request completed.
 type DeferFn[T any] func(ctx context.Context, data T, err error) T
 
