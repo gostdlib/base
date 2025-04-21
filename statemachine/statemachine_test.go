@@ -19,9 +19,29 @@ func steer(req Request[data]) Request[data] {
 		req.Next = nil
 	case math.MaxInt:
 		req.Next = addErr
+	case 30:
+		req.Next = addDefer
 	default:
 		req.Next = addTen
 	}
+	return req
+}
+
+func addDefer(req Request[data]) Request[data] {
+	req.Defers = append(req.Defers, func(ctx context.Context, d data, err error) data {
+		d.Num += 90
+		return d
+	})
+	req.Next = addDefer2
+	return req
+}
+
+func addDefer2(req Request[data]) Request[data] {
+	req.Defers = append(req.Defers, func(ctx context.Context, d data, err error) data {
+		d.Num = d.Num * 2
+		return d
+	})
+	req.Next = nil
 	return req
 }
 
@@ -97,6 +117,17 @@ func TestRun(t *testing.T) {
 			},
 			wantReq: Request[data]{Ctx: context.Background(), Data: data{Num: 11}},
 		},
+		{
+			name:    "Success with defers",
+			argName: "test",
+			req: Request[data]{
+				Ctx:  context.Background(),
+				Next: steer,
+				Data: data{Num: 30},
+			},
+			// This is not 240, because the first defer is executed after the second.
+			wantReq: Request[data]{Ctx: context.Background(), Data: data{Num: 150}},
+		},
 	}
 
 	for _, test := range tests {
@@ -107,6 +138,7 @@ func TestRun(t *testing.T) {
 		case err != nil && !test.wantErr:
 			t.Errorf("TestRun(%s) got err == %s, want err == nil", test.name, err)
 		}
+		gotReq.Defers = nil // Reset defers to nil after execution to avoid comparison.
 		if diff := pretty.Compare(test.wantReq, gotReq); diff != "" {
 			t.Errorf("TestRun(%s) got diff (-want +got):\n%s", test.name, diff)
 		}
@@ -191,6 +223,75 @@ func TestExecState(t *testing.T) {
 		}
 		if diff := pretty.Compare(test.wantRequest, gotRequest); diff != "" {
 			t.Errorf("TestExecState(%s): Request: -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
+func TestExecDefer(t *testing.T) {
+	t.Parallel()
+
+	parentCtx := context.Background()
+
+	deferFn := func(ctx context.Context, d data, err error) data {
+		if err != nil {
+			d.Num = -5
+			return d
+		}
+		d.Num += 10
+		return d
+	}
+
+	tests := []struct {
+		name   string
+		req    Request[data]
+		defers []DeferFn[data]
+		want   Request[data]
+	}{
+		{
+			name: "No Defer function",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 5},
+			},
+			want: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 5},
+			},
+		},
+		{
+			name: "Defer function modifies data without error",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 5},
+			},
+			defers: []DeferFn[data]{deferFn},
+			want: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 15},
+			},
+		},
+		{
+			name: "Defer function modifies data with error",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: 5},
+				Err:  fmt.Errorf("initial error"),
+			},
+			defers: []DeferFn[data]{deferFn},
+			want: Request[data]{
+				Ctx:  parentCtx,
+				Data: data{Num: -5},
+				Err:  fmt.Errorf("initial error"),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test.req.Defers = test.defers
+		got := execDefer(test.req)
+		got.Defers = nil // Reset defers to nil after execution to avoid comparison.
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestExecDefer(%s): Request: -want/+got:\n%s", test.name, diff)
 		}
 	}
 }
