@@ -217,6 +217,7 @@ func (s *seenStages) reset() *seenStages {
 type DeferFn[T any] func(ctx context.Context, data T, err error) T
 
 // Defer adds a Defer function to the Request. The Defer function is called when the state machine stops.
+// Important! You must reassign the Request to the return value of Defer. Otherwise the defer gets dropped!
 func Defer[T any](r Request[T], d DeferFn[T]) Request[T] {
 	if d == nil {
 		return r
