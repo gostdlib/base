@@ -3,6 +3,8 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -95,5 +97,51 @@ func TestWaitGroupCancelOnErr(t *testing.T) {
 
 	if err := wg.Wait(ctx); err == nil {
 		t.Errorf("TestWaitGroupCancelOnErr: want error != nil, got nil")
+	}
+}
+
+func TestIndexErrors(t *testing.T) {
+	ctx := context.Background()
+	g := sync.Group{}
+
+	for i := 0; i < 5; i++ {
+		i := i
+		g.Go(
+			ctx,
+			func(ctx context.Context) error {
+				if i%2 == 1 {
+					return fmt.Errorf("%d", i)
+				}
+				return nil
+			},
+			sync.WithIndex(i),
+		)
+	}
+
+	err := g.Wait(ctx)
+	if err == nil {
+		t.Fatalf("TestIndexErrors: want error != nil, got nil")
+	}
+	expect := map[int]bool{
+		1: true,
+		3: true,
+	}
+
+	for _, entry := range err.(*sync.Errors).Errors() {
+		e := entry.(sync.IndexErr)
+		if _, ok := expect[e.Index]; !ok {
+			t.Fatalf("TestIndexErrors: got unexpected index %d ", e.Index)
+		}
+		x, err := strconv.Atoi(e.Error())
+		if err != nil {
+			panic(err)
+		}
+		if e.Index != x {
+			t.Fatalf("TestIndexErrors: got unexpected index %d error %s ", e.Index, e.Error())
+		}
+		delete(expect, e.Index)
+	}
+	if len(expect) != 0 {
+		t.Fatalf("TestIndexErrors: want no missing indexes, got %v", expect)
 	}
 }

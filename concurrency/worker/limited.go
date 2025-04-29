@@ -68,3 +68,24 @@ func (l *Limited) Wait() {
 func (l *Limited) Group() bSync.Group {
 	return bSync.Group{Pool: l}
 }
+
+// PriorityQueue provides a priority queue that can be used to submit jobs to the pool.
+// This will use the Limited pool to limit the number of concurrent jobs. maxSize
+// is the maximum size of the queue. A size < 1 will panic.
+func (l *Limited) PriorityQueue(maxSize int) *Queue {
+	if maxSize < 1 {
+		panic("maxSize must be greater than 0")
+	}
+	d := &Queue{
+		queue: &queue{},
+		done:  make(chan struct{}),
+		size:  make(chan struct{}, maxSize),
+		pool:  l,
+	}
+
+	Default().Submit(
+		context.Background(),
+		d.doWork,
+	)
+	return d
+}
