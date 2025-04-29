@@ -113,7 +113,7 @@ func TestQueueLen(t *testing.T) {
 		err := queue.Submit(
 			ctx,
 			QJob{
-				Priority: uint8(i + 1),
+				Priority: uint64(i + 1),
 				Work:     func() { time.Sleep(100 * time.Millisecond) },
 			},
 		)

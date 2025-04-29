@@ -74,9 +74,12 @@ type pqOpts struct{}
 // PQOption is a function that can be used to configure a PriorityQueue.
 type PQOption func(pqOpts) (pqOpts, error)
 
-// PriorityQueue provides a priority queue that can be used to submit jobs to the pool.
+// PriorityQueue provides a strict priority queue that can be used to submit jobs to the pool.
 // This will use the Limited pool to limit the number of concurrent jobs. maxSize
 // is the maximum size of the queue. A size < 1 will panic.
+// Note: In a PriorityQueue, jobs are processed in order of priority, with higher priority jobs being
+// processed first. This means that low priority jobs can stay in the queue forever as long as
+// higher priority jobs continue to enter the queue.
 func (l *Limited) PriorityQueue(maxSize int, options ...PQOption) *Queue {
 	if maxSize < 1 {
 		panic("maxSize must be greater than 0")

@@ -14,12 +14,12 @@ import (
 // QJob represents a job to be done in a priority queue.
 type QJob struct {
 	// Priority is the job's priority.
-	Priority uint8
+	Priority uint64
 	// Work is the work to be done by the job.
 	Work func()
 
-	// ctx is the context for the job.
-	ctx context.Context
+	// submit is the submit the job was submitted.
+	submit time.Time
 }
 
 // queue implements the heap interface. We are using a custom generic heap instead of the stdlib.
@@ -38,6 +38,11 @@ func (p *queue) Len() int {
 func (p *queue) Less(i, j int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Make submission time a tiebreaker.
+	if p.jobs[i].Priority == p.jobs[j].Priority {
+		return p.jobs[i].submit.Before(p.jobs[j].submit)
+	}
 
 	return p.jobs[i].Priority > p.jobs[j].Priority
 }
@@ -71,6 +76,7 @@ func (p *queue) Pop(ctx context.Context) QJob {
 }
 
 // Queue represents a priority queue for jobs. This can be created from a Limited Pool via Queue().
+// If two jobs have the same priority, the job that was submitted first will be processed first.
 type Queue struct {
 	queue *queue
 	done  chan struct{}
@@ -120,7 +126,8 @@ func (d *Queue) Wait(ctx context.Context) error {
 
 // Submit will submit a job to the queue. If the queue is full, it will block until there is room
 // in the queue or the context is canceled. A job with priority 0 will be assigned a default priority of 100.
-// Valid priority values are 1 - 254. Higher priority jobs (highest being 254) will be processed first.
+// Valid priority values are 1 - uint64Max. Higher priority jobs (highest being uint64Max) will be
+// processed first.
 func (d *Queue) Submit(ctx context.Context, job QJob) error {
 	if job.Work == nil {
 		return errors.New("job has no work")
@@ -128,13 +135,14 @@ func (d *Queue) Submit(ctx context.Context, job QJob) error {
 	if job.Priority == 0 {
 		job.Priority = 100
 	}
+	job.submit = time.Now()
+
 	select {
 	case <-ctx.Done():
 		return context.Cause(ctx)
 	case d.size <- struct{}{}:
 	}
 
-	job.ctx = ctx
 	heap.Push(ctx, d.queue, job)
 	d.count.Add(1)
 	return nil
@@ -161,7 +169,7 @@ func (d *Queue) doWork() {
 			job.Work()
 		}
 
-		if err := d.pool.Submit(job.ctx, f); err != nil {
+		if err := d.pool.Submit(context.Background(), f); err != nil {
 			log.Printf("error submitting job to pool: %v", err)
 		}
 	}
