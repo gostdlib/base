@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"time"
 
@@ -10,10 +11,22 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+var numCPU int
+
+func init() {
+	if runtime.GOMAXPROCS(-1) > 0 && runtime.GOMAXPROCS(-1) < runtime.NumCPU() {
+		numCPU = runtime.GOMAXPROCS(-1)
+		return
+	}
+	numCPU = runtime.NumCPU()
+}
+
 // Limited creates a Limited pool from the Pool. "size" is the number of goroutines that can execute concurrently.
+// If the size is less than 1, it will be set to GOMAXPROCS if that value is less than NumCPU. Otherwise
+// NumCPU will be used.
 func (p *Pool) Limited(size int) *Limited {
 	if size < 1 {
-		panic("cannot have a Limited Pool with size < 1")
+		size = numCPU
 	}
 
 	ch := make(chan struct{}, size)
