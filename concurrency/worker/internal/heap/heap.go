@@ -10,7 +10,7 @@
 // highest-priority item from the queue. The Examples include such an
 // implementation; the file example_pq_test.go has the complete source.
 //
-// Note: This differes from the standard library in that it implements generics.
+// Note: This differs from the standard library in that it implements generics.
 package heap
 
 import (

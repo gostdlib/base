@@ -14,8 +14,9 @@ import (
 var numCPU int
 
 func init() {
-	if runtime.GOMAXPROCS(-1) > 0 && runtime.GOMAXPROCS(-1) < runtime.NumCPU() {
-		numCPU = runtime.GOMAXPROCS(-1)
+	currentMaxProcs := runtime.GOMAXPROCS(-1)
+	if currentMaxProcs > 0 && currentMaxProcs < runtime.NumCPU() {
+		numCPU = currentMaxProcs
 		return
 	}
 	numCPU = runtime.NumCPU()
@@ -93,7 +94,7 @@ func (l *Limited) PriorityQueue(maxSize int) *Queue {
 		panic("maxSize must be greater than 0")
 	}
 	d := &Queue{
-		queue: &queue{},
+		queue: &queue{popping: make(chan struct{}, 1)},
 		done:  make(chan struct{}),
 		size:  make(chan struct{}, maxSize),
 		pool:  l,

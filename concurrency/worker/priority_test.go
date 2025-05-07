@@ -14,7 +14,7 @@ func Test_queue(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	q := &queue{}
+	q := &queue{popping: make(chan struct{}, 1)}
 
 	// Test Push
 	job1 := QJob{Priority: 2, Work: func() {}}

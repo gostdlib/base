@@ -26,6 +26,8 @@ type QJob struct {
 type queue struct {
 	mu   sync.Mutex
 	jobs []QJob
+
+	popping chan struct{}
 }
 
 func (p *queue) Len() int {
@@ -72,6 +74,12 @@ func (p *queue) Pop(ctx context.Context) QJob {
 	n := len(p.jobs) - 1
 	job := p.jobs[n]
 	p.jobs = p.jobs[0:n]
+	if len(p.jobs) == 0 {
+		select {
+		case p.popping <- struct{}{}:
+		default:
+		}
+	}
 	return job
 }
 
@@ -97,19 +105,20 @@ func (d *Queue) QueueLen() int {
 	return int(d.count.Load())
 }
 
-// Wait waits for the queue to be empty and not processing being done or the context to be canceled.
-// If the context is canceled, the context error will be returned.
+// Wait waits for the queue to empty and processing to be completed. This will return an
+// error if the context is canceled and will stop waiting. Otherwise the error will be nil.
 func (d *Queue) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 
 	Default().Submit(
 		ctx,
 		func() {
-			for {
-				if d.QueueLen() == 0 {
-					break
+			if d.QueueLen() > 0 {
+				for range d.queue.popping {
+					if d.QueueLen() == 0 {
+						break
+					}
 				}
-				time.Sleep(10 * time.Millisecond)
 			}
 			d.wait.Wait()
 			close(done)
