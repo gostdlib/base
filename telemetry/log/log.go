@@ -12,7 +12,7 @@ import (
 	"github.com/gostdlib/base/env/detect"
 )
 
-var defaultLog = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: false, Level: LogLevel}))
+var defaultLog = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true, Level: LogLevel}))
 
 // LogLevel is the log level for the program. This is used to set the log level for the program.
 // This is automatically set for the default logger unless .Set() is used to switch out that logger.
