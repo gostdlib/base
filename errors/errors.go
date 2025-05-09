@@ -172,10 +172,13 @@ base for your package.
 package errors
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -518,23 +521,39 @@ func (e Error) Log(ctx context.Context, callID, customerID string, req any) {
 	// Ignore serialization errors, it just means we log less information.
 	switch v := req.(type) {
 	case nil:
-		reqBytes = []byte("<nil>")
 	case proto.Message:
-		reqBytes, _ = protojson.Marshal(v)
+		var err error
+		reqBytes, err = protojson.Marshal(v)
+		if err != nil {
+			reqBytes = fmt.Appendf(reqBytes, "unable to marshal proto.Message due to error: %s", err)
+		}
+	case *http.Request:
+		var err error
+		reqBytes, err = requestToJSON(v)
+		if err != nil {
+			reqBytes = fmt.Appendf(reqBytes, "unable to marshal *http.Request due to error: %s", err)
+		}
 	default:
-		reqBytes, _ = json.Marshal(req)
+		log.Printf("req is %T", req)
+		var err error
+		reqBytes, err = json.Marshal(req)
+		if err != nil {
+			reqBytes = fmt.Appendf(reqBytes, "unable to marshal request %T object due to error: %s", req, err.Error())
+		}
 	}
 
-	if reqBytes == nil {
-		reqBytes = []byte("unable to marshal request object due to error")
+	logAttrs := e.LogAttrs(ctx)
+	var attrs = make([]slog.Attr, 0, 3+len(logAttrs))
+	if customerID != "" {
+		attrs = append(attrs, slog.Any("CustomerID", customerID))
 	}
-
-	var attrs = []slog.Attr{
-		slog.Any("CustomerID", customerID),
-		slog.Any("CallID", callID),
-		slog.Any("Request", bytesToStr(reqBytes)),
+	if callID != "" {
+		attrs = append(attrs, slog.Any("CallID", callID))
 	}
-	attrs = append(attrs, e.LogAttrs(ctx)...)
+	if len(reqBytes) > 0 {
+		attrs = append(attrs, slog.Any("Request", bytesToStr(reqBytes)))
+	}
+	attrs = append(attrs, logAttrs...)
 
 	// Attach any attributes from the error message.
 	if f, ok := e.Msg.(LogAttrer); ok {
@@ -554,6 +573,46 @@ func (e Error) Log(ctx context.Context, callID, customerID string, req any) {
 	}
 
 	log.Default().LogAttrs(ctx, slog.LevelError, errMsg, attrs...)
+}
+
+// JSONRequest is a simplified version of http.Request for JSON serialization
+type JSONRequest struct {
+	Method        string              `json:"method"`
+	URL           string              `json:"url"`
+	Header        map[string][]string `json:"header"`
+	ContentLength int64               `json:"content_length"`
+	Host          string              `json:"host"`
+	RemoteAddr    string              `json:"remote_addr"`
+	RequestURI    string              `json:"request_uri"`
+	Body          string              `json:"body"`
+}
+
+func requestToJSON(r *http.Request) ([]byte, error) {
+	var bodyBytes []byte
+	// Read the original body
+	if r.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body.Close()
+	}
+
+	// Reset the request body so it can be read again
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	jr := JSONRequest{
+		Method:        r.Method,
+		URL:           r.URL.String(),
+		Header:        r.Header,
+		ContentLength: r.ContentLength,
+		Host:          r.Host,
+		RemoteAddr:    r.RemoteAddr,
+		RequestURI:    r.RequestURI,
+		Body:          bytesToStr(bodyBytes),
+	}
+	return json.Marshal(jr)
 }
 
 // bytesToStr converts a byte slice to a string without copying the data.
