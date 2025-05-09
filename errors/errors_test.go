@@ -152,7 +152,7 @@ func TestE(t *testing.T) {
 		_, fn, line, _ := runtime.Caller(0)
 		if _, ok := test.msg.(Error); !ok {
 			test.want.Line = line - 1
-			test.want.Filename = fn
+			test.want.File = fn
 		}
 
 		if diff := pretty.Compare(test.want, got); diff != "" {
@@ -352,7 +352,7 @@ func TestLog(t *testing.T) {
 			name: "Error with everything and a proto req",
 			e: Error{
 				Category: CatReq,
-				Filename: "filename",
+				File: "f  ilename",
 				Line:     123,
 				Type:     TypeBadRequest,
 				ErrTime:  ti,
@@ -377,7 +377,7 @@ func TestLog(t *testing.T) {
 			name: "Error with everything and a http.Request",
 			e: Error{
 				Category: CatReq,
-				Filename: "filename",
+				File: "f  ilename",
 				Line:     123,
 				Type:     TypeBadRequest,
 				ErrTime:  ti,
@@ -405,7 +405,7 @@ func TestLog(t *testing.T) {
 			name: "Error with everything and a stack trace",
 			e: Error{
 				Category:   CatReq,
-				Filename:   "filename",
+				File:     "filename",
 				Line:       123,
 				Type:       TypeBadRequest,
 				ErrTime:    ti,
@@ -431,7 +431,7 @@ func TestLog(t *testing.T) {
 			name: "Error has Msg that has sub-attributes",
 			e: Error{
 				Category: CatReq,
-				Filename: "filename",
+				File: "  filename",
 				Line:     123,
 				Type:     TypeBadRequest,
 				ErrTime:  ti,
@@ -459,7 +459,7 @@ func TestLog(t *testing.T) {
 			name: "Error has top level attributes",
 			e: Error{
 				Category: CatReq,
-				Filename: "filename",
+				File: "  filename",
 				Line:     123,
 				Type:     TypeBadRequest,
 				ErrTime:  ti,

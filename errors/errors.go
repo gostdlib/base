@@ -249,9 +249,9 @@ type Error struct {
 	// if the error message is sensitive or contains PII.
 	MsgOverride string
 
-	// Filename is the file that the error was created in. This is automatically
+	// File is the file that the error was created in. This is automatically
 	// filled in by the E().
-	Filename string
+	File string
 	// Line is the line that the error was created on. This is automatically
 	// filled in by the E().
 	Line int
@@ -333,7 +333,7 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 	e := Error{
 		Category:   c,
 		Type:       t,
-		Filename:   filename,
+		File:       filename,
 		Line:       line,
 		Msg:        msg,
 		ErrTime:    now().UTC(),
@@ -403,8 +403,8 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 	attrs := []slog.Attr{
 		slog.String("Category", cat),
 		slog.String("Type", typ),
-		slog.String("Filename", e.Filename),
-		slog.Int("Line", e.Line),
+		slog.String("ErrSrc", e.File),
+		slog.Int("ErrLine", e.Line),
 		slog.Time("ErrTime", e.ErrTime.UTC()),
 		slog.String("TraceID", traceID),
 	}
@@ -442,8 +442,8 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 	// No need for TraceID as it's already on the span.
 	attrs.Add(attribute.String("Category", cat))
 	attrs.Add(attribute.String("Type", typ))
-	attrs.Add(attribute.String("Filename", e.Filename))
-	attrs.Add(attribute.Int("Line", e.Line))
+	attrs.Add(attribute.String("ErrSrc", e.File))
+	attrs.Add(attribute.Int("ErrLine", e.Line))
 
 	return attrs
 }
