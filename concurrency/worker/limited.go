@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"time"
 
@@ -10,10 +11,23 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+var numCPU int
+
+func init() {
+	currentMaxProcs := runtime.GOMAXPROCS(-1)
+	if currentMaxProcs > 0 && currentMaxProcs < runtime.NumCPU() {
+		numCPU = currentMaxProcs
+		return
+	}
+	numCPU = runtime.NumCPU()
+}
+
 // Limited creates a Limited pool from the Pool. "size" is the number of goroutines that can execute concurrently.
+// If the size is less than 1, it will be set to GOMAXPROCS if that value is less than NumCPU. Otherwise
+// NumCPU will be used.
 func (p *Pool) Limited(size int) *Limited {
 	if size < 1 {
-		panic("cannot have a Limited Pool with size < 1")
+		size = numCPU
 	}
 
 	ch := make(chan struct{}, size)
@@ -67,4 +81,28 @@ func (l *Limited) Wait() {
 // This will use the Limited pool to limit the number of concurrent goroutines. Safer than a sync.WaitGroup.
 func (l *Limited) Group() bSync.Group {
 	return bSync.Group{Pool: l}
+}
+
+// PriorityQueue provides a strict priority queue that can be used to submit jobs to the pool.
+// This will use the Limited pool to limit the number of concurrent jobs. maxSize
+// is the maximum size of the queue. A size < 1 will panic.
+// Note: In a PriorityQueue, jobs are processed in order of priority, with higher priority jobs being
+// processed first. This means that low priority jobs can stay in the queue forever as long as
+// higher priority jobs continue to enter the queue.
+func (l *Limited) PriorityQueue(maxSize int) *Queue {
+	if maxSize < 1 {
+		panic("maxSize must be greater than 0")
+	}
+	d := &Queue{
+		queue: &queue{popping: make(chan struct{}, 1)},
+		done:  make(chan struct{}),
+		size:  make(chan struct{}, maxSize),
+		pool:  l,
+	}
+
+	Default().Submit(
+		context.Background(),
+		d.doWork,
+	)
+	return d
 }
