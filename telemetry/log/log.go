@@ -12,7 +12,13 @@ import (
 	"github.com/gostdlib/base/env/detect"
 )
 
-var defaultLog *slog.Logger
+var defaultLog = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: false, Level: LogLevel}))
+
+// LogLevel is the log level for the program. This is used to set the log level for the program.
+// This is automatically set for the default logger unless .Set() is used to switch out that logger.
+// If the new logger is created from the adapter package, it uses this LogLevel.
+// If not, you must pass this to your logger manually.
+var LogLevel = new(slog.LevelVar) // Info by default
 
 // Default returns the default logger. This logger should only be used outside main() and the
 // gRPC service level if there is code running in a goroutine outside the request handling
@@ -31,16 +37,6 @@ func Default() *slog.Logger {
 func Set(l *slog.Logger) {
 	defaultLog = l
 	slog.SetDefault(l)
-}
-
-// LogLevel is the log level for the program. This is used to set the log level for the program.
-// This is automatically set for the default logger unless .Set() is used to switch out that logger.
-// If the new logger is created from the adapter package, it uses this LogLevel.
-// If not, you must pass this to your logger manually.
-var LogLevel = new(slog.LevelVar) // Info by default
-
-func init() {
-	defaultLog = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: LogLevel}))
 }
 
 // Everything below this is from the standard log package. If it detects we are running in production
