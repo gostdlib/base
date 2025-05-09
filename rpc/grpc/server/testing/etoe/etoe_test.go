@@ -13,12 +13,16 @@ import (
 	"testing"
 	"time"
 
+	grpcContext "github.com/gostdlib/base/context/grpc"
+	"github.com/gostdlib/base/errors"
 	pb "github.com/gostdlib/base/errors/example/proto"
 	goinit "github.com/gostdlib/base/init"
 	grpc "github.com/gostdlib/base/rpc/grpc/server"
 	grpclib "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -39,7 +43,7 @@ type helloService struct {
 
 func (s *helloService) Hello(ctx context.Context, req *pb.HelloReq) (*pb.HelloResp, error) {
 	if req.Name == "" {
-		return nil, fmt.Errorf("name is empty")
+		return nil, errors.E(ctx, Category(codes.Internal), nil, fmt.Errorf("name is empty"))
 	}
 	return &pb.HelloResp{Msg: fmt.Sprintf("Hello, %s!", req.Name)}, nil
 }
@@ -115,8 +119,22 @@ func (r *restClient) restGRPCCall(ctx context.Context, req *pb.HelloReq) (*pb.He
 	return &resp, nil
 }
 
-func TestMostOptions(t *testing.T) {
+// Category represents the category of the error.
+type Category uint32
 
+// Category returns the error category as a string.
+func (c Category) Category() string {
+	return codes.Code(c).String()
+}
+
+func errConverter(ctx context.Context, err errors.Error, md grpcContext.Metadata) (*status.Status, error) {
+	if n, ok := err.Category.(Category); ok {
+		return status.New(codes.Code(n), err.Error()), nil
+	}
+	return status.New(codes.Unknown, err.Error()), nil
+}
+
+func TestMostOptions(t *testing.T) {
 	cert, err := generateSelfSignedCert()
 	if err != nil {
 		panic(err)
@@ -152,6 +170,7 @@ func TestMostOptions(t *testing.T) {
 			grpc.WithGateway(pb.RegisterHelloHandlerFromEndpoint, grpclib.WithTransportCredentials(insecure.NewCredentials())),
 			grpc.WithHTTPServer(otherHTTP),
 			grpc.WithHTTP(handleHelloWorld{}),
+			grpc.WithErrConverter(errConverter),
 			//grpc.WithHealth(hs),
 			grpc.WithServerOptions(grpclib.MaxConcurrentStreams(10)),
 		}
@@ -194,6 +213,15 @@ func TestMostOptions(t *testing.T) {
 		}
 		if resp.Msg != "Hello, John!" {
 			t.Fatalf("TestMostOptions(%s)(grpc call): expected %q, got %q", "Hello, John!", test.name, resp.Msg)
+		}
+
+		// Test err conversion works.
+		resp, err = client.Hello(context.Background(), &pb.HelloReq{})
+		if err == nil {
+			t.Fatalf("TestMostOptions(%s)(grpc call): expected err, got nil", test.name)
+		}
+		if status.Code(err) != codes.Internal {
+			t.Fatalf("TestMostOptions(%s)(grpc call): want err code %v, got %v", test.name, codes.Internal, status.Code(err))
 		}
 
 		// Test GRPC Gateway.

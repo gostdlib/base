@@ -64,8 +64,15 @@ func (s *starter) Run(ctx context.Context) error {
 	s.server.mu.Lock()
 	defer s.server.mu.Unlock()
 
+	var err error
+	for _, o := range s.options {
+		s.opts, err = o(s.opts)
+		if err != nil {
+			return err
+		}
+	}
+
 	for f := s.start; f != nil; {
-		var err error
 		f, err = f(ctx)
 		if err != nil {
 			return err

@@ -172,10 +172,13 @@ base for your package.
 package errors
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -249,9 +252,9 @@ type Error struct {
 	// if the error message is sensitive or contains PII.
 	MsgOverride string
 
-	// Filename is the file that the error was created in. This is automatically
+	// File is the file that the error was created in. This is automatically
 	// filled in by the E().
-	Filename string
+	File string
 	// Line is the line that the error was created on. This is automatically
 	// filled in by the E().
 	Line int
@@ -333,7 +336,7 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 	e := Error{
 		Category:   c,
 		Type:       t,
-		Filename:   filename,
+		File:       filename,
 		Line:       line,
 		Msg:        msg,
 		ErrTime:    now().UTC(),
@@ -403,8 +406,8 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 	attrs := []slog.Attr{
 		slog.String("Category", cat),
 		slog.String("Type", typ),
-		slog.String("Filename", e.Filename),
-		slog.Int("Line", e.Line),
+		slog.String("ErrSrc", e.File),
+		slog.Int("ErrLine", e.Line),
 		slog.Time("ErrTime", e.ErrTime.UTC()),
 		slog.String("TraceID", traceID),
 	}
@@ -442,8 +445,8 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 	// No need for TraceID as it's already on the span.
 	attrs.Add(attribute.String("Category", cat))
 	attrs.Add(attribute.String("Type", typ))
-	attrs.Add(attribute.String("Filename", e.Filename))
-	attrs.Add(attribute.Int("Line", e.Line))
+	attrs.Add(attribute.String("ErrSrc", e.File))
+	attrs.Add(attribute.Int("ErrLine", e.Line))
 
 	return attrs
 }
@@ -518,23 +521,39 @@ func (e Error) Log(ctx context.Context, callID, customerID string, req any) {
 	// Ignore serialization errors, it just means we log less information.
 	switch v := req.(type) {
 	case nil:
-		reqBytes = []byte("<nil>")
 	case proto.Message:
-		reqBytes, _ = protojson.Marshal(v)
+		var err error
+		reqBytes, err = protojson.Marshal(v)
+		if err != nil {
+			reqBytes = fmt.Appendf(reqBytes, "unable to marshal proto.Message due to error: %s", err)
+		}
+	case *http.Request:
+		var err error
+		reqBytes, err = requestToJSON(v)
+		if err != nil {
+			reqBytes = fmt.Appendf(reqBytes, "unable to marshal *http.Request due to error: %s", err)
+		}
 	default:
-		reqBytes, _ = json.Marshal(req)
+		log.Printf("req is %T", req)
+		var err error
+		reqBytes, err = json.Marshal(req)
+		if err != nil {
+			reqBytes = fmt.Appendf(reqBytes, "unable to marshal request %T object due to error: %s", req, err.Error())
+		}
 	}
 
-	if reqBytes == nil {
-		reqBytes = []byte("unable to marshal request object due to error")
+	logAttrs := e.LogAttrs(ctx)
+	var attrs = make([]slog.Attr, 0, 3+len(logAttrs))
+	if customerID != "" {
+		attrs = append(attrs, slog.Any("CustomerID", customerID))
 	}
-
-	var attrs = []slog.Attr{
-		slog.Any("CustomerID", customerID),
-		slog.Any("CallID", callID),
-		slog.Any("Request", bytesToStr(reqBytes)),
+	if callID != "" {
+		attrs = append(attrs, slog.Any("CallID", callID))
 	}
-	attrs = append(attrs, e.LogAttrs(ctx)...)
+	if len(reqBytes) > 0 {
+		attrs = append(attrs, slog.Any("Request", bytesToStr(reqBytes)))
+	}
+	attrs = append(attrs, logAttrs...)
 
 	// Attach any attributes from the error message.
 	if f, ok := e.Msg.(LogAttrer); ok {
@@ -554,6 +573,46 @@ func (e Error) Log(ctx context.Context, callID, customerID string, req any) {
 	}
 
 	log.Default().LogAttrs(ctx, slog.LevelError, errMsg, attrs...)
+}
+
+// JSONRequest is a simplified version of http.Request for JSON serialization
+type JSONRequest struct {
+	Method        string              `json:"method"`
+	URL           string              `json:"url"`
+	Header        map[string][]string `json:"header"`
+	ContentLength int64               `json:"content_length"`
+	Host          string              `json:"host"`
+	RemoteAddr    string              `json:"remote_addr"`
+	RequestURI    string              `json:"request_uri"`
+	Body          string              `json:"body"`
+}
+
+func requestToJSON(r *http.Request) ([]byte, error) {
+	var bodyBytes []byte
+	// Read the original body
+	if r.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body.Close()
+	}
+
+	// Reset the request body so it can be read again
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	jr := JSONRequest{
+		Method:        r.Method,
+		URL:           r.URL.String(),
+		Header:        r.Header,
+		ContentLength: r.ContentLength,
+		Host:          r.Host,
+		RemoteAddr:    r.RemoteAddr,
+		RequestURI:    r.RequestURI,
+		Body:          bytesToStr(bodyBytes),
+	}
+	return json.Marshal(jr)
 }
 
 // bytesToStr converts a byte slice to a string without copying the data.
