@@ -83,6 +83,7 @@ For example, you could create a SQLQueryErr like so:
 				Query: q,
 				Msg:   msg,
 			},
+   			WithCallNum(2),
 		)
 	}
 
