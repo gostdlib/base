@@ -183,7 +183,7 @@ func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...Run
 				if err != nil {
 					otm.ErrorsTotal.Add(ctx, 1)
 				}
-				log.Default().Error(logMsg+": once background task error", logNameKey, name)
+				log.Default().Debug(logMsg+": once background task completed", logNameKey, name)
 			}()
 			err = task(ctx)
 		},
