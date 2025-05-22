@@ -6,6 +6,7 @@ package background
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/gostdlib/base/concurrency/sync"
 	"github.com/gostdlib/base/concurrency/worker"
@@ -18,9 +19,10 @@ import (
 )
 
 const (
-	logNameKey  = "name"
-	logEventKey = "event"
-	logErrorKey = "error"
+	backgroundKey = "backgroundTask"
+	logNameKey    = "name"
+	logEventKey   = "event"
+	logErrorKey   = "error"
 )
 
 // Task is a function that runs in the background.
@@ -39,9 +41,10 @@ type Tasks struct {
 	tm    *tasksMetrics
 }
 
-// New creates a new Tasks object. An application should only create one Tasks object.
+// New creates a new Tasks object. An application should only create one Tasks object. This is usually
+// retrieved via context.Tasks().
 func New(ctx context.Context) *Tasks {
-	p, _ := worker.New(ctx, "background tasks") // Can't error
+	p := worker.Default().Sub(ctx, "background tasks")
 
 	mp := internalCtx.MeterProvider(ctx)
 	meter := mp.Meter(metrics.MeterName(2))
@@ -122,21 +125,45 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 }
 
 func (t *Tasks) taskWrapper(name, logMsg string, bm *backgroundTaskMetrics, task Task) exponential.Op {
-	return func(ctx context.Context, rec exponential.Record) error {
+	return func(ctx context.Context, rec exponential.Record) (err error) {
 		defer func() {
 			if ctx.Err() == nil {
 				bm.Restarts.Add(ctx, 1)
 			}
+			if err != nil {
+				log.Default().LogAttrs(
+					ctx,
+					slog.LevelError,
+					err.Error(),
+					slog.String(backgroundKey, "task"),
+					slog.String(logNameKey, name),
+				)
+			}
 		}()
 
-		log.Default().Info(logMsg+": start background task", logEventKey, "start", logNameKey, name)
-		defer log.Default().Info(logMsg+": end background task", logEventKey, "end", logNameKey, name)
+		log.Default().LogAttrs(
+			ctx,
+			slog.LevelInfo,
+			"start background task",
+			slog.String(backgroundKey, "task"),
+			slog.String(logNameKey, name),
+			slog.String(logEventKey, "start"),
+		)
+		defer log.Default().LogAttrs(
+			ctx,
+			slog.LevelInfo,
+			"end background teask",
+			slog.String(backgroundKey, "task"),
+			slog.String(logNameKey, name),
+			slog.String(logEventKey, "end"),
+		)
 
 		t.tm.BackgroundTasksRunning.Add(ctx, 1)
 		defer t.tm.BackgroundTasksRunning.Add(ctx, -1)
 		t.tm.BackgroundTasksTotal.Add(ctx, 1)
 
-		return task(ctx)
+		err = task(ctx)
+		return err
 	}
 }
 
@@ -182,8 +209,12 @@ func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...Run
 			defer func() {
 				if err != nil {
 					otm.ErrorsTotal.Add(ctx, 1)
+					attrs := []slog.Attr{
+						{Key: backgroundKey, Value: slog.StringValue("once")},
+						{Key: logNameKey, Value: slog.StringValue(name)},
+					}
+					log.Default().LogAttrs(ctx, slog.LevelError, err.Error(), attrs...)
 				}
-				log.Default().Error(logMsg+": once background task error", logNameKey, name)
 			}()
 			err = task(ctx)
 		},

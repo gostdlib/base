@@ -24,23 +24,16 @@ type QJob struct {
 
 // queue implements the heap interface. We are using a custom generic heap instead of the stdlib.
 type queue struct {
-	mu   sync.Mutex
 	jobs []QJob
 
 	popping chan struct{}
 }
 
 func (p *queue) Len() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	return len(p.jobs)
 }
 
 func (p *queue) Less(i, j int) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	// Make submission time a tiebreaker.
 	if p.jobs[i].Priority == p.jobs[j].Priority {
 		return p.jobs[i].submit.Before(p.jobs[j].submit)
@@ -50,48 +43,71 @@ func (p *queue) Less(i, j int) bool {
 }
 
 func (p *queue) Swap(i, j int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		if a := recover(); a != nil {
+			log.Printf("i %d, j %d", i, j)
+			panic(a)
+		}
+	}()
 
 	p.jobs[i], p.jobs[j] = p.jobs[j], p.jobs[i]
 }
 
 func (p *queue) Push(ctx context.Context, x QJob) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	p.jobs = append(p.jobs, x)
 }
 
 func (p *queue) Pop(ctx context.Context) QJob {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.jobs) == 0 {
-		return QJob{}
+	l := len(p.jobs)
+	if l == 0 {
+		panic("bug: trying to Pop off an empty queue, which is a serious flaw in this package")
+	}
+	if l == 1 {
+		job := p.jobs[0]
+		p.jobs = nil
+		return job
 	}
 
 	n := len(p.jobs) - 1
 	job := p.jobs[n]
 	p.jobs = p.jobs[0:n]
-	if len(p.jobs) == 0 {
-		select {
-		case p.popping <- struct{}{}:
-		default:
-		}
-	}
 	return job
 }
 
 // Queue represents a priority queue for jobs. This can be created from a Limited Pool via Queue().
 // If two jobs have the same priority, the job that was submitted first will be processed first.
 type Queue struct {
+	done        chan struct{}
+	running     atomic.Int64
+	queueLen    atomic.Int64
+	queueWait   sync.WaitGroup
+	processWait sync.WaitGroup
+	size        chan struct{}
+	mu          sync.Mutex
+	next        chan QJob
+	pool        *Limited
+
 	queue *queue
-	done  chan struct{}
-	count atomic.Int64
-	wait  sync.WaitGroup
-	size  chan struct{}
-	pool  *Limited
+}
+
+// newQueue returns a new priority queue. This is called from Limited.PriorityQueue().
+func newQueue(maxSize int, l *Limited) *Queue {
+	if maxSize < 1 {
+		panic("maxSize must be greater than 0")
+	}
+	d := &Queue{
+		queue: &queue{},
+		done:  make(chan struct{}),
+		size:  make(chan struct{}, maxSize),
+		next:  make(chan QJob, 1),
+		pool:  l,
+	}
+
+	Default().Submit(
+		context.Background(),
+		d.doWork,
+	)
+	return d
 }
 
 // Close closes the queue. Be sure that the queue is empty before closing.
@@ -99,10 +115,14 @@ func (d *Queue) Close() {
 	close(d.done)
 }
 
+func (d *Queue) Running() int {
+	return int(d.running.Load())
+}
+
 // QueueLen returns the size of the queue not processed. This does not include QJobs that are
 // currently being processed.
 func (d *Queue) QueueLen() int {
-	return int(d.count.Load())
+	return int(d.queueLen.Load()) + len(d.next)
 }
 
 // Wait waits for the queue to empty and processing to be completed. This will return an
@@ -113,14 +133,8 @@ func (d *Queue) Wait(ctx context.Context) error {
 	Default().Submit(
 		ctx,
 		func() {
-			if d.QueueLen() > 0 {
-				for range d.queue.popping {
-					if d.QueueLen() == 0 {
-						break
-					}
-				}
-			}
-			d.wait.Wait()
+			d.queueWait.Wait()
+			d.processWait.Wait()
 			close(done)
 		},
 	)
@@ -152,30 +166,48 @@ func (d *Queue) Submit(ctx context.Context, job QJob) error {
 	case d.size <- struct{}{}:
 	}
 
+	d.queueLen.Add(1)
+	d.processWait.Add(1)
+
+	d.mu.Lock()
 	heap.Push(ctx, d.queue, job)
-	d.count.Add(1)
+	if len(d.next) == 0 && d.queue.Len() != 0 {
+		d.next <- heap.Pop(ctx, d.queue)
+	}
+	d.mu.Unlock()
+
 	return nil
 }
 
 // doWork simply sends our QJobs to be done by the worker pool.
 func (d *Queue) doWork() {
+	ctx := context.Background()
+
 	for {
+		var job QJob
 		select {
 		case <-d.done:
 			return
-		case <-d.size:
+		case job = <-d.next:
+			<-d.size
+			d.mu.Lock()
+			if len(d.next) == 0 && d.queue.Len() != 0 {
+				d.next <- heap.Pop(ctx, d.queue)
+			}
+			d.mu.Unlock()
 		}
 
-		job := heap.Pop(context.Background(), d.queue)
-		d.count.Add(-1)
+		d.queueLen.Add(-1)
+
 		if job.Work == nil {
 			panic("Bug: job has no work")
 		}
 
-		d.wait.Add(1)
 		f := func() {
-			defer d.wait.Done()
+			d.running.Add(1)
 			job.Work()
+			d.running.Add(-1)
+			d.processWait.Done()
 		}
 
 		if err := d.pool.Submit(context.Background(), f); err != nil {
