@@ -116,7 +116,7 @@ type initer struct {
 	endpoint          string
 
 	prodProvider     func(context.Context, string, float64) (*sdkTrace.TracerProvider, error)
-	localProvider    func(context.Context) (*sdkTrace.TracerProvider, error)
+	localProvider    func(context.Context, io.Writer) (*sdkTrace.TracerProvider, error)
 	setTraceProvider func(tp trace.TracerProvider)
 }
 
@@ -166,7 +166,7 @@ func (i *initer) Init() error {
 		if i.localTraceDisable {
 			return nil
 		}
-		defaultTP, err = i.localProvider(ctx)
+		defaultTP, err = i.localProvider(ctx, os.Stderr)
 		if err != nil {
 			return fmt.Errorf("could not create a new stdout trace provider: %v", err)
 		}
@@ -230,17 +230,15 @@ func prodProvider(ctx context.Context, endpoint string, sampleRate float64) (*sd
 	return tp, nil
 }
 
-var stderr = stderrWriter{os.Stderr}
-
 // localProvider creates a new trace provider that writes to stderr. This always samples.
-func localProvider(ctx context.Context) (*sdkTrace.TracerProvider, error) {
+func localProvider(ctx context.Context, w io.Writer) (*sdkTrace.TracerProvider, error) {
 	res, err := resources(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create opentelemetry resource: %w", err)
 	}
 
 	exp, err := stdouttrace.New(
-		stdouttrace.WithWriter(stderr),
+		stdouttrace.WithWriter(w),
 		stdouttrace.WithPrettyPrint(),
 	)
 	if err != nil {
