@@ -26,7 +26,7 @@ func (c *CopyValue) Copy() *CopyValue {
 func TestWriteProtect(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	ctx := context.Background()
-	wp := WProtect[CopyValue, *CopyValue] {}
+	wp := WProtect[CopyValue, *CopyValue]{}
 	want := &CopyValue{String: "hello", Slice: []int{1, 2, 3}}
 
 	wp.Set(want)

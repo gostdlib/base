@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kylelemons/godebug/pretty"
 	baseTrace "github.com/gostdlib/base/telemetry/otel/trace"
+	"github.com/kylelemons/godebug/pretty"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
