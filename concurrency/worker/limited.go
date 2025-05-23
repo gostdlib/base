@@ -90,19 +90,5 @@ func (l *Limited) Group() bSync.Group {
 // processed first. This means that low priority jobs can stay in the queue forever as long as
 // higher priority jobs continue to enter the queue.
 func (l *Limited) PriorityQueue(maxSize int) *Queue {
-	if maxSize < 1 {
-		panic("maxSize must be greater than 0")
-	}
-	d := &Queue{
-		queue: &queue{popping: make(chan struct{}, 1)},
-		done:  make(chan struct{}),
-		size:  make(chan struct{}, maxSize),
-		pool:  l,
-	}
-
-	Default().Submit(
-		context.Background(),
-		d.doWork,
-	)
-	return d
+	return newQueue(maxSize, l)
 }

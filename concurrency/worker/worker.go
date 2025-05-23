@@ -8,27 +8,33 @@ jobs until they are idle for a certain amount of time. At that point they will b
 This prevents work from being blocked by a queue that is full.
 
 This pool can create other syncronization primitives such as a Limited pool that allows reuse while
-limiting the number of concurrent goroutines. You can also create a Group object that will allow
-safe execution of a number of goroutines and then wait for them to finish.
+limiting the number of concurrent goroutines. You can also create a Group object, an alternative to WaitGroup,
+that will allow safe execution of a number of goroutines and then wait for them to finish.
 
 The Pool will also provide metrics on the number of goroutines that have been created and are running.
 
-The Pool is NOT for background processing. It is for processing that needs to be done in the foreground
-but you don't want to spin off a new goroutine for each job. For background processing, you should use
-the base/concurrency/background package.
+The Pool is NOT for background processing that has no return values. It is for processing that needs to
+be done in the foreground but you don't want to spin off a new goroutine for each job. For background
+processing, you should use the base/concurrency/background package.
+
+Normal way of getting a Pool (using the default Pool):
+
+	pool := context.Pool(ctx)
+
+Creating a Pool that has its own metrics:
+
+	pool := context.Pool(ctx).Sub(ctx, "poolNameUniqueToPkg")
+
+Creating a completely separate Pool (rarely needed):
+
+	pool, err := worker.New(ctx, "myPool")
+	// Wait for the pool to finish and stop all goroutines. Because we didn't set a deadline
+	// this will wait up to 30 seconds. See Close() for details.
+	defer p.Close(ctx)
 
 Example of creating and using a Pool:
 
 	ctx := context.Background() // Use base/context package to create a context.
-
-	// Create a new Pool.
-	p, err := worker.New(ctx, "myPool")
-	if err != nil {
-		panic(err)
-	}
-	// Wait for the pool to finish and stop all goroutines. Because we didn't set a deadline
-	// this will wait up to 30 seconds. See Close() for details.
-	defer p.Close(ctx)
 
 	// Submit a job to the pool.
 	// This will be run by an existing goroutine in the pool.
@@ -36,7 +42,7 @@ Example of creating and using a Pool:
 	// If the context is canceled before the job is run, the job will not be run.
 	// If the context is canceled after the job is run, it is the responsibility of the job to check the context
 	// and return if it is canceled.
-	err = p.Submit(
+	err = pool.Submit(
 		ctx,
 		func() { fmt.Println("Hello, world!") },
 	})
@@ -47,17 +53,12 @@ but it is not necessary. If you need to wait for a specific group of goroutines 
 
 Example of using the pool for a WaitGroup effect:
 
-	g := p.Group()
+	g := pool.Group()
 
 	// Spin off a goroutine that will run a job.
-	g.Go(
+	_ := g.Go(
 		ctx,
 		func(ctx context.Context) error {
-		 	// The passed context can be used to check for cancellation and
-			// to record information in the OTEL span.
-			if err := context.Cause(ctx); err != nil {
-				return err
-			}
 			fmt.Println("Hello, world!")
 			return nil
 		},
@@ -68,6 +69,8 @@ Example of using the pool for a WaitGroup effect:
 	if err := g.Wait(ctx); err != nil {
 		// Do something
 	}
+
+The above ignores the error in g.Go(), which you only need to look at if supporting Context cancellation.
 
 If you need to limit the number of concurrent goroutines that can run for something, you can create a Limited
 pool from the Pool.
@@ -104,12 +107,19 @@ You can also use the Limited pool with a WaitGroup effect:
 		// Do something
 	}
 
+We also provide a PriorityQueue for running jobs from Limited pools.
+
+	for i, work := range []func() {
+		job := QJob{Priority: i, Work: work}
+		limitedPool.Submit(ctx, job)
+	}
+
 This package also offers a Promise object for submitting a job and getting the result back. This is useful for
 when you want to run a job, do some other work, and then get the result back.
 
 	p := NewPromise[string]()
 
-	g.Go(
+	_ := g.Go(
 		ctx,
 		func() error {
 			p.Set(ctx, "Hello, world!", nil)
@@ -139,7 +149,7 @@ import (
 // Pool provides a worker pool that can be used to submit functions to be run by a goroutine. This provides
 // goroutine reuse in a non-blocking way. The pool will have an always available number of goroutines equal
 // to the number of CPUs on the machine. Any Submit() calls that exceed this number will cause a new goroutine
-// to be created and stored in a sync.Pool for reuse. You can create other syncronization primitives
+// to be created that will run until some idle timeout. You can create other syncronization primitives
 // such as a Limited pool that allows reuse while limiting the number of concurrent goroutines. You can also
 // create a Group object that will allow safe execution of a number of goroutines and then wait for them to
 // finish. Generally you only need to use a single Pool for an entire application. If using the
@@ -153,6 +163,9 @@ type Pool struct {
 	running    atomic.Int64
 	goRoutines atomic.Int64
 	metrics    *poolMetrics
+
+	// child indicates this pool is not a root pool but one that is created with .Sub().
+	child bool
 }
 
 type poolOpts struct {
@@ -205,7 +218,7 @@ func WithRunnerTimeout(timeout time.Duration) func(poolOpts) (poolOpts, error) {
 
 // New creates a new worker pool. The name is used for logging and metrics. The pool will have an always
 // available number of goroutines equal to the number of CPUs on the machine. Any Submit() calls that exceed
-// this number will cause a new goroutine to be created and stored in a sync.Pool for reuse. The context should
+// this number will cause a new goroutine to be created. The context should
 // have the meter provider via our context package to allow for metrics to be emitted.
 func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	opts := poolOpts{}.defaults()
@@ -220,7 +233,7 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	queue := make(chan runArgs, 1)
 
 	mp := internalCtx.MeterProvider(ctx)
-	meter := mp.Meter(metrics.MeterName(2))
+	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
 	pm := newPoolMetrics(meter)
 
 	p := &Pool{
@@ -238,19 +251,28 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	return p, nil
 }
 
-// Close waits for all submitted jobs to stop, then stops all goroutines. Once called the pool is no longer
-// usable. Close will wait until the passed Context deadline for everything to stop. If the deadline is not
-// set, this has a maximum wait time of 30 * time.Second. If the pool is not closed by then, it will
-// return. If you need to wait for all jobs to finish no matter how long it takes, use Wait() then call Close().
-// However, this can lead to a deadlock if you are waiting for a job that never finishes. If ctx is cancelled,
-// Close will return immediately with the results of context.Cause(ctx).
+// Close waits for all submitted jobs to stop, then stops all goroutines. It is ALMOST ALWAYS A BAD IDEA
+// TO USE THIS. Almost always using this is using a bad pattern. To use this safely you should not use
+// .Sub(), .Group(), ... that can use this pool, because then you don't have control of tasks that can take too
+// long. The best use case is to set a default pool that Context uses and then make subpools, limited pools and
+// groups from this one pool. This gives maximum performance and resource control. And this can live until the
+// program dies.
+//
+// If you really need Close(), it will wait until the passed Context deadline for everything to stop. If the
+// deadline is not set, this has a maximum wait time of 30 * time.Second. If the pool is not closed by then,
+// it will return. If you need to wait for all jobs to finish no matter how long it takes,
+// use Wait() then call Close(). However, this can lead to a deadlock if you are waiting for a job that
+// never finishes. If ctx is cancelled, Close will return immediately with the results of context.Cause(ctx).
+// Closing a Sub pool will not have any effect on the parent.
 func (p *Pool) Close(ctx context.Context) error {
 	done := make(chan struct{})
 
 	go func() {
-		p.wg.Wait()
-		close(p.queue)
-		close(done)
+		p.wg.Wait() // Wait for execution to finish.
+		if !p.child {
+			close(p.queue) // Kill all goroutines.
+		}
+		close(done) // Inform this function that we are done.
 	}()
 
 	var timer *time.Timer
@@ -273,24 +295,32 @@ func (p *Pool) Close(ctx context.Context) error {
 
 // Wait will wait for all goroutines in the pool to finish execution. The pool's goroutines will continue to
 // run and be available for reuse. Rarely used. Generally you should use .Group() to wait for a specific group of
-// goroutines to finish.
+// goroutines to finish. If a Sub pool, this will only wait for its running goroutines, not the parent. The parent
+// also won't wait for the children.
 func (p *Pool) Wait() {
 	p.wg.Wait()
 }
 
-// Len returns the current size of the pool.
+// Len returns the current entries in the the channel that distributes to the pool.
 func (p *Pool) Len() int {
 	return len(p.queue)
 }
 
-// Running returns the number of running jobs in the pool.
+// Running returns the number of running jobs in the pool. If this is a sub pool, it will only be the
+// number for that pool
 func (p *Pool) Running() int {
 	return int(p.running.Load())
 }
 
-// GoRoutines returns the number of goroutines that are currently in the pool.
+// GoRoutines returns the total number of goroutines that are currently in the pool. If this is Sub pool,
+// this will be the number in the parent pool.
 func (p *Pool) GoRoutines() int {
 	return int(p.goRoutines.Load())
+}
+
+// StaticPool is the number of goroutines in the static pool in the pool or if a Sub pool, the parent pool.
+func (p *Pool) StaticPool() int {
+	return int(p.opts.size)
 }
 
 // Submit submits the function to be executed. If the context is canceled before the
@@ -333,6 +363,37 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 	}
 	p.submitEvent(spanner, now)
 	return nil
+}
+
+// Group returns a sync.Group that can be used to spin off goroutines and then wait for them to finish.
+// This will use the Pool. Safer than a sync.Group.
+func (p *Pool) Group() bSync.Group {
+	return bSync.Group{Pool: p}
+}
+
+// Sub is used to create a new Pool that is backed by the current pool. This allows having
+// shared pools that record different metrics.
+func (p *Pool) Sub(ctx context.Context, name string) *Pool {
+	mp := internalCtx.MeterProvider(ctx)
+	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
+	pm := newPoolMetrics(meter)
+
+	// Even though we are backed by a pool that might have more goroutines, this has its own size.
+	var goRoutines int64
+	if p.opts.size > 0 {
+		goRoutines = int64(p.opts.size)
+	} else {
+		goRoutines = int64(runtime.NumCPU())
+	}
+
+	pool := &Pool{
+		queue:   p.queue,
+		opts:    p.opts,
+		metrics: pm,
+		child:   true,
+	}
+	pool.goRoutines.Add(goRoutines)
+	return pool
 }
 
 func (p *Pool) submitEvent(spanner span.Span, t time.Time) {
@@ -448,10 +509,4 @@ func (r runner) runTimer(t *time.Timer) error {
 	case <-t.C:
 		return fmt.Errorf("runner timed out")
 	}
-}
-
-// Group returns a sync.Group that can be used to spin off goroutines and then wait for them to finish.
-// This will use the Pool. Safer than a sync.Group.
-func (p *Pool) Group() bSync.Group {
-	return bSync.Group{Pool: p}
 }

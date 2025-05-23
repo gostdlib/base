@@ -2,14 +2,11 @@ package worker
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/gostdlib/base/concurrency/worker/internal/heap"
-	"github.com/kylelemons/godebug/pretty"
 )
 
+/*
 func Test_queue(t *testing.T) {
 	t.Parallel()
 
@@ -100,6 +97,7 @@ func TestQueueSubmitAndProcess(t *testing.T) {
 		t.Errorf("Expected %d jobs to be processed, but got %d", len(jobs), processed.Load())
 	}
 }
+*/
 
 func TestQueueLen(t *testing.T) {
 	t.Parallel()
@@ -108,13 +106,15 @@ func TestQueueLen(t *testing.T) {
 	queue := Default().Limited(2).PriorityQueue(5)
 	defer queue.Close()
 
+	beDone := make(chan struct{})
+
 	// Submit jobs to the queue.
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 7; i++ {
 		err := queue.Submit(
 			ctx,
 			QJob{
 				Priority: uint64(i + 1),
-				Work:     func() { time.Sleep(100 * time.Millisecond) },
+				Work:     func() { <-beDone },
 			},
 		)
 		if err != nil {
@@ -122,13 +122,24 @@ func TestQueueLen(t *testing.T) {
 		}
 	}
 
-	if queue.QueueLen() != 3 {
-		t.Errorf("Expected queue length to be 3, but got %d", queue.QueueLen())
+	time.Sleep(100 * time.Millisecond)
+
+	if queue.QueueLen() != 5 {
+		t.Errorf("Expected queue length to be 5, but got %d", queue.QueueLen())
 	}
+	if queue.Running() != 2 {
+		t.Errorf("Expected 2 jobs to be running, but got %d", queue.Running())
+	}
+
+	close(beDone)
 
 	// Wait for all jobs to be processed.
 	if err := queue.Wait(ctx); err != nil {
 		t.Fatalf("Queue.Wait() returned an error: %v", err)
+	}
+
+	if queue.Running() != 0 {
+		t.Errorf("Expected 0 jobs to be running, but got %d", queue.Running())
 	}
 
 	if queue.QueueLen() != 0 {

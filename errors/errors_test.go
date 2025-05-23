@@ -274,6 +274,8 @@ func (f fakeSpan) SpanContext() otelTrace.SpanContext {
 }
 
 func TestStackTrace(t *testing.T) {
+	// Do not do t.Parallel().
+
 	tests := []struct {
 		name      string
 		withTrace bool
