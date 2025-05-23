@@ -3,9 +3,10 @@ package trace
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
-	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,16 +31,16 @@ func TestIniter(t *testing.T) {
 	nonProdEnv := detect.RunEnv{}
 
 	prodProviderOk := func(ctx context.Context, endpoint string, sampleRate float64) (*sdkTrace.TracerProvider, error) {
-		return localProvider(ctx)
+		return localProvider(ctx, nil)
 	}
 	prodProviderErr := func(context.Context, string, float64) (*sdkTrace.TracerProvider, error) {
 		return nil, errors.New("error")
 	}
 
-	localProviderOk := func(ctx context.Context) (*sdkTrace.TracerProvider, error) {
-		return localProvider(ctx)
+	localProviderOk := func(ctx context.Context, w io.Writer) (*sdkTrace.TracerProvider, error) {
+		return localProvider(ctx, nil)
 	}
-	localProviderErr := func(ctx context.Context) (*sdkTrace.TracerProvider, error) {
+	localProviderErr := func(ctx context.Context, w io.Writer) (*sdkTrace.TracerProvider, error) {
 		return nil, errors.New("error")
 	}
 
@@ -50,7 +51,7 @@ func TestIniter(t *testing.T) {
 		localTraceDisable bool
 		defaultTP         *sdkTrace.TracerProvider
 		prodProvider      func(context.Context, string, float64) (*sdkTrace.TracerProvider, error)
-		localProvider     func(context.Context) (*sdkTrace.TracerProvider, error)
+		localProvider     func(context.Context, io.Writer) (*sdkTrace.TracerProvider, error)
 
 		wantErr            bool
 		wantSetTraceCalled bool
@@ -186,19 +187,31 @@ func TestProdProvider(t *testing.T) {
 	}
 }
 
+type lockedBuilder struct {
+	b  *strings.Builder
+	mu sync.Mutex
+}
+
+func (b *lockedBuilder) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.b.Write(p)
+}
+
+func (b *lockedBuilder) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.b.String()
+}
+
 func TestLocalProvider(t *testing.T) {
 	ctx := context.Background()
 
-	buff := &strings.Builder{}
+	buff := &lockedBuilder{b: &strings.Builder{}}
 
-	t.Cleanup(
-		func() {
-			stderr = stderrWriter{os.Stderr}
-		},
-	)
-	stderr = stderrWriter{buff}
-
-	tp, err := localProvider(context.Background())
+	tp, err := localProvider(context.Background(), buff)
 	if err != nil {
 		panic(err)
 	}
@@ -212,7 +225,6 @@ func TestLocalProvider(t *testing.T) {
 	if !strings.Contains(buff.String(), "testEvent") {
 		t.Errorf("TestLocalProvider: cannot find our testEvent in stderr, got:\n%s", buff.String())
 	}
-
 }
 
 func TestResources(t *testing.T) {
