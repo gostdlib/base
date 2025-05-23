@@ -140,7 +140,7 @@ func New(ctx context.Context, options ...Option) (context.Context, Span) {
 func newOptions(options ...Option) spanOpts {
 	opts := spanOpts{
 		startOptions: []trace.SpanStartOption{
-			// This option will be overriden if another WithSpanKind() is passed.
+			// This option will be overridden if another WithSpanKind() is passed.
 			// You can pass this with WithSpanStartOption().
 			trace.WithSpanKind(trace.SpanKindInternal),
 		},

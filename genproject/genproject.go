@@ -53,7 +53,7 @@ func main() {
 	defer f.Close()
 	formatWrite(f, tmpls, "main.go.tmpl")
 
-	fmt.Println("Finished. Remeber to run `go generate ./...` before trying to compile.")
+	fmt.Println("Finished. Remember to run `go generate ./...` before trying to compile.")
 }
 
 func formatWrite(f *os.File, tmpls *template.Template, tmpl string) {

@@ -44,7 +44,7 @@ func (i intType[T]) Set(val T) intType[T] {
 	return i
 }
 
-// Unset retuns the value to its zero value and marks it as unset.
+// Unset happens the value to its zero value and marks it as unset.
 func (i intType[T]) Unset() intType[T] {
 	var zero T
 	i.v = zero

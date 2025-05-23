@@ -30,7 +30,7 @@ func (i Bool) Set(val bool) Bool {
 	return i
 }
 
-// Unset retuns the value to its zero value and marks it as unset.
+// Unset happens the value to its zero value and marks it as unset.
 func (i Bool) Unset() Bool {
 	i.v = false
 	i.isSet = false

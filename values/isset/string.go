@@ -30,7 +30,7 @@ func (i String) Set(val string) String {
 	return i
 }
 
-// Unset retuns the value to its zero value and marks it as unset.
+// Unset happens the value to its zero value and marks it as unset.
 func (i String) Unset() String {
 	i.v = ""
 	i.isSet = false

@@ -35,7 +35,7 @@ func (i floatType[T]) Set(val T) floatType[T] {
 	return i
 }
 
-// Unset retuns the value to its zero value and marks it as unset.
+// Unset happens the value to its zero value and marks it as unset.
 func (i floatType[T]) Unset() floatType[T] {
 	var zero T
 	i.v = zero

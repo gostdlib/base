@@ -25,7 +25,7 @@ send to stderr. If this is not needed, --localTraceDisable can be set to true to
 The default production sampler is a filter based sampler that can be updated to capture certain traces based
 on metadata. It has a secondary sampler that is set to --traceSampleRate, which defaults to 0.01 or 1%.
 
-The default production sampler can be overriden by calling Set(tp *sdkTrace.TracerProvider) before
+The default production sampler can be overridden by calling Set(tp *sdkTrace.TracerProvider) before
 init.Service() is called. The new trace provider can have a different sampler or other settings.
 
 If you simply want to adjust the sampling rate, you can use the flag --traceSampleRate.

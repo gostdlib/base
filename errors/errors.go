@@ -65,52 +65,52 @@ This will prevent needing to import multiple "errors" packages with renaming.
 This package is meant to allow extended errors that add additional attributes to our "Error" type.
 For example, you could create a SQLQueryErr like so:
 
-	// SQLQueryErr is an example of a custom error that can be used to wrap a SQL error for more information.
-	// Should be created with NewSQLQueryErr().
-	type SQLQueryErr struct {
-		// Query is the SQL query that was being executed.
-		Query string
-		// Msg is the error message from the SQL query.
-		Msg   error
-	}
-
-	// NewSQLQueryErr creates a new SQLQueryErr wrapped in Error.
-	func NewSQLQueryErr(q string, msg error) Error {
-		return E(
-			CatInternal,
-			TypeUnknown,
-			SQLQueryErr{
-				Query: q,
-				Msg:   msg,
-			},
-   			WithCallNum(2),
-		)
-	}
-
-	// Error returns the error message.
-	func (s SQLQueryErr) Error() string {
-		return s.Msg.Error()
-	}
-
-	// Is returns true if the target is an SQLQueryErr type regardless of the Query or Msg.
-	func (s SQLQueryErr) Is(target error) bool {
-		if _, ok := target.(SQLQueryErr); ok {
-			return true
+		// SQLQueryErr is an example of a custom error that can be used to wrap a SQL error for more information.
+		// Should be created with NewSQLQueryErr().
+		type SQLQueryErr struct {
+			// Query is the SQL query that was being executed.
+			Query string
+			// Msg is the error message from the SQL query.
+			Msg   error
 		}
-		return false
-	}
 
-	// Unwrap unwraps the error.
-	func (s SQLQueryErr) Unwrap() error {
-		return s.Msg
-	}
+		// NewSQLQueryErr creates a new SQLQueryErr wrapped in Error.
+		func NewSQLQueryErr(q string, msg error) Error {
+			return E(
+				CatInternal,
+				TypeUnknown,
+				SQLQueryErr{
+					Query: q,
+					Msg:   msg,
+				},
+	   			WithCallNum(2),
+			)
+		}
 
-	// Attrs implements the Attrer.Attrs() interface.
-	func (s SQLQueryErr) Attrs() []slog.Attr {
-		// You will notice here that I group the attributes with a category that includes the package path.
-		// This is to prevent attribute name collisions with other packages.
-		return []slog.Attr{slog.Group("package/path.SQLQueryErr", "Query", s.Query)}
-	}
+		// Error returns the error message.
+		func (s SQLQueryErr) Error() string {
+			return s.Msg.Error()
+		}
+
+		// Is returns true if the target is an SQLQueryErr type regardless of the Query or Msg.
+		func (s SQLQueryErr) Is(target error) bool {
+			if _, ok := target.(SQLQueryErr); ok {
+				return true
+			}
+			return false
+		}
+
+		// Unwrap unwraps the error.
+		func (s SQLQueryErr) Unwrap() error {
+			return s.Msg
+		}
+
+		// Attrs implements the Attrer.Attrs() interface.
+		func (s SQLQueryErr) Attrs() []slog.Attr {
+			// You will notice here that I group the attributes with a category that includes the package path.
+			// This is to prevent attribute name collisions with other packages.
+			return []slog.Attr{slog.Group("package/path.SQLQueryErr", "Query", s.Query)}
+		}
 
 Now a program can create a compatible error that will detail our additional attributes for logging.
 
