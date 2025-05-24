@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"runtime"
+	"strconv"
 	syncLib "sync"
 	"testing"
 	"time"
@@ -12,73 +13,183 @@ import (
 	"github.com/tidwall/lotsa"
 )
 
-func TestPromiseWithPool(t *testing.T) {
+func TestNewPromise(t *testing.T) {
 	t.Parallel()
 
-	pool := sync.NewPool(
-		context.Background(),
-		"",
-		func() chan Response[int] {
-			return make(chan Response[int], 1)
-		},
-		sync.WithBuffer(10),
-	)
+	input := make(chan Promise[int, string], 1)
 
-	tests := []struct {
-		name string
-		pool *sync.Pool[chan Response[int]]
-	}{
-		{
-			name: "With pool",
-			pool: pool,
-		},
-		{
-			name: "Without pool",
-			pool: nil,
-		},
+	ctx := context.Background()
+	wg := syncLib.WaitGroup{}
+
+	start := time.Now()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lotsa.Ops(
+			1000000,
+			runtime.NumCPU(),
+			func(i, thread int) {
+				p := New[int, string](ctx, i)
+				input <- p
+				resp, _ := p.Get(context.Background()) // Can't error on a non-cancelled context.
+				if resp.V != "hello"+strconv.Itoa(i) {
+					t.Errorf("expected %s, got %s", "hello"+strconv.Itoa(i), resp.V)
+				}
+			},
+		)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(input)
+	}()
+
+	wgSetters := syncLib.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wgSetters.Add(1)
+		go func() {
+			defer wgSetters.Done()
+			for p := range input {
+				p.Set(context.Background(), "hello"+strconv.Itoa(p.In), nil)
+			}
+		}()
 	}
 
-	for _, test := range tests {
-		start := time.Now()
+	wgSetters.Wait()
+	log.Println("TestNewPromise: Time taken for", time.Since(start))
+}
 
-		input := make(chan Promise[int, int], 1)
+func TestMaker(t *testing.T) {
+	t.Parallel()
 
-		wg := syncLib.WaitGroup{}
+	input := make(chan Promise[int, string], 1)
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			lotsa.Ops(
-				1000000,
-				runtime.NumCPU(),
-				func(i, thread int) {
-					p := NewPromise[int, int](i, WithPool(test.pool))
-					input <- p
-					resp, _ := p.Get(context.Background()) // Can't error on a non-cancelled context.
-					if resp.V != i+1 {
-						t.Errorf("expected %d, got %d", i+1, resp.V)
-					}
-				},
-			)
-		}()
+	ctx := context.Background()
+	wg := syncLib.WaitGroup{}
+	maker := Maker[int, string]{PoolOptions: []sync.Option{sync.WithBuffer(10)}}
 
-		go func() {
-			wg.Wait()
-			close(input)
-		}()
-
-		wgSetters := syncLib.WaitGroup{}
-		for i := 0; i < runtime.NumCPU(); i++ {
-			wgSetters.Add(1)
-			go func() {
-				defer wgSetters.Done()
-				for p := range input {
-					p.Set(context.Background(), p.In+1, nil)
+	start := time.Now()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lotsa.Ops(
+			1000000,
+			runtime.NumCPU(),
+			func(i, thread int) {
+				p := maker.New(ctx, i)
+				input <- p
+				resp, _ := p.Get(context.Background()) // Can't error on a non-cancelled context.
+				if resp.V != "hello"+strconv.Itoa(i) {
+					t.Errorf("expected %s, got %s", "hello"+strconv.Itoa(i), resp.V)
 				}
-			}()
-		}
+			},
+		)
+	}()
 
-		wgSetters.Wait()
-		log.Println("Time taken for", test.name, time.Since(start))
+	go func() {
+		wg.Wait()
+		close(input)
+	}()
+
+	wgSetters := syncLib.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wgSetters.Add(1)
+		go func() {
+			defer wgSetters.Done()
+			for p := range input {
+				p.Set(context.Background(), "hello"+strconv.Itoa(p.In), nil)
+			}
+		}()
+	}
+
+	wgSetters.Wait()
+	log.Println("TestMaker: Time taken for", time.Since(start))
+}
+
+func BenchmarkNew(b *testing.B) {
+	b.ReportAllocs()
+
+	input := make(chan Promise[int, string], 1)
+
+	ctx := context.Background()
+	wg := syncLib.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lotsa.Ops(
+			1000000,
+			runtime.NumCPU(),
+			func(i, thread int) {
+				p := New[int, string](ctx, i)
+				input <- p
+				resp, _ := p.Get(context.Background()) // Can't error on a non-cancelled context.
+				if resp.V != "hello"+strconv.Itoa(i) {
+					b.Errorf("expected %s, got %s", "hello"+strconv.Itoa(i), resp.V)
+				}
+			},
+		)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(input)
+	}()
+
+	wgSetters := syncLib.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wgSetters.Add(1)
+		go func() {
+			defer wgSetters.Done()
+			for p := range input {
+				p.Set(context.Background(), "hello"+strconv.Itoa(p.In), nil)
+			}
+		}()
+	}
+
+	wgSetters.Wait()
+
+}
+
+func BenchmarkMaker(b *testing.B) {
+	b.ReportAllocs()
+
+	input := make(chan Promise[int, string], 1)
+	ctx := context.Background()
+	wg := syncLib.WaitGroup{}
+	maker := Maker[int, string]{PoolOptions: []sync.Option{sync.WithBuffer(10)}}
+
+	b.ResetTimer()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lotsa.Ops(
+			1000000,
+			runtime.NumCPU(),
+			func(i, thread int) {
+				p := maker.New(ctx, i)
+				input <- p
+				resp, _ := p.Get(context.Background()) // Can't error on a non-cancelled context.
+				if resp.V != "hello"+strconv.Itoa(i) {
+					b.Errorf("expected %s, got %s", "hello"+strconv.Itoa(i), resp.V)
+				}
+			},
+		)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(input)
+	}()
+
+	wgSetters := syncLib.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wgSetters.Add(1)
+		go func() {
+			defer wgSetters.Done()
+			for p := range input {
+				p.Set(context.Background(), "hello"+strconv.Itoa(p.In), nil)
+			}
+		}()
 	}
 }
