@@ -85,7 +85,7 @@ If you want to get all the benefits of Pool metrics, create the Pool with NewPoo
 		},
 	)
 
-There are also a few new syncronization primitives for reducing lock contention.
+There are also a few new synchronization primitives for reducing lock contention.
 
 WProtect provides a type that allows you to protect a value via atomic.Pointer. This is useful for when you
 have a value that is read frequently and written to infrequently. It is not a replacement for a mutex as you must

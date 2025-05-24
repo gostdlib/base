@@ -72,7 +72,7 @@ func WithMeterOptions(meterOpts ...metric.MeterOption) Option {
 }
 
 // WithMeterPrefixLevel sets the prefix for a meter. This is "[package path]/[package name]" of the caller
-// of NewPool. However, occassionally you may want this to be a level higher in the call stack. 0
+// of NewPool. However, occasionally you may want this to be a level higher in the call stack. 0
 // will be the same as the default(the caller of NewPool), 1 would be the caller of the function that
 // called NewPool, etc.
 func WithMeterPrefixLevel(l int) Option {

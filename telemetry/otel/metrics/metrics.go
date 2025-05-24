@@ -96,7 +96,7 @@ var env = detect.Env
 
 // Init initializes the metric provider. This is usually called by init.Service().
 // If the default provider is already set, this function will return nil. This will automatically
-// provide the runtime and host instrumentation from the contrib set of pacakge. The default
+// provide the runtime and host instrumentation from the contrib set of package. The default
 // provider at this time is a Prometheus exporter. Metrics are only enabled if running
 // in a K8 environment. If called more than once, this will panic.
 func Init(meta *resource.Resource, port uint16) error {

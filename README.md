@@ -222,7 +222,7 @@ Check out the `values/immutable` for an immutable type generator that leverages 
 
 Don't use `*bool` or other basic types to indicate if something is set or not. This creates a lot of junk that the garbage collector has to deal with. Overuse of pointers is one of the biggest time wasters and causes panics without good reason. Lots of small pointers are just junk that cause long GC pauses in heavily trafficed services.
 
-Instead, use the `values/isset` pacakge.
+Instead, use the `values/isset` package.
 
 ## RPC
 

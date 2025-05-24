@@ -1,10 +1,10 @@
 package slices
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
+	"github.com/gostdlib/base/context"
 	"github.com/kylelemons/godebug/pretty"
 )
 
@@ -15,7 +15,7 @@ func TestSliceMut(t *testing.T) {
 	tests := []struct {
 		desc string
 		s    []int
-		a    Dicer[int]
+		a    Transformer[int]
 		want []int
 		err  bool
 	}{
@@ -43,8 +43,12 @@ func TestSliceMut(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		s := Slicer[int]{Dicer: test.a}
-		err := s.Run(ctx, test.s)
+		err := Transform(
+			ctx,
+			context.Pool(ctx).Limited(-1),
+			test.a,
+			test.s,
+		)
 
 		switch {
 		case err == nil && test.err:
@@ -77,7 +81,7 @@ func TestResultSlice(t *testing.T) {
 		return v, nil
 	}
 
-	err := (&Slicer[int]{Dicer: a}).Run(ctx, s)
+	err := Transform[int](ctx, context.Pool(ctx).Limited(-1), a, s)
 	if err != nil {
 		t.Errorf("TestResultSlice: got err == %s, want err == nil", err)
 		return
