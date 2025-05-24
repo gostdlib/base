@@ -158,7 +158,7 @@ func WithBackoff(b *exponential.Backoff) GoOption {
 // to record all execution in. That span will be attached to the context passed Go() for each subsequent call.
 // This is done once per Group until the Group is reset. The passed context is then passed to the function f, which
 // must deal with individual context cancellation and recording any span information. The returned error
-// only occurrs the function "f" is not run. This happends when the Context is cancelled.
+// only occurrs the function "f" is not run. This happens when the Context is cancelled.
 func (w *Group) Go(ctx context.Context, f func(ctx context.Context) error, options ...GoOption) error {
 	if ctx.Err() != nil {
 		return context.Cause(ctx)

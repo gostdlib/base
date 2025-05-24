@@ -221,7 +221,7 @@ type Meta struct {
 // InitFunc is a function that is called during Service() in order to setup various needs
 // for the service. These happen in the order they are registered, so if one has a dependency
 // on another, you have to register them in the correct order. For those that do not have a
-// dependency, these are usually done via a pacakge init() function. If this function returns
+// dependency, these are usually done via a package init() function. If this function returns
 // an error, then Service() will panic.
 type InitFunc func(args InitArgs) error
 

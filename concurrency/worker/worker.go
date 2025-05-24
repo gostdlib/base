@@ -7,7 +7,7 @@ block will cause a new goroutine to be created. These extra goroutines will cont
 jobs until they are idle for a certain amount of time. At that point they will be collected.
 This prevents work from being blocked by a queue that is full.
 
-This pool can create other syncronization primitives such as a Limited pool that allows reuse while
+This pool can create other synchronization primitives such as a Limited pool that allows reuse while
 limiting the number of concurrent goroutines. You can also create a Group object, an alternative to WaitGroup,
 that will allow safe execution of a number of goroutines and then wait for them to finish.
 
@@ -149,7 +149,7 @@ import (
 // Pool provides a worker pool that can be used to submit functions to be run by a goroutine. This provides
 // goroutine reuse in a non-blocking way. The pool will have an always available number of goroutines equal
 // to the number of CPUs on the machine. Any Submit() calls that exceed this number will cause a new goroutine
-// to be created that will run until some idle timeout. You can create other syncronization primitives
+// to be created that will run until some idle timeout. You can create other synchronization primitives
 // such as a Limited pool that allows reuse while limiting the number of concurrent goroutines. You can also
 // create a Group object that will allow safe execution of a number of goroutines and then wait for them to
 // finish. Generally you only need to use a single Pool for an entire application. If using the

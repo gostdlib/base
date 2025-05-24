@@ -189,7 +189,7 @@ func TestCompareAndSwap(t *testing.T) {
 	}
 
 	if !m.CompareAndSwap("hello", "", "world") {
-		t.Fatal("TestCompareAndSwap: expeced the first swap to succeed")
+		t.Fatal("TestCompareAndSwap: expected the first swap to succeed")
 	}
 	if v, ok := m.Get("hello"); !ok || v != "world" {
 		t.Fatalf("TestCompareAndSwap: got %q, want %q", v, "world")
