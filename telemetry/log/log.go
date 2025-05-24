@@ -8,11 +8,17 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"sync/atomic"
 
 	"github.com/gostdlib/base/env/detect"
 )
 
-var defaultLog = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true, Level: LogLevel}))
+var defaultLog = atomic.Pointer[slog.Logger]{}
+
+func init() {
+	l := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true, Level: LogLevel}))
+	defaultLog.Store(l)
+}
 
 // LogLevel is the log level for the program. This is used to set the log level for the program.
 // This is automatically set for the default logger unless .Set() is used to switch out that logger.
@@ -25,17 +31,18 @@ var LogLevel = new(slog.LevelVar) // Info by default
 // that needs to log messages or you need to pass the logger to a function outside of medbay.
 // Anything other use of this logger (or any logger) is verboten.
 func Default() *slog.Logger {
-	if defaultLog == nil {
+	l := defaultLog.Load()
+	if l == nil {
 		return slog.Default()
 	}
-	return defaultLog
+	return l
 }
 
 // Set sets the logger returned by Default().
 // This must be done in main() before any logging is done to avoid a
 // concurrency issue.
 func Set(l *slog.Logger) {
-	defaultLog = l
+	defaultLog.Store(l)
 	slog.SetDefault(l)
 }
 
@@ -94,7 +101,7 @@ func Panicf(format string, v ...any) {
 // Panicln is equivalent to [Println] followed by a call to panic().
 func Panicln(v ...any) {
 	if detect.Env().Prod() {
-		defaultLog.Debug(fmt.Sprint(v...))
+		defaultLog.Load().Debug(fmt.Sprint(v...))
 	}
 	log.Panicln(v...)
 }
@@ -107,7 +114,7 @@ func Prefix() string {
 // Print calls Output to print to the standard logger. Arguments are handled in the manner of fmt.Print.
 func Print(v ...any) {
 	if detect.Env().Prod() {
-		defaultLog.Debug(fmt.Sprint(v...))
+		defaultLog.Load().Debug(fmt.Sprint(v...))
 	}
 	log.Print(v...)
 }
@@ -115,7 +122,7 @@ func Print(v ...any) {
 // Printf calls Output to print to the standard logger. Arguments are handled in the manner of fmt.Printf.
 func Printf(format string, v ...any) {
 	if detect.Env().Prod() {
-		defaultLog.Debug(fmt.Sprintf(format, v...))
+		defaultLog.Load().Debug(fmt.Sprintf(format, v...))
 	}
 	log.Printf(format, v...)
 }
@@ -123,7 +130,7 @@ func Printf(format string, v ...any) {
 // Println calls Output to print to the standard logger. Arguments are handled in the manner of fmt.Println.
 func Println(v ...any) {
 	if detect.Env().Prod() {
-		defaultLog.Debug(fmt.Sprintf("%v\n", v...))
+		defaultLog.Load().Debug(fmt.Sprintf("%v\n", v...))
 	}
 	log.Println(v...)
 }

@@ -82,9 +82,7 @@ func WithMeterPrefixLevel(l int) Option {
 	}
 }
 
-// NewPool creates a new Pool for use. This returns a non-pointer value. If passing Pool, you must use a
-// reference to it like a normal sync.Pool (aka use &pool not pool). "name" is used to create a
-// new meter with the name:
+// NewPool creates a new Pool for use. A "name" is used to create a new meter with the name:
 //
 //	"[package path]/[package name]:sync.Pool([type stored])/[name]".
 //

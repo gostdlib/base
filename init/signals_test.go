@@ -2,6 +2,8 @@ package init
 
 import (
 	"os"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -31,9 +33,12 @@ func TestHandleSignals(t *testing.T) {
 	)
 
 	originalPanic := panicCall
-	didPanic := false
+	didPanic := atomic.Pointer[bool]{}
+	bFalse := false
+	didPanic.Store(&bFalse)
 	panicCall = func(v any) {
-		didPanic = true
+		t := true
+		didPanic.Store(&t)
 	}
 	t.Cleanup(
 		func() { panicCall = originalPanic },
@@ -41,14 +46,15 @@ func TestHandleSignals(t *testing.T) {
 
 	// Create a map to track which handlers were called.
 	calledHandlers := make(map[os.Signal]bool)
+	mu := sync.Mutex{}
 	handlers := map[os.Signal]func(){
-		syscall.SIGQUIT: func() { calledHandlers[syscall.SIGQUIT] = true },
-		syscall.SIGINT:  func() { calledHandlers[syscall.SIGINT] = true },
-		syscall.SIGTERM: func() { calledHandlers[syscall.SIGTERM] = true },
+		syscall.SIGQUIT: func() { mu.Lock(); defer mu.Unlock(); calledHandlers[syscall.SIGQUIT] = true },
+		syscall.SIGINT:  func() { mu.Lock(); defer mu.Unlock(); calledHandlers[syscall.SIGINT] = true },
+		syscall.SIGTERM: func() { mu.Lock(); defer mu.Unlock(); calledHandlers[syscall.SIGTERM] = true },
 	}
 
 	for sig, f := range handlers {
-		didPanic = false
+		didPanic.Store(&bFalse)
 		done := make(chan struct{})
 		var err error
 
@@ -69,7 +75,7 @@ func TestHandleSignals(t *testing.T) {
 		if err != nil {
 			t.Errorf("TestHandleSignals(%s): did not expect error, got: %s", sig, err)
 		}
-		if !didPanic {
+		if !(*didPanic.Load()) {
 			t.Errorf("TestHandleSignals(%s): expected panic, got no panic", sig)
 		}
 	}
