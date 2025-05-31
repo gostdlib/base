@@ -51,14 +51,16 @@ func main() {
 		panic(err)
 	}
 	defer f.Close()
-	formatWrite(f, tmpls, "main.go.tmpl")
+	formatWrite(f, tmpls, "main.tmpl")
 
 	fmt.Println("Finished. Remember to run `go generate ./...` before trying to compile.")
 }
 
 func formatWrite(f *os.File, tmpls *template.Template, tmpl string) {
 	b := bytes.NewBuffer([]byte{})
-	tmpls.ExecuteTemplate(b, tmpl, nil)
+	if err := tmpls.ExecuteTemplate(b, tmpl, nil); err != nil {
+		panic(err)
+	}
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
 		panic(err)
