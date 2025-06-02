@@ -23,13 +23,24 @@ func (s *Set[E]) Len() int {
 	return len(s.m)
 }
 
+// Init can be used to initialize a Set with values. This is useful when you want to create a
+// Set at the package level in a single line. If this is called after other values have been added to the Set,
+// it will panic. It is NOT required to use Init with a Set.
+func (s Set[E]) Init(vals ...E) Set[E] {
+	if len(s.m) > 0 {
+		panic("Set is already initialized")
+	}
+	s.init()
+	s.Add(vals...)
+	return s
+}
+
 // Add adds the given values to the Set.
-func (s *Set[E]) Add(vals ...E) Set[E] {
+func (s *Set[E]) Add(vals ...E) {
 	s.init()
 	for _, v := range vals {
 		s.m[v] = struct{}{}
 	}
-	return *s
 }
 
 // Remove removes the given value from the Set.
@@ -76,7 +87,7 @@ func (s *Set[E]) Union(s2 Set[E]) Set[E] {
 }
 
 // Intersection returns a new Set that is the intersection of the two Sets.
-func (s *Set[E]) Intersection(s2 Set[E]) Set[E] {
+func (s Set[E]) Intersection(s2 Set[E]) Set[E] {
 	result := Set[E]{}
 	for _, v := range s.Members() {
 		if s2.Contains(v) {
