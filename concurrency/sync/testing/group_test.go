@@ -34,6 +34,7 @@ func TestGroupBasic(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		ctx := context.Background()
 		// setup
 		var wg = sync.Group{Pool: test.pool}
 		var count atomic.Int32
@@ -52,22 +53,31 @@ func TestGroupBasic(t *testing.T) {
 			wg.Go(context.Background(), f)
 		}
 
+		start := time.Now()
 		for count.Load() != 5 {
+			if time.Since(start) > 10*time.Second {
+				t.Errorf("TestGroupBasic: Timed out waiting for go routines to start: got %d, want %d", count.Load(), 5)
+			}
 			time.Sleep(10 * time.Millisecond)
 		}
 
 		// check that running count is correct
 		if wg.Running() != 5 {
-			t.Errorf("TestWaitGroupBasic: Expected Running() to return 5, got %d", wg.Running())
+			t.Errorf("TestGroupBasic(%s): Expected Running() to return 5, got %d", test.desc, wg.Running())
 		}
 		close(exit)
 
 		// wait for all go routines to finish
-		wg.Wait(context.Background())
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := wg.Wait(ctx); err != nil {
+			t.Errorf("TestGroupBasic(%s): Wait() returned error: %v", test.desc, err)
+		}
 
 		// check that running count is 0 after wait
 		if wg.Running() != 0 {
-			t.Errorf("TestWaitGroupBasic: Expected Running() to return 0, got %d", wg.Running())
+			t.Errorf("TestGroupBasic(%s): Expected Running() to return 0, got %d", test.desc, wg.Running())
 		}
 	}
 }
@@ -81,7 +91,6 @@ func TestWaitGroupCancelOnErr(t *testing.T) {
 
 	// spin off 5 go routines
 	for i := 0; i < 5; i++ {
-		i := i
 		wg.Go(
 			ctx,
 			func(ctx context.Context) error {
@@ -95,8 +104,15 @@ func TestWaitGroupCancelOnErr(t *testing.T) {
 		)
 	}
 
-	if err := wg.Wait(ctx); err == nil {
-		t.Errorf("TestWaitGroupCancelOnErr: want error != nil, got nil")
+	wCtx, wCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer wCancel()
+	err := wg.Wait(wCtx)
+	if err == nil {
+		t.Fatalf("TestWaitGroupCancelOnErr: want error != nil, got nil")
+	}
+	se := sync.Errors{}
+	if !errors.Is(err, &se) {
+		t.Errorf("TestWaitGroupCancelOnErr: want error to be sync.Errors, got %T", err)
 	}
 }
 

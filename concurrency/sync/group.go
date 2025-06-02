@@ -41,19 +41,21 @@ func (i IndexErr) Unwrap() error {
 }
 
 // Errors implements the error interface and stores a collection of errors.
+// Use this as a pointer to Errors and not as a value. See .Joined() and .Is()
+// for special use information.
 type Errors struct {
 	mu   sync.Mutex
 	errs []error
 }
 
-// Add adds an error to the Errors.
+// Add adds an error to the Errors. This is thread-safe.
 func (e *Errors) Add(i int, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.errs = append(e.errs, IndexErr{Index: i, Err: err})
 }
 
-// Errors returns all the errors added to the Errors.
+// Errors returns all the errors added to the Errors. This is thread-safe.
 func (e *Errors) Errors() []error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -61,10 +63,14 @@ func (e *Errors) Errors() []error {
 }
 
 // Error returns all the errors joined together with errors.Join()
-// and then converted to a string.
+// and then converted to a string. This is thread-safe.
 func (e *Errors) Error() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if len(e.errs) == 0 {
+		return ""
+	}
 
 	return errors.Join(e.errs...).Error()
 }
@@ -72,11 +78,24 @@ func (e *Errors) Error() string {
 // Joined returns all the errors joined together
 // with errors.Join(). Use this if you need to unwrap this error
 // to get to the underlying errors with errors.As() or errors.Is().
+// This is thread-safe.
 func (e *Errors) Joined() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	return errors.Join(e.errs...)
+}
+
+// Is implements the error.Is() interface. However, this wil only match *Errors and not look
+// at the underlying errors. Use Errors.Joined() for those use cases. This is thread-safe.
+func (e *Errors) Is(target error) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, ok := target.(*Errors); ok {
+		return true
+	}
+	return false
 }
 
 // Group provides a Group implementation that allows launching
