@@ -24,11 +24,12 @@ func (s *Set[E]) Len() int {
 }
 
 // Add adds the given values to the Set.
-func (s *Set[E]) Add(vals ...E) {
+func (s *Set[E]) Add(vals ...E) Set[E] {
 	s.init()
 	for _, v := range vals {
 		s.m[v] = struct{}{}
 	}
+	return *s
 }
 
 // Remove removes the given value from the Set.
