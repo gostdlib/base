@@ -42,8 +42,7 @@ func TestNilMap(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	s := Set[int]{}
-	s.Add(1, 2, 3)
+	s := Set[int]{}.Init(1, 2, 3)
 	if s.Len() != 3 {
 		t.Errorf("Expected set length 3, got %d", s.Len())
 	}
@@ -65,7 +64,7 @@ func TestAdd(t *testing.T) {
 
 func TestRemove(t *testing.T) {
 	s := Set[int]{}
-	s.Add(1, 2, 3)
+	s = s.Init(1, 2, 3)
 	s.Remove(2)
 	if s.Len() != 2 {
 		t.Errorf("Expected set length 2, got %d", s.Len())

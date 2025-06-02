@@ -144,8 +144,11 @@ package statemachine
 
 import (
 	"fmt"
+	"log"
+	"log/slog"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 	"unsafe"
@@ -158,6 +161,63 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
+// ErrValidation is an error when trying to run a state machine with invalid arguments.
+type ErrValidation struct {
+	msg string
+}
+
+// Error implements the error interface.
+func (v ErrValidation) Error() string {
+	return v.msg
+}
+
+var (
+	nameEmptyErr = ErrValidation{"name is empty"}
+	ctxNilErr    = ErrValidation{"Request.Ctx is nil"}
+	nextNilErr   = ErrValidation{"Request.Next is nil, must be set to the initial state"}
+	reqErrNotNil = ErrValidation{"Request.Err is not nil"}
+)
+
+// ErrCyclic is an error that is returned when a state machine detects a cyclic error.
+type ErrCyclic struct {
+	// SMName is the name of the state machine that detected the cyclic error.
+	SMName string
+	// LastStage is the name of the stage that would have been executed a second time. This caused the cyclic error.
+	LastStage string
+	// Stages lists the stages that were executed before the cyclic error was detected.
+	Stages string
+}
+
+func newCyclicError(smName, lastStage string, stages *seenStages) error {
+	return ErrCyclic{
+		SMName:    smName,
+		LastStage: lastStage,
+		Stages:    stages.callTrace(),
+	}
+}
+
+// Error implements the error interface.
+func (c ErrCyclic) Error() string {
+	return fmt.Sprintf("statemachine had cyclic error")
+}
+
+// Is implements the errors.Is interface.
+func (c ErrCyclic) Is(err error) bool {
+	if _, ok := err.(ErrCyclic); ok {
+		return true
+	}
+	return false
+}
+
+// Attrs implements the base/errors.Attrs interface.
+func (c ErrCyclic) Attrs() []slog.Attr {
+	return []slog.Attr{
+		slog.String("statemachine", c.SMName),
+		slog.String("last_stage", c.LastStage),
+		slog.String("call_trace", c.Stages),
+	}
+}
+
 // State is a function that takes a Request and returns a Request. If the returned Request has a nil Next, the state machine stops.
 // If the returned Request has a non-nil Err, the state machine stops and returns the error. If the returned Request has a non-nil
 // next, the state machine continues with the next state.
@@ -166,7 +226,7 @@ type State[T any] func(req Request[T]) Request[T]
 // seenStagesPool is a pool of seenStages objects to reduce allocations.
 var seenStagesPool = sync.NewPool(
 	context.Background(),
-	"",
+	"seenStagesPool",
 	func() *seenStages {
 		return &seenStages{}
 	},
@@ -181,10 +241,8 @@ type seenStages []string
 // seen returns true if the stage has been seen before. If it has not been seen,
 // it adds it to the list of seen stages.
 func (s *seenStages) seen(stage string) bool {
-	for _, st := range *s {
-		if st == stage {
-			return true
-		}
+	if slices.Contains(*s, stage) {
+		return true
 	}
 
 	n := append(*s, stage)
@@ -196,6 +254,7 @@ func (s *seenStages) seen(stage string) bool {
 func (s *seenStages) callTrace() string {
 	out := strings.Builder{}
 	for i, st := range *s {
+		log.Println(st)
 		if i != 0 {
 			out.WriteString(" -> ")
 		}
@@ -204,8 +263,8 @@ func (s *seenStages) callTrace() string {
 	return out.String()
 }
 
-// reset resets the seenStages object to be reused.
-func (s *seenStages) reset() *seenStages {
+// Reset resets the seenStages object to be reused. Implements concurrency/sync.Resetter.
+func (s *seenStages) Reset() *seenStages {
 	n := (*s)[:0]
 	s = &n
 	return s
@@ -290,7 +349,7 @@ func (r Request[T]) otelEnd() {
 	}
 	j, err := json.Marshal(r.Data)
 	if err != nil {
-		j = []byte(fmt.Sprintf("Error marshaling data: %s", err.Error()))
+		j = fmt.Appendf([]byte{}, "Error marshaling data: %s", err.Error())
 	}
 	end := time.Now()
 	r.Event(
@@ -305,12 +364,13 @@ func (r Request[T]) otelEnd() {
 // This is currently unused, but exists for future expansion.
 type Option[T any] func(Request[T]) (Request[T], error)
 
-var (
-	nameEmptyErr = fmt.Errorf("name is empty")
-	ctxNilErr    = fmt.Errorf("Request.Ctx is nil")
-	nextNilErr   = fmt.Errorf("Request.Next is nil, must be set to the initial state")
-	reqErrNotNil = fmt.Errorf("Request.Err is not nil")
-)
+// WithCyclicCheck is an option that causes the state machine to error if a state is called more than once.
+// This effectively turns the state machine into a directed acyclic graph.
+func WithCyclicCheck[T any](req Request[T]) (Request[T], error) {
+	ss := make(seenStages, 0, 1)
+	req.seenStages = &ss
+	return req, nil
+}
 
 // Run runs the state machine with the given a Request. name is the name of the statemachine for the
 // purpose of OTEL tracing. An error is returned if the state machine fails, name
@@ -348,8 +408,14 @@ func Run[T any](name string, req Request[T], options ...Option[T]) (Request[T], 
 	}
 
 	for req.Next != nil {
-		var stateName string
-		stateName, req = execState(req)
+		stateName := methodName(req.Next)
+		if req.seenStages != nil {
+			if req.seenStages.seen(stateName) {
+				req.Next = nil
+				return req, newCyclicError(name, stateName, req.seenStages)
+			}
+		}
+		req = execState(req, stateName)
 		if req.Err != nil {
 			req = execDefer(req)
 			req.span.Status(codes.Error, fmt.Sprintf("error in State(%s): %s", stateName, req.Err.Error()))
@@ -384,14 +450,13 @@ func execDefer[T any](req Request[T]) Request[T] {
 var execReqNextNil = fmt.Errorf("bug: execState received Request.Next == nil")
 
 // execState executes Request.Next state and returns the Request.
-func execState[T any](req Request[T]) (string, Request[T]) {
+func execState[T any](req Request[T], stateName string) Request[T] {
 	if req.Next == nil {
 		req.Err = execReqNextNil
-		return "", req
+		return req
 	}
 
 	state := req.Next
-	stateName := methodName(state)
 
 	if req.span.Span != nil && req.span.Span.IsRecording() {
 		parentCtx := req.Ctx
@@ -405,7 +470,7 @@ func execState[T any](req Request[T]) (string, Request[T]) {
 	}
 
 	req.Next = nil
-	return stateName, state(req)
+	return state(req)
 }
 
 // methodName takes a function or a method and returns its name.
