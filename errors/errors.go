@@ -358,24 +358,18 @@ func (e Error) Error() string {
 }
 
 // Is implements the errors.Is() interface. An Error is equal to another Error if the category and type are the same.
+// If the target error has a nil category and type, it is considered equal to any Error.
 func (e Error) Is(target error) bool {
 	if target == nil {
 		return false
 	}
 	if targetE, ok := target.(Error); ok {
-		return e.Category == targetE.Category && e.Type == targetE.Type
-	}
-
-	we := e.Msg
-	for {
-		if we == nil {
-			return false
-		}
-		if errors.Is(we, target) {
+		if targetE.Category == nil && targetE.Type == nil {
 			return true
 		}
-		we = errors.Unwrap(we)
+		return e.Category == targetE.Category && e.Type == targetE.Type
 	}
+	return false
 }
 
 // Unwrap unwraps the error.
@@ -404,14 +398,24 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 		}
 	}
 
-	attrs := []slog.Attr{
-		slog.String("Category", cat),
-		slog.String("Type", typ),
+	attrs := make([]slog.Attr, 0, 7)
+	if cat != "" {
+		attrs = append(attrs, slog.String("Category", cat))
+	}
+	if typ != "" {
+		attrs = append(attrs, slog.String("Type", typ))
+	}
+	attrs = append(
+		attrs,
 		slog.String("ErrSrc", e.File),
 		slog.Int("ErrLine", e.Line),
 		slog.Time("ErrTime", e.ErrTime.UTC()),
-		slog.String("TraceID", traceID),
+	)
+
+	if traceID != "" {
+		attrs = append(attrs, slog.String("TraceID", traceID))
 	}
+
 	if e.StackTrace != "" {
 		attrs = append(attrs, slog.String("StackTrace", e.StackTrace))
 	}
@@ -444,8 +448,12 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 
 	// Unlike logging, we don't add time, as that gets recorded on the span.
 	// No need for TraceID as it's already on the span.
-	attrs.Add(attribute.String("Category", cat))
-	attrs.Add(attribute.String("Type", typ))
+	if cat != "" {
+		attrs.Add(attribute.String("Category", cat))
+	}
+	if typ != "" {
+		attrs.Add(attribute.String("Type", typ))
+	}
 	attrs.Add(attribute.String("ErrSrc", e.File))
 	attrs.Add(attribute.Int("ErrLine", e.Line))
 
@@ -500,13 +508,17 @@ func (e Error) metrics() {
 		return // No meter, nothing to do.
 	}
 
-	catStr := "unknown"
-	typStr := "unknown"
+	catStr := ""
+	typStr := ""
 	if e.Category != nil {
 		catStr = e.Category.Category()
 	}
 	if e.Type != nil {
 		typStr = e.Type.Type()
+	}
+
+	if catStr == "" && typStr == "" {
+		return // No category or type, nothing to do.
 	}
 
 	n := fmt.Sprintf("%s.%s", catStr, typStr)
@@ -535,7 +547,6 @@ func (e Error) Log(ctx context.Context, callID, customerID string, req any) {
 			reqBytes = fmt.Appendf(reqBytes, "unable to marshal *http.Request due to error: %s", err)
 		}
 	default:
-		log.Printf("req is %T", req)
 		var err error
 		reqBytes, err = json.Marshal(req)
 		if err != nil {

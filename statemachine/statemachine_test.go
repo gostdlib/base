@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/gostdlib/base/errors"
 	"github.com/kylelemons/godebug/pretty"
 )
 
@@ -56,15 +57,44 @@ func addErr(req Request[data]) Request[data] {
 	return req
 }
 
+const cyclicStages = `github.com/gostdlib/base/statemachine.(*cyclicCheck).start -> github.com/gostdlib/base/statemachine.(*cyclicCheck).stage1 -> github.com/gostdlib/base/statemachine.(*cyclicCheck).stage2`
+
+type cyclicCheck struct {
+	stage2Done bool
+}
+
+func (c *cyclicCheck) start(req Request[data]) Request[data] {
+	req.Next = c.stage1
+	return req
+}
+
+func (c *cyclicCheck) stage1(req Request[data]) Request[data] {
+	if c.stage2Done {
+		panic("stage1 called after stage2")
+	}
+	req.Next = c.stage2
+	return req
+}
+
+func (c *cyclicCheck) stage2(req Request[data]) Request[data] {
+	req.Next = c.stage1
+	c.stage2Done = true
+	return req
+}
+
 func TestRun(t *testing.T) {
 	t.Parallel()
 
+	cc := cyclicCheck{}
+
 	tests := []struct {
-		name    string
-		argName string
-		req     Request[data]
-		wantReq Request[data]
-		wantErr bool
+		name      string
+		argName   string
+		req       Request[data]
+		options   []Option[data]
+		wantReq   Request[data]
+		wantErr   bool
+		cyclicErr bool
 	}{
 		{
 			name: "Error: name is not set",
@@ -128,19 +158,46 @@ func TestRun(t *testing.T) {
 			// This is not 240, because the first defer is executed after the second.
 			wantReq: Request[data]{Ctx: context.Background(), Data: data{Num: 150}},
 		},
+		{
+			name:    "Fail: cyclic check",
+			argName: "test",
+			req: Request[data]{
+				Ctx:  context.Background(),
+				Next: cc.start,
+				Data: data{Num: 30},
+			},
+			options:   []Option[data]{WithCyclicCheck[data]},
+			wantErr:   true,
+			cyclicErr: true,
+		},
 	}
 
 	for _, test := range tests {
-		gotReq, err := Run(test.argName, test.req)
+		gotReq, err := Run(test.argName, test.req, test.options...)
 		switch {
 		case err == nil && test.wantErr:
-			t.Errorf("TestRun(%s) got err == nil, want err != nil", test.name)
+			t.Errorf("TestRun(%s): got err == nil, want err != nil", test.name)
 		case err != nil && !test.wantErr:
-			t.Errorf("TestRun(%s) got err == %s, want err == nil", test.name, err)
+			t.Errorf("TestRun(%s): got err == %s, want err == nil", test.name, err)
+		case err != nil:
+			if test.cyclicErr {
+				if !errors.Is(err, ErrCyclic{}) {
+					t.Errorf("TestRun(%s): got err == %T, want err == %T", test.name, err, ErrCyclic{})
+				}
+
+				cErr := ErrCyclic{}
+				if !errors.As(err, &cErr) {
+					t.Errorf("TestRun(%s): errors.As(): got err == %T, want err == %T", test.name, err, ErrCyclic{})
+				}
+				if cErr.Stages != cyclicStages {
+					t.Errorf("TestRun(%s): got stages == %s, want stages == %s", test.name, cErr.Stages, cyclicStages)
+				}
+			}
+			continue
 		}
 		gotReq.Defers = nil // Reset defers to nil after execution to avoid comparison.
 		if diff := pretty.Compare(test.wantReq, gotReq); diff != "" {
-			t.Errorf("TestRun(%s) got diff (-want +got):\n%s", test.name, diff)
+			t.Errorf("TestRun(%s): got diff (-want +got):\n%s", test.name, diff)
 		}
 	}
 }
@@ -151,18 +208,16 @@ func TestExecState(t *testing.T) {
 	parentCtx := context.Background()
 
 	tests := []struct {
-		name          string
-		req           Request[data]
-		wantStateName string
-		wantRequest   Request[data]
+		name        string
+		req         Request[data]
+		wantRequest Request[data]
 	}{
 		{
 			name: "Error: Request.Next == nil",
 			req: Request[data]{
 				Ctx: parentCtx,
 			},
-			wantStateName: "",
-			wantRequest:   Request[data]{Ctx: parentCtx, Err: fmt.Errorf("bug: execState received Request.Next == nil")},
+			wantRequest: Request[data]{Ctx: parentCtx, Err: fmt.Errorf("bug: execState received Request.Next == nil")},
 		},
 		{
 			name: "Route to addTen",
@@ -171,8 +226,7 @@ func TestExecState(t *testing.T) {
 				Next: steer,
 				Data: data{Num: 1},
 			},
-			wantStateName: "github.com/gostdlib/base/statemachine.steer",
-			wantRequest:   Request[data]{Ctx: parentCtx, Data: data{Num: 1}, Next: addTen},
+			wantRequest: Request[data]{Ctx: parentCtx, Data: data{Num: 1}, Next: addTen},
 		},
 		{
 			name: "Route to addErr",
@@ -181,8 +235,7 @@ func TestExecState(t *testing.T) {
 				Next: steer,
 				Data: data{Num: math.MaxInt},
 			},
-			wantStateName: "github.com/gostdlib/base/statemachine.steer",
-			wantRequest:   Request[data]{Ctx: parentCtx, Data: data{Num: math.MaxInt}, Next: addErr},
+			wantRequest: Request[data]{Ctx: parentCtx, Data: data{Num: math.MaxInt}, Next: addErr},
 		},
 		{
 			name: "Route to nil",
@@ -191,8 +244,7 @@ func TestExecState(t *testing.T) {
 				Next: steer,
 				Data: data{Num: 0},
 			},
-			wantStateName: "github.com/gostdlib/base/statemachine.steer",
-			wantRequest:   Request[data]{Ctx: parentCtx, Data: data{Num: 0}, Next: nil},
+			wantRequest: Request[data]{Ctx: parentCtx, Data: data{Num: 0}, Next: nil},
 		},
 		{
 			name: "Check data change in addTen",
@@ -201,8 +253,7 @@ func TestExecState(t *testing.T) {
 				Next: addTen,
 				Data: data{Num: 1},
 			},
-			wantStateName: "github.com/gostdlib/base/statemachine.addTen",
-			wantRequest:   Request[data]{Ctx: parentCtx, Data: data{Num: 11}, Next: nil},
+			wantRequest: Request[data]{Ctx: parentCtx, Data: data{Num: 11}, Next: nil},
 		},
 		{
 			name: "Check error in addErr",
@@ -211,16 +262,12 @@ func TestExecState(t *testing.T) {
 				Next: addErr,
 				Data: data{Num: 1},
 			},
-			wantStateName: "github.com/gostdlib/base/statemachine.addErr",
-			wantRequest:   Request[data]{Ctx: parentCtx, Data: data{Num: 1}, Err: fmt.Errorf("addErr")},
+			wantRequest: Request[data]{Ctx: parentCtx, Data: data{Num: 1}, Err: fmt.Errorf("addErr")},
 		},
 	}
 
 	for _, test := range tests {
-		gotStateName, gotRequest := execState(test.req)
-		if gotStateName != test.wantStateName {
-			t.Errorf("TestExecState(%s): stateName: got %q, want %q", test.name, gotStateName, test.wantStateName)
-		}
+		gotRequest := execState(test.req, "name")
 		if diff := pretty.Compare(test.wantRequest, gotRequest); diff != "" {
 			t.Errorf("TestExecState(%s): Request: -want/+got:\n%s", test.name, diff)
 		}
