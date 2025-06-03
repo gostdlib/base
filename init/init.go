@@ -426,7 +426,6 @@ func newSetup(args InitArgs, opts initOpts) setup {
 		args:   args,
 		opts:   opts,
 		inits:  initReg.values,
-		inProd: detect.Env().Prod(),
 
 		detectInit:  detect.Init,
 		traceInit:   trace.Init,
@@ -472,6 +471,7 @@ func (s setup) gcSetup() (stateFn, error) {
 // and audit initialization.
 func (s setup) packageInits() (stateFn, error) {
 	s.detectInit()
+	s.inProd = detect.Env().Prod()
 
 	if s.opts.traceProvider != nil {
 		trace.Set(s.opts.traceProvider)
