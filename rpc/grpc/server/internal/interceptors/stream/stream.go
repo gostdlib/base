@@ -32,6 +32,7 @@ type ErrConvert func(ctx context.Context, e errors.Error, meta grpcContext.Metad
 // It is used to add interceptors to the grpc server. Use the .Intercept() method as the
 // grpc.StreamServerInterceptor.
 type Interceptor struct {
+	errConvert ErrConvert
 	intercepts []Intercept
 }
 
@@ -42,6 +43,14 @@ type Options func(*Interceptor) error
 func WithIntercepts(i ...Intercept) Options {
 	return func(interceptor *Interceptor) error {
 		interceptor.intercepts = i
+		return nil
+	}
+}
+
+// WithErrConvert sets the error converter to use. If not specified, then no error conversion is done.
+func WithErrConvert(errConvert ErrConvert) Options {
+	return func(interceptor *Interceptor) error {
+		interceptor.errConvert = errConvert
 		return nil
 	}
 }
@@ -86,6 +95,7 @@ type streamWrap struct {
 	ctx        context.Context
 	md         grpcContext.Metadata
 	intercepts []Intercept
+	errConvert ErrConvert
 
 	grpc.ServerStream
 }
@@ -109,7 +119,7 @@ func (s *streamWrap) SendMsg(m interface{}) error {
 // RecvMsg is a wrapper around the RecvMsg method of the grpc.ServerStream. Unlike Send(), RecvMsg
 // will call RecvMsg before it calls the intercepts. If any of the intercepts return an error, it
 // aborts the call and returns the error.
-func (s *streamWrap) RecvMsg(m interface{}) error {
+func (s *streamWrap) RecvMsg(m any) error {
 	err := s.ServerStream.RecvMsg(m)
 	if err != nil {
 		return s.errLogAndConvert(s.ctx, nil, err, s.md)
@@ -124,12 +134,30 @@ func (s *streamWrap) RecvMsg(m interface{}) error {
 }
 
 func (s *streamWrap) errLogAndConvert(ctx context.Context, req any, err error, md grpcContext.Metadata) error {
-	if e, ok := err.(errors.Error); ok {
+	var e errors.Error
+	var ok bool
+	if e, ok = err.(errors.Error); ok {
 		e.Log(ctx, md.CallID, md.CustomerID, req)
+		if s.errConvert != nil {
+			status, err := s.errConvert(ctx, e, md)
+			if err != nil {
+				return err
+			}
+			return status.Err()
+		}
 		return e
+	} else {
+		e = errors.E(ctx, nil, nil, err)
 	}
-	e := errors.E(ctx, nil, nil, err)
+
 	e.Log(ctx, md.CallID, md.CustomerID, req)
+	if s.errConvert != nil {
+		status, err := s.errConvert(ctx, e, md)
+		if err != nil {
+			return err
+		}
+		return status.Err()
+	}
 	return e
 }
 
