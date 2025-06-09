@@ -415,7 +415,6 @@ type setup struct {
 	logMsgs []string
 
 	detectInit  func()
-	auditInit   func()
 	traceInit   func(bool, float64) error
 	metricsInit func(*resource.Resource, uint16) error
 }

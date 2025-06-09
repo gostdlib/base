@@ -47,6 +47,14 @@ func WithIntercepts(i ...Intercept) Options {
 	}
 }
 
+// WithErrConvert sets the error converter to use. If not specified, then no error conversion is done.
+func WithErrConvert(errConvert ErrConvert) Options {
+	return func(interceptor *Interceptor) error {
+		interceptor.errConvert = errConvert
+		return nil
+	}
+}
+
 // New creates a new stream server interceptor that wraps the provided interceptors.
 // Our interceptor is always first in the chain.
 func New(ctx context.Context, errConvert ErrConvert, options ...Options) (*Interceptor, error) {
@@ -111,7 +119,7 @@ func (s *streamWrap) SendMsg(m interface{}) error {
 // RecvMsg is a wrapper around the RecvMsg method of the grpc.ServerStream. Unlike Send(), RecvMsg
 // will call RecvMsg before it calls the intercepts. If any of the intercepts return an error, it
 // aborts the call and returns the error.
-func (s *streamWrap) RecvMsg(m interface{}) error {
+func (s *streamWrap) RecvMsg(m any) error {
 	err := s.ServerStream.RecvMsg(m)
 	if err != nil {
 		return s.errLogAndConvert(s.ctx, nil, err, s.md)
@@ -126,7 +134,9 @@ func (s *streamWrap) RecvMsg(m interface{}) error {
 }
 
 func (s *streamWrap) errLogAndConvert(ctx context.Context, req any, err error, md grpcContext.Metadata) error {
-	if e, ok := err.(errors.Error); ok {
+	var e errors.Error
+	var ok bool
+	if e, ok = err.(errors.Error); ok {
 		e.Log(ctx, md.CallID, md.CustomerID, req)
 		if s.errConvert != nil {
 			status, err := s.errConvert(ctx, e, md)
@@ -136,9 +146,18 @@ func (s *streamWrap) errLogAndConvert(ctx context.Context, req any, err error, m
 			return status.Err()
 		}
 		return e
+	} else {
+		e = errors.E(ctx, nil, nil, err)
 	}
-	e := errors.E(ctx, nil, nil, err)
+
 	e.Log(ctx, md.CallID, md.CustomerID, req)
+	if s.errConvert != nil {
+		status, err := s.errConvert(ctx, e, md)
+		if err != nil {
+			return err
+		}
+		return status.Err()
+	}
 	return e
 }
 

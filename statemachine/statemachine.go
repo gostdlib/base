@@ -228,7 +228,8 @@ var seenStagesPool = sync.NewPool(
 	context.Background(),
 	"seenStagesPool",
 	func() *seenStages {
-		return &seenStages{}
+		ss := make(seenStages, 0, 1)
+		return &ss
 	},
 )
 
@@ -367,8 +368,7 @@ type Option[T any] func(Request[T]) (Request[T], error)
 // WithCyclicCheck is an option that causes the state machine to error if a state is called more than once.
 // This effectively turns the state machine into a directed acyclic graph.
 func WithCyclicCheck[T any](req Request[T]) (Request[T], error) {
-	ss := make(seenStages, 0, 1)
-	req.seenStages = &ss
+	req.seenStages = seenStagesPool.Get(req.Ctx)
 	return req, nil
 }
 
@@ -376,6 +376,12 @@ func WithCyclicCheck[T any](req Request[T]) (Request[T], error) {
 // purpose of OTEL tracing. An error is returned if the state machine fails, name
 // is empty, the Request Ctx/Next is nil or the Err field is not nil.
 func Run[T any](name string, req Request[T], options ...Option[T]) (Request[T], error) {
+	defer func() {
+		if req.seenStages != nil {
+			seenStagesPool.Put(req.Ctx, req.seenStages)
+		}
+	}()
+
 	if strings.TrimSpace(name) == "" {
 		req.Next = nil
 		return req, nameEmptyErr

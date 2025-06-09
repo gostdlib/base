@@ -162,7 +162,6 @@ func (f *OutIn[I, O]) validate() error {
 }
 
 type runOpts struct {
-	cancelOnErr bool
 }
 
 // RunOption is an option for Run().

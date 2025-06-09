@@ -13,7 +13,6 @@ import (
 )
 
 type keyT = string
-type valueT = interface{}
 
 func k(key int) keyT {
 	return strconv.FormatInt(int64(key), 10)

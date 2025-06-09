@@ -23,8 +23,6 @@ type Map[K comparable, V any] struct {
 	maps    []*rhh.Map[K, V]
 
 	seed maphash.Seed
-
-	zeroV V
 }
 
 // New returns a new hashmap with the specified capacity. This function is only

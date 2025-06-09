@@ -55,8 +55,6 @@ type Map[K comparable, V any] struct {
 	growAt   int
 	shrinkAt int
 	buckets  []entry[K, V]
-	ksize    int
-	kstr     bool
 }
 
 // New returns a new Map. Like map[string]interface{}

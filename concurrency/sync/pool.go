@@ -37,7 +37,7 @@ type Pool[T any] struct {
 
 	getCalls, putCalls, newAllocated, bufferAllocated metric.Int64Counter
 
-	mu sync.Mutex // For CopyLocks error
+	_ sync.Mutex // Unused on purpose, for CopyLocks error
 }
 
 type opts struct {
