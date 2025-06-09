@@ -133,14 +133,12 @@ func TestBackgroundWithBackoff(t *testing.T) {
 		ctx,
 		"TestBackground-func3",
 		func(ctx context.Context) error {
-			for {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				count.Add(1)
-				log.Println("hello")
-				return errors.New("crap")
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
+			count.Add(1)
+			log.Println("hello")
+			return errors.New("crap")
 		},
 		_10Sec,
 	)

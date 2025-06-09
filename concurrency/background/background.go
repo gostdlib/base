@@ -168,8 +168,6 @@ func (t *Tasks) taskWrapper(name string, bm *backgroundTaskMetrics, task Task) e
 // Once is like Run, but it only runs the function once. If the function ends, it will not
 // be restarted. name can be reused if you want to keep stats on a collection of one shot tasks.
 func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...RunOption) error {
-	const logMsg = "background/Tasks.Once"
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

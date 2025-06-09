@@ -22,12 +22,10 @@ import (
 
 // Types for keys used to attach clients to the context.
 type (
-	loggerKey      struct{}
-	poolKey        struct{}
-	tasksKey       struct{}
-	eOptionKey     = internalCtx.EOptionKey
-	metricsKey     = internalCtx.MetricsKey
-	shouldTraceKey = internalCtx.ShouldTraceKey
+	loggerKey  struct{}
+	poolKey    struct{}
+	tasksKey   struct{}
+	metricsKey = internalCtx.MetricsKey
 )
 
 // Background returns a non-nil, empty [Context]. It is never canceled, and has no deadline.

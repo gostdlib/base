@@ -25,8 +25,6 @@ type QJob struct {
 // queue implements the heap interface. We are using a custom generic heap instead of the stdlib.
 type queue struct {
 	jobs []QJob
-
-	popping chan struct{}
 }
 
 func (p *queue) Len() int {

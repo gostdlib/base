@@ -279,6 +279,4 @@ func Close() {
 	}
 }
 
-type stderrWriter struct {
-	io.Writer
-}
+

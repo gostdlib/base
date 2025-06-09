@@ -7,7 +7,6 @@ package sampler
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 
 	internalCtx "github.com/gostdlib/base/internal/context"
@@ -57,7 +56,6 @@ type Filter interface {
 type Filtered struct {
 	secondary sdkTrace.Sampler
 
-	mu      sync.Mutex
 	filters *atomic.Pointer[[]Filter]
 }
 

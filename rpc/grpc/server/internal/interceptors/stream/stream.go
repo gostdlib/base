@@ -32,7 +32,6 @@ type ErrConvert func(ctx context.Context, e errors.Error, meta grpcContext.Metad
 // It is used to add interceptors to the grpc server. Use the .Intercept() method as the
 // grpc.StreamServerInterceptor.
 type Interceptor struct {
-	errConvert ErrConvert
 	intercepts []Intercept
 }
 
@@ -87,7 +86,6 @@ type streamWrap struct {
 	ctx        context.Context
 	md         grpcContext.Metadata
 	intercepts []Intercept
-	errConvert ErrConvert
 
 	grpc.ServerStream
 }
@@ -128,13 +126,6 @@ func (s *streamWrap) RecvMsg(m interface{}) error {
 func (s *streamWrap) errLogAndConvert(ctx context.Context, req any, err error, md grpcContext.Metadata) error {
 	if e, ok := err.(errors.Error); ok {
 		e.Log(ctx, md.CallID, md.CustomerID, req)
-		if s.errConvert != nil {
-			status, err := s.errConvert(ctx, e, md)
-			if err != nil {
-				return err
-			}
-			return status.Err()
-		}
 		return e
 	}
 	e := errors.E(ctx, nil, nil, err)

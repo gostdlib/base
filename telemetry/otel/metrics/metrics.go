@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gostdlib/base/env/detect"
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -92,7 +91,6 @@ func MeterName(stackFrame int) string {
 
 var mu sync.Mutex
 var called bool
-var env = detect.Env
 
 // Init initializes the metric provider. This is usually called by init.Service().
 // If the default provider is already set, this function will return nil. This will automatically

@@ -14,7 +14,6 @@ type Works struct {
 	s []int
 
 	Ignore    int
-	ignore    int
 	Default10 int
 	default10 int
 	Ptr       *int

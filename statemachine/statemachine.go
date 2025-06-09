@@ -154,7 +154,6 @@ import (
 	"unsafe"
 
 	"github.com/go-json-experiment/json"
-	"github.com/gostdlib/base/concurrency/sync"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/telemetry/otel/trace/span"
 	"go.opentelemetry.io/otel/attribute"
@@ -223,14 +222,7 @@ func (c ErrCyclic) Attrs() []slog.Attr {
 // next, the state machine continues with the next state.
 type State[T any] func(req Request[T]) Request[T]
 
-// seenStagesPool is a pool of seenStages objects to reduce allocations.
-var seenStagesPool = sync.NewPool(
-	context.Background(),
-	"seenStagesPool",
-	func() *seenStages {
-		return &seenStages{}
-	},
-)
+
 
 // seenStages tracks what stages have been called in a Request. This is used to detect
 // cyclic errors. Implemented with a slice to reduce allocations and is faster to
