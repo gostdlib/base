@@ -70,8 +70,6 @@ type RunOption func(runOpts) (runOpts, error)
 // Do not try to use this for a cron like task. If you need to run background cron like tasks,
 // use the .Once() method wrapped with some timer.
 func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponential.Backoff, options ...RunOption) error {
-	const logMsg = "background/Tasks.Run"
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -116,7 +114,7 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 		func() {
 			boff.Retry(
 				ctx,
-				t.taskWrapper(name, logMsg, bm, task),
+				t.taskWrapper(name, bm, task),
 			)
 		},
 	)
@@ -124,7 +122,7 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 	return nil
 }
 
-func (t *Tasks) taskWrapper(name, logMsg string, bm *backgroundTaskMetrics, task Task) exponential.Op {
+func (t *Tasks) taskWrapper(name string, bm *backgroundTaskMetrics, task Task) exponential.Op {
 	return func(ctx context.Context, rec exponential.Record) (err error) {
 		defer func() {
 			if ctx.Err() == nil {

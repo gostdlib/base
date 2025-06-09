@@ -82,14 +82,12 @@ func TestBackgroundWhenCrashing(t *testing.T) {
 		ctx,
 		"TestBackground-func2",
 		func(ctx context.Context) error {
-			for {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				count.Add(1)
-				time.Sleep(100 * time.Millisecond)
-				return errors.New("crap")
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
+			count.Add(1)
+			time.Sleep(100 * time.Millisecond)
+			return errors.New("crap")
 		},
 		noBackoff,
 	)

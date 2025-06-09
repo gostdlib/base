@@ -168,7 +168,6 @@ func (s *starter) setupGW(ctx context.Context) (fn, error) {
 	if rmux == nil {
 		rmux = runtime.NewServeMux()
 		s.opts.mux = rmux
-		s.opts = s.opts
 	}
 
 	if len(s.opts.certs) > 0 {
@@ -180,7 +179,6 @@ func (s *starter) setupGW(ctx context.Context) (fn, error) {
 	if err := s.opts.gwReg(ctx, rmux, s.lis.Addr().String(), s.opts.gwDial); err != nil {
 		return nil, err
 	}
-	s.opts = s.opts
 
 	return s.setupHTTP, nil
 }
@@ -226,7 +224,6 @@ func (s *starter) listenWithHTTP(ctx context.Context) (fn, error) {
 	if mux == nil {
 		mux = runtime.NewServeMux()
 		s.opts.mux = mux
-		s.opts = s.opts
 	}
 
 	if len(s.opts.certs) == 0 {
