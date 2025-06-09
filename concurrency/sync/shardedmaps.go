@@ -39,7 +39,7 @@ func (s *ShardedMap[K, V]) Set(k K, v V) (prev V, ok bool) {
 // If the key does not exist but the old value is the zero value for the type, this will create the value
 // and set it to new. This will return true if the value was set, false otherwise.
 func (s *ShardedMap[K, V]) CompareAndSwap(k K, old, new V) (swapped bool) {
-	return s.CompareAndSwap(k, old, new)
+	return s.sm.CompareAndSwap(k, old, new)
 }
 
 // Del deletes the value for the given key. It returns the previous value and if the key existed.
