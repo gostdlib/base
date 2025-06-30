@@ -44,21 +44,25 @@ func TestGroupBasic(t *testing.T) {
 
 		// test go routine
 		f := func(ctx context.Context) error {
-			count.Add(1)
-			defer count.Add(-1)
 			<-exit
+			count.Add(-1)
 			return nil
 		}
 
 		// spin off numGoroutines go routines
 		for i := 0; i < numGoroutines; i++ {
-			wg.Go(context.Background(), f)
+			count.Add(1)
+			err := wg.Go(context.Background(), f)
+			if err != nil {
+				panic(err)
+			}
 		}
 
 		start := time.Now()
 		for count.Load() != int32(numGoroutines) {
 			if time.Since(start) > 10*time.Second {
-				t.Errorf("TestGroupBasic: Timed out waiting for go routines to start: got %d, want %d", count.Load(), numGoroutines)
+				t.Errorf("TestGroupBasic(%s): Timed out waiting for go routines to start: got %d, want %d", test.desc, count.Load(), numGoroutines)
+				break
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
