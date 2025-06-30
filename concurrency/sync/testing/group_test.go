@@ -16,7 +16,7 @@ import (
 func TestGroupBasic(t *testing.T) {
 	t.Parallel()
 
-	numGoroutines := 4
+	numGoroutines := 20
 
 	pool, err := worker.New(context.Background(), "test")
 	if err != nil {
