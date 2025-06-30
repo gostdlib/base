@@ -57,7 +57,7 @@ func TestIniterServe(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 	hclient := http.Client{}
-	resp, err := hclient.Get(fmt.Sprintf("http://127.0.01:%d/metrics", port))
+	resp, err := hclient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
 	if err != nil {
 		t.Fatal(err)
 	}
