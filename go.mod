@@ -3,13 +3,12 @@ module github.com/gostdlib/base
 go 1.24.0
 
 require (
-	github.com/Azure/retry v0.0.0-20250221010952-92c9290cea0f
+	github.com/Azure/retry v0.0.0-20250630161043-64297f5ff699
 	github.com/CAFxX/httpcompression v0.0.9
 	github.com/go-json-experiment/json v0.0.0-20250223041408-d3c622f1b874
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/google/uuid v1.6.0
 	github.com/gostdlib/concurrency v0.0.0-20241230205952-55ea9e292314
-	github.com/gostdlib/memory v0.0.0-20240318153335-39f2c93e660c
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3
 	github.com/kylelemons/godebug v1.1.0
 	github.com/orcaman/concurrent-map v1.0.0
@@ -17,7 +16,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/samber/slog-zap/v2 v2.6.2
 	github.com/samber/slog-zerolog/v2 v2.7.3
-	github.com/tailscale/hujson v0.0.0-20250226034555-ec1d1c113d33
+	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/tidwall/lotsa v1.0.3
 	github.com/tidwall/shardmap v0.0.0-20190927132224-c190691bd211
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.60.0
@@ -35,7 +34,7 @@ require (
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.39.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20250414145226-207652e42e2e
-	google.golang.org/grpc v1.71.1
+	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
 	k8s.io/api v0.32.3
 	k8s.io/apimachinery v0.32.3
@@ -93,7 +92,6 @@ require (
 	github.com/tklauser/numcpus v0.10.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.60.0 // indirect
-	github.com/valyala/tcplisten v1.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
@@ -101,11 +99,11 @@ require (
 	go.opentelemetry.io/proto/otlp v1.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/oauth2 v0.29.0 // indirect
-	golang.org/x/sys v0.32.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/term v0.31.0 // indirect
-	golang.org/x/text v0.24.0 // indirect
+	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250414145226-207652e42e2e // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
