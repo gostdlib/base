@@ -62,12 +62,9 @@ func (l *Limited) Submit(ctx context.Context, f func()) error {
 	l.wg.Add(1)
 
 	wrap := func() {
-		defer func() {
-			<-l.limit
-			l.wg.Done()
-		}()
-
 		f()
+		<-l.limit
+		l.wg.Done()
 	}
 	return l.p.Submit(ctx, wrap)
 }
