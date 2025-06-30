@@ -47,6 +47,12 @@ func New(options ...Option) (*Backoff, error) {
 	return exponential.New(options...)
 }
 
+// Must creates a new Backoff instance with the given options and panics if there is an error.
+// Use: Must(New(options)) .
+func Must(n func(options ...Option) (*Backoff, error)) *Backoff {
+	return exponential.Must(n)
+}
+
 // Record is the record of a Retry attempt.
 type Record = exponential.Record
 
@@ -56,3 +62,10 @@ type Op = exponential.Op
 // RetryOption is an option for the Retry method. Functions that implement RetryOption
 // provide an override on a single call.
 type RetryOption = exponential.RetryOption
+
+// WithMaxAttempts sets the maximum number of attempts to retry the operation. If not specified,
+// the maximum number of attempts is determined by the policy. If the policy has a MaxAttempts
+// greater than 0, that is used. If the policy has a MaxAttempts of 0, then there is no limit.
+func WithMaxAttempts(max int) RetryOption {
+	return exponential.WithMaxAttempts(max)
+}
