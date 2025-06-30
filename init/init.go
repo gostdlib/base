@@ -137,6 +137,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
 	"github.com/gostdlib/base/env/detect"
 	"github.com/gostdlib/base/telemetry/log"
@@ -422,9 +423,9 @@ type setup struct {
 // newSetup creates a new setup state machine.
 func newSetup(args InitArgs, opts initOpts) setup {
 	return setup{
-		args:   args,
-		opts:   opts,
-		inits:  initReg.values,
+		args:  args,
+		opts:  opts,
+		inits: initReg.values,
 
 		detectInit:  detect.Init,
 		traceInit:   trace.Init,
@@ -495,6 +496,9 @@ func (s setup) packageInits() (stateFn, error) {
 	if err := s.metricsInit(rsc, s.opts.metricsPort); err != nil {
 		return nil, err
 	}
+
+	// This ensures that the default background tasks gets the init'd metrics.
+	background.Set(background.New(context.Background()))
 
 	return s.loggerSetup, nil
 }
