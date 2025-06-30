@@ -40,6 +40,24 @@ func TestIssue33(t *testing.T) {
 	}
 }
 
+// TestIssue33P2 was a problem where metrics were not added to the default pool object.
+func TestIssue33P2(t *testing.T) {
+	contextVal = context.Background()
+	mp, err := initMeterProvider(t.Context(), "name")
+	if err != nil {
+		panic(err)
+	}
+
+	Service(InitArgs{Meta: Meta{Service: "test", Build: "v0.0.1"}}, WithMeterProvider(mp))
+
+	pool := context.Pool(context.Background())
+
+	meter := pool.Meter()
+	if fmt.Sprintf("%T", meter) == "noop.Meter" {
+		t.Errorf("TestIssue33: expected meter to not be the noop.Meter")
+	}
+}
+
 func initMeterProvider(ctx context.Context, serviceName string) (*sdkmetric.MeterProvider, error) {
 	name := semconv.ServiceNameKey.String(serviceName)
 	res, err := resource.New(ctx,

@@ -499,7 +499,11 @@ func (s setup) packageInits() (stateFn, error) {
 
 	// This ensures that the default background tasks gets the init'd metrics.
 	background.Set(background.New(context.Background()))
-
+	p, err := worker.New(context.Background(), "defaultPool")
+	if err != nil {
+		return nil, fmt.Errorf("could not create default worker pool: %w", err)
+	}
+	worker.Set(p)
 	return s.loggerSetup, nil
 }
 
