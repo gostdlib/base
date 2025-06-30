@@ -144,6 +144,7 @@ import (
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 	"github.com/gostdlib/base/telemetry/otel/trace/span"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Pool provides a worker pool that can be used to submit functions to be run by a goroutine. This provides
@@ -394,6 +395,14 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 	}
 	pool.goRoutines.Add(goRoutines)
 	return pool
+}
+
+// Meter returns the meter for this pool.
+func (p *Pool) Meter() metric.Meter {
+	if p.metrics == nil {
+		return nil
+	}
+	return p.metrics.meter
 }
 
 func (p *Pool) submitEvent(spanner span.Span, t time.Time) {
