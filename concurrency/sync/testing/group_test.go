@@ -16,13 +16,15 @@ import (
 func TestGroupBasic(t *testing.T) {
 	t.Parallel()
 
+	numGoroutines := 4
+
 	pool, err := worker.New(context.Background(), "test")
 	if err != nil {
 		panic(err)
 	}
 	defer pool.Close(context.Background())
 
-	limit := pool.Limited(5)
+	limit := pool.Limited(numGoroutines)
 
 	tests := []struct {
 		desc string
@@ -48,22 +50,22 @@ func TestGroupBasic(t *testing.T) {
 			return nil
 		}
 
-		// spin off 5 go routines
-		for i := 0; i < 5; i++ {
+		// spin off numGoroutines go routines
+		for i := 0; i < numGoroutines; i++ {
 			wg.Go(context.Background(), f)
 		}
 
 		start := time.Now()
-		for count.Load() != 5 {
+		for count.Load() != int32(numGoroutines) {
 			if time.Since(start) > 10*time.Second {
-				t.Errorf("TestGroupBasic: Timed out waiting for go routines to start: got %d, want %d", count.Load(), 5)
+				t.Errorf("TestGroupBasic: Timed out waiting for go routines to start: got %d, want %d", count.Load(), numGoroutines)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 
 		// check that running count is correct
-		if wg.Running() != 5 {
-			t.Errorf("TestGroupBasic(%s): Expected Running() to return 5, got %d", test.desc, wg.Running())
+		if wg.Running() != numGoroutines {
+			t.Errorf("TestGroupBasic(%s): Expected Running() to return %d, got %d", test.desc, numGoroutines, wg.Running())
 		}
 		close(exit)
 
