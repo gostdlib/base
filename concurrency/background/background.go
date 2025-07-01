@@ -235,3 +235,8 @@ func (t *Tasks) Close(ctx context.Context) error {
 	}
 	return t.pool.Close(ctx)
 }
+
+// Meter returns the OpenTelemetry meter for the Tasks.
+func (t *Tasks) Meter() metric.Meter {
+	return t.meter
+}

@@ -5,6 +5,7 @@ import (
 )
 
 type poolMetrics struct {
+	meter metric.Meter
 	// StaticExists is the number of goroutines that always exist. This can go to 0
 	// if the pool is closed.
 	StaticExists metric.Int64UpDownCounter
@@ -43,6 +44,7 @@ func newPoolMetrics(m metric.Meter) *poolMetrics {
 	}
 
 	return &poolMetrics{
+		meter:          m,
 		StaticExists:   se,
 		StaticRunning:  sr,
 		DynamicExists:  de,
