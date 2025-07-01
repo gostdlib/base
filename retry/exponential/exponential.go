@@ -47,10 +47,10 @@ func New(options ...Option) (*Backoff, error) {
 	return exponential.New(options...)
 }
 
-// Must creates a new Backoff instance with the given options and panics if there is an error.
+// Must returns b if err == nil, otherwise it panics.
 // Use: Must(New(options)) .
-func Must(n func(options ...Option) (*Backoff, error)) *Backoff {
-	return exponential.Must(n)
+func Must(b *exponential.Backoff, err error) *exponential.Backoff {
+	return exponential.Must(b, err)
 }
 
 // Record is the record of a Retry attempt.
