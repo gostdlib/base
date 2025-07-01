@@ -3,7 +3,7 @@ module github.com/gostdlib/base
 go 1.24.0
 
 require (
-	github.com/Azure/retry v0.0.0-20250630161043-64297f5ff699
+	github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d
 	github.com/CAFxX/httpcompression v0.0.9
 	github.com/go-json-experiment/json v0.0.0-20250223041408-d3c622f1b874
 	github.com/gofiber/fiber/v2 v2.52.6
