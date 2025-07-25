@@ -11,6 +11,7 @@ import (
 	pb "github.com/gostdlib/base/errors/example/proto"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -128,22 +129,22 @@ func TestWithIntercept(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		intercepts      []*testIntercept
-		ctx             context.Context
-		wantErr         bool
-		customerID      string
-		expectAllCalled bool
+		name         string
+		intercepts   []*testIntercept
+		ctx          context.Context
+		wantErr      bool
+		customerID   string
+		expectCalled int
 	}{
 		{
 			name: "Single successful intercept",
 			intercepts: []*testIntercept{
 				{returnErr: nil},
 			},
-			ctx:             metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
-			wantErr:         false,
-			customerID:      "12345",
-			expectAllCalled: true,
+			ctx:          metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
+			wantErr:      false,
+			customerID:   "12345",
+			expectCalled: 1,
 		},
 		{
 			name: "Multiple successful intercepts",
@@ -152,10 +153,10 @@ func TestWithIntercept(t *testing.T) {
 				{returnErr: nil},
 				{returnErr: nil},
 			},
-			ctx:             metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
-			wantErr:         false,
-			customerID:      "12345",
-			expectAllCalled: true,
+			ctx:          metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
+			wantErr:      false,
+			customerID:   "12345",
+			expectCalled: 3,
 		},
 		{
 			name: "First intercept returns error",
@@ -163,10 +164,10 @@ func TestWithIntercept(t *testing.T) {
 				{returnErr: errors.New("intercept error")},
 				{returnErr: nil}, // This should not be called
 			},
-			ctx:             metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
-			wantErr:         true,
-			customerID:      "12345",
-			expectAllCalled: false,
+			ctx:          metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
+			wantErr:      true,
+			customerID:   "12345",
+			expectCalled: 1,
 		},
 		{
 			name: "Second intercept returns error",
@@ -175,30 +176,30 @@ func TestWithIntercept(t *testing.T) {
 				{returnErr: errors.New("second intercept error")},
 				{returnErr: nil}, // This should not be called
 			},
-			ctx:             metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
-			wantErr:         true,
-			customerID:      "12345",
-			expectAllCalled: false,
+			ctx:          metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
+			wantErr:      true,
+			customerID:   "12345",
+			expectCalled: 2,
 		},
 		{
 			name: "Intercept modifies request",
 			intercepts: []*testIntercept{
 				{modifyReq: true},
 			},
-			ctx:             metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
-			wantErr:         false,
-			customerID:      "12345",
-			expectAllCalled: true,
+			ctx:          metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
+			wantErr:      false,
+			customerID:   "12345",
+			expectCalled: 1,
 		},
 		{
 			name: "No metadata",
 			intercepts: []*testIntercept{
 				{returnErr: nil},
 			},
-			ctx:             context.Background(),
-			wantErr:         false,
-			customerID:      "",
-			expectAllCalled: true,
+			ctx:          context.Background(),
+			wantErr:      false,
+			customerID:   "",
+			expectCalled: 1,
 		},
 	}
 
@@ -251,21 +252,12 @@ func TestWithIntercept(t *testing.T) {
 					if ti.receivedMeta.CallID == "" {
 						t.Errorf("Intercept %d: expected non-empty callID", i)
 					}
-				} else if test.expectAllCalled {
-					t.Errorf("Intercept %d was not called but should have been", i)
-				}
-
-				// If this intercept returns an error, no subsequent intercepts should be called
-				if ti.returnErr != nil {
-					break
 				}
 			}
 
 			// Verify expected call count
-			if test.expectAllCalled {
-				if calledCount != len(test.intercepts) {
-					t.Errorf("Expected all %d intercepts to be called, but only %d were called", len(test.intercepts), calledCount)
-				}
+			if calledCount != test.expectCalled {
+				t.Errorf("Expected %d intercepts to be called, but %d were called", test.expectCalled, calledCount)
 			}
 		})
 	}
@@ -374,46 +366,136 @@ func TestWithInterceptNilIntercept(t *testing.T) {
 func TestWithInterceptErrorConversion(t *testing.T) {
 	t.Parallel()
 
-	customErr := errors.E(t.Context(), errors.CatReq, errors.TypeBadRequest, fmt.Errorf("custom intercept error"))
-
-	testErrConvert := func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
-		return status.New(13, "converted error"), nil
-	}
-
-	intercept := func(ctx context.Context, req any, md grpcContext.Metadata) (any, error) {
-		return nil, customErr
-	}
-
-	unary, err := New(context.Background(), testErrConvert, WithIntercept(intercept))
-	if err != nil {
-		t.Fatalf("Failed to create unary interceptor: %v", err)
+	tests := []struct {
+		name          string
+		err           error
+		errConvert    ErrConvert
+		expectStatus  bool
+		expectCode    uint32
+		expectMessage string
+		expectErr     bool
+	}{
+		{
+			name: "Custom errors.Error with conversion using error details",
+			err:  errors.E(context.Background(), errors.CatReq, errors.TypeBadRequest, fmt.Errorf("custom intercept error")),
+			errConvert: func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+				return status.New(codes.Internal, fmt.Sprintf("converted: %s for %s", e.Error(), meta.Op)), nil
+			},
+			expectStatus:  true,
+			expectCode:    uint32(codes.Internal),
+			expectMessage: "converted: custom intercept error for /service/method",
+			expectErr:     true,
+		},
+		{
+			name: "Custom errors.Error with conversion failure",
+			err:  errors.E(context.Background(), errors.CatReq, errors.TypeBadRequest, fmt.Errorf("custom intercept error")),
+			errConvert: func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+				return nil, fmt.Errorf("conversion failed for error: %s", e.Error())
+			},
+			expectStatus:  false,
+			expectCode:    0,
+			expectMessage: "conversion failed for error: custom intercept error",
+			expectErr:     true,
+		},
+		{
+			name: "Standard error",
+			err:  fmt.Errorf("standard error"),
+			errConvert: func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+				return status.New(codes.Unknown, fmt.Sprintf("wrapped error: %s", e.Error())), nil
+			},
+			expectStatus:  false,
+			expectMessage: "standard error",
+			expectErr:     true,
+		},
+		{
+			name:          "Custom errors.Error without converter",
+			err:           errors.E(context.Background(), errors.CatReq, errors.TypeBadRequest, fmt.Errorf("custom intercept error")),
+			errConvert:    nil,
+			expectStatus:  false,
+			expectCode:    0,
+			expectMessage: "custom intercept error",
+			expectErr:     true,
+		},
+		{
+			name:          "Standard error without converter",
+			err:           fmt.Errorf("standard error"),
+			errConvert:    nil,
+			expectStatus:  false,
+			expectCode:    0,
+			expectMessage: "standard error",
+			expectErr:     true,
+		},
+		{
+			name: "Custom errors.Error with metadata-based conversion",
+			err:  errors.E(context.Background(), errors.CatReq, errors.TypeBadRequest, fmt.Errorf("access denied")),
+			errConvert: func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+				// Use metadata to customize the error response
+				code := codes.PermissionDenied
+				if meta.CustomerID != "" {
+					return status.New(code, fmt.Sprintf("Customer %s: %s", meta.CustomerID, e.Error())), nil
+				}
+				return status.New(code, e.Error()), nil
+			},
+			expectStatus:  true,
+			expectCode:    uint32(codes.PermissionDenied),
+			expectMessage: "Customer 12345: access denied",
+			expectErr:     true,
+		},
 	}
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/service/method"}
 	req := &pb.HelloReq{Name: "world"}
-	ctx := context.Background()
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345"))
 
 	handler := func(ctx context.Context, req any) (any, error) {
 		return "response", nil
 	}
 
-	_, err = unary.Intercept(ctx, req, info, handler)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intercept := func(ctx context.Context, req any, md grpcContext.Metadata) (any, error) {
+				return nil, test.err
+			}
 
-	if err == nil {
-		t.Error("Expected error from failed intercept")
-		return
-	}
+			unary, err := New(context.Background(), test.errConvert, WithIntercept(intercept))
+			if err != nil {
+				t.Fatalf("Failed to create unary interceptor: %v", err)
+			}
 
-	// Check that the error was converted
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("Expected gRPC status error after conversion: %s", err)
-	}
+			_, err = unary.Intercept(ctx, req, info, handler)
 
-	if st.Code() != 13 {
-		t.Errorf("Expected status code 13, got %d", st.Code())
-	}
-	if st.Message() != "converted error" {
-		t.Errorf("Expected message 'converted error', got '%s'", st.Message())
+			if !test.expectErr {
+				if err != nil {
+					t.Errorf("Did not expect error but got: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Error("Expected error from failed intercept")
+				return
+			}
+
+			if test.expectStatus {
+				// Check that the error was converted to gRPC status
+				st, ok := status.FromError(err)
+				if !ok {
+					t.Fatalf("Expected gRPC status error after conversion, got: %T", err)
+				}
+
+				if uint32(st.Code()) != test.expectCode {
+					t.Errorf("Expected status code %d, got %d", test.expectCode, st.Code())
+				}
+				if st.Message() != test.expectMessage {
+					t.Errorf("Expected message '%s', got '%s'", test.expectMessage, st.Message())
+				}
+				return
+			}
+
+			// Check that error message matches expectation if not status
+			if err.Error() != test.expectMessage {
+				t.Errorf("Expected error message '%s', got '%s'", test.expectMessage, err.Error())
+			}
+		})
 	}
 }
