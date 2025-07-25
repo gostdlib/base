@@ -14,19 +14,17 @@ import (
 	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/stream"
 	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/unary"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 
 	"github.com/CAFxX/httpcompression"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
 )
 
 func defaultHTTP() http.Server {
@@ -99,7 +97,6 @@ func (s *starter) start(ctx context.Context) (fn, error) {
 // setOptions sets our default server options and then calls the options
 // provided by the user.
 func (s *starter) setOptions(ctx context.Context) (fn, error) {
-	fmt.Printf("[DEBUG] s.unaryInterceptors: %T\n", s.unaryInterceptors)
 	ui, err := unary.New(ctx, unary.ErrConvert(s.opts.errConverter), unary.WithIntercept(s.unaryInterceptors...))
 	if err != nil {
 		return nil, err
@@ -115,7 +112,7 @@ func (s *starter) setOptions(ctx context.Context) (fn, error) {
 		serverOptions: []grpc.ServerOption{
 			grpc.UnaryInterceptor(ui.Intercept),
 			grpc.StreamInterceptor(si.Intercept),
-			// grpc.StatsHandler(otelgrpc.NewServerHandler()),
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
 			grpc.KeepaliveParams(defaultKeepalive),
 			grpc.MaxConcurrentStreams(100),          // Limit concurrent streams
 			grpc.ConnectionTimeout(5 * time.Second), // Timeout for new connections
@@ -134,28 +131,6 @@ func (s *starter) setOptions(ctx context.Context) (fn, error) {
 	}
 
 	return s.registrations, nil
-}
-
-var (
-	errMissingMetadata = status.Errorf(codes.InvalidArgument, "missing metadata")
-	errInvalidToken    = status.Errorf(codes.Unauthenticated, "invalid token")
-)
-
-func unaryInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	// authentication (token verification)
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil, errMissingMetadata
-	}
-	if val, ok := md["authorization"]; !ok || val == nil || len(val) == 0 {
-		return nil, errInvalidToken
-	}
-	m, err := handler(ctx, req)
-	if err != nil {
-		fmt.Printf("[DEBUG] unary interceptor failed")
-		// logger("RPC failed with error: %v", err)
-	}
-	return m, err
 }
 
 // registrations registers the services with the server.
