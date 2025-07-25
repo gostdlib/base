@@ -106,9 +106,11 @@ func (u *Interceptor) errLogAndConvert(ctx context.Context, err error, grpcMeta 
 	if e, ok := err.(errors.Error); ok {
 		e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
 		if u.errConvert != nil {
-			status, err := u.errConvert(ctx, e, grpcMeta)
-			if err != nil {
-				return err
+			status, cErr := u.errConvert(ctx, e, grpcMeta)
+			if cErr != nil {
+				ce := errors.E(ctx, nil, nil, cErr)
+				ce.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
+				return e
 			}
 			return status.Err()
 		}

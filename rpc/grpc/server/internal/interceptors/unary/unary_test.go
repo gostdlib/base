@@ -402,7 +402,7 @@ func TestWithInterceptErrorConversion(t *testing.T) {
 			},
 			expectStatus:  false,
 			expectCode:    0,
-			expectMessage: "conversion failed for error: custom intercept error",
+			expectMessage: "custom intercept error",
 			expectErr:     true,
 		},
 		{
