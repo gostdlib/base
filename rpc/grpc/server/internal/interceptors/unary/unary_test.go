@@ -201,6 +201,14 @@ func TestWithIntercept(t *testing.T) {
 			customerID:   "",
 			expectCalled: 1,
 		},
+		{
+			name:         "Empty intercepts",
+			intercepts:   nil,
+			ctx:          metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
+			wantErr:      false,
+			customerID:   "12345",
+			expectCalled: 0,
+		},
 	}
 
 	info := &grpc.UnaryServerInfo{
