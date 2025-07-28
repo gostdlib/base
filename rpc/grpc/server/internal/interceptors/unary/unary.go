@@ -86,26 +86,39 @@ func (u *Interceptor) Intercept(ctx context.Context, req any, info *grpc.UnarySe
 	ctx, spanner := span.New(ctx, opts...)
 	defer spanner.End()
 
-	resp, err := handler(ctx, req)
-	if err != nil {
-		if e, ok := err.(errors.Error); ok {
-			e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
-			if u.errConvert != nil {
-				status, err := u.errConvert(ctx, e, grpcMeta)
-				if err != nil {
-					return nil, err
-				}
-				return nil, status.Err()
-			}
-			return nil, e
-		} else {
-			e := errors.E(ctx, nil, nil, err)
-			e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
-			return nil, e
+	var err error
+	for _, i := range u.intercepts {
+		req, err = i(ctx, req, grpcMeta)
+		if err != nil {
+			return nil, u.errLogAndConvert(ctx, err, grpcMeta, req)
 		}
 	}
 
+	resp, err := handler(ctx, req)
+	if err != nil {
+		return nil, u.errLogAndConvert(ctx, err, grpcMeta, req)
+	}
+
 	return resp, err
+}
+
+func (u *Interceptor) errLogAndConvert(ctx context.Context, err error, grpcMeta grpcContext.Metadata, req any) error {
+	if e, ok := err.(errors.Error); ok {
+		e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
+		if u.errConvert != nil {
+			status, cErr := u.errConvert(ctx, e, grpcMeta)
+			if cErr != nil {
+				ce := errors.E(ctx, nil, nil, cErr)
+				ce.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
+				return e
+			}
+			return status.Err()
+		}
+		return e
+	}
+	e := errors.E(ctx, nil, nil, err)
+	e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
+	return e
 }
 
 // mustUUID generates a new UUID v7. If it fails, it panics.

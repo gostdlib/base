@@ -14,9 +14,9 @@ import (
 	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/stream"
 	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/unary"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 
 	"github.com/CAFxX/httpcompression"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
