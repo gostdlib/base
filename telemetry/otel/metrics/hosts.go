@@ -1,8 +1,4 @@
-//go:build linux
-
 package metrics
-
-// File exists because of bug: https://github.com/open-telemetry/opentelemetry-go-contrib/issues/6625
 
 import (
 	"fmt"

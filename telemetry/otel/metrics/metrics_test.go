@@ -1,6 +1,3 @@
-//go:build amd64
-// +build amd64
-
 package metrics
 
 import (
@@ -89,10 +86,10 @@ func TestIniterServe(t *testing.T) {
 	}
 
 	found := map[string]bool{
-		"go_goroutines":   false,
-		"go_memstats":     false,
-		"system_cpu_time": false,
-		"runtime":         false,
+		"go_goroutines":          false,
+		"go_memstats":            false,
+		"cpu_time_seconds_total": false,
+		"runtime":                false,
 		fmt.Sprintf("target_info{service_name=%q}", targetInfo): false,
 	}
 
