@@ -22,6 +22,40 @@ import (
 	pb "github.com/gostdlib/base/errors/example/proto"
 )
 
+type TestCat uint8
+
+const (
+	UnknownCat TestCat = 0
+	CatReq     TestCat = 1
+)
+
+func (t TestCat) Category() string {
+	if t == 0 {
+		return "Unknown"
+	}
+	if t == 1 {
+		return "Request"
+	}
+	return ""
+}
+
+type TestType uint8
+
+const (
+	UnknownType    TestType = 0
+	TypeBadRequest TestType = 1
+)
+
+func (t TestType) Type() string {
+	if t == 0 {
+		return "Unknown"
+	}
+	if t == 1 {
+		return "BadRequest"
+	}
+	return ""
+}
+
 var _ LogAttrer = SQLQueryErr{}
 
 type SQLQueryErr struct {
