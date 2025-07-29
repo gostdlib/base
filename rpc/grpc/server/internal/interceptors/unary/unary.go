@@ -7,14 +7,11 @@ import (
 	"github.com/gostdlib/base/telemetry/otel/trace/span"
 
 	grpcContext "github.com/gostdlib/base/context/grpc"
+	middle "github.com/grpc-ecosystem/go-grpc-middleware"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
-
-// Intercept is a unary interceptor for gRPC that can be provided by the user. It returns
-// the request or an error. This allows modification of the request before it is sent to the handler.
-type Intercept func(ctx context.Context, req any, md grpcContext.Metadata) (any, error)
 
 // ErrConvert is a function that converts an error to a gRPC status. If it cannot, it returns a standard error.
 type ErrConvert func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error)
@@ -23,7 +20,8 @@ type ErrConvert func(ctx context.Context, e errors.Error, meta grpcContext.Metad
 type Interceptor struct {
 	errConvert  ErrConvert
 	spanOptions []span.Option
-	intercepts  []Intercept
+	intercepts  []grpc.UnaryServerInterceptor
+	chain       grpc.UnaryServerInterceptor
 }
 
 // Option is an option for NewUnary.
@@ -43,7 +41,7 @@ func WithSpanOptions(spanOptions ...span.Option) Option {
 }
 
 // WithIntercept adds intercepts to the interceptor.
-func WithIntercept(intercepts ...Intercept) Option {
+func WithIntercept(intercepts ...grpc.UnaryServerInterceptor) Option {
 	return func(i *Interceptor) error {
 		for _, inter := range intercepts {
 			if inter == nil {
@@ -55,7 +53,7 @@ func WithIntercept(intercepts ...Intercept) Option {
 	}
 }
 
-// New creates a new unary interceptor for gRPC.
+// New creates a new unary interceptor for gRPC. errConvert can be nil.
 func New(ctx context.Context, errConvert ErrConvert, options ...Option) (*Interceptor, error) {
 	u := &Interceptor{errConvert: errConvert}
 
@@ -64,11 +62,31 @@ func New(ctx context.Context, errConvert ErrConvert, options ...Option) (*Interc
 			return nil, err
 		}
 	}
+
+	intercepts := make([]grpc.UnaryServerInterceptor, 0, len(u.intercepts)+2)
+	intercepts = append(intercepts, u.attachMeta, u.errLogAndConvert)
+	intercepts = append(intercepts, u.intercepts...)
+	u.chain = middle.ChainUnaryServer(intercepts...)
+
 	return u, nil
 }
 
-// Intercept intercepts unary gRPC calls.
+// Intercept is the main interceptor function that will be called by gRPC.
+// It adds a trace span and then calls the chain of interceptors.
+// The span options are applied to the span created for this call.
 func (u *Interceptor) Intercept(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	// Add our trace span.
+	opts := make([]span.Option, 0, len(u.spanOptions)+1)
+	opts = append(opts, span.WithName(info.FullMethod))
+	opts = append(opts, u.spanOptions...)
+	ctx, spanner := span.New(ctx, opts...)
+	defer spanner.End()
+
+	return u.chain(ctx, req, info, handler)
+}
+
+// attachMeta in an interceptor that attaches metadata to the context for the gRPC call.
+func (u *Interceptor) attachMeta(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	grpcMeta := grpcContext.Metadata{CallID: mustUUID().String(), Op: info.FullMethod}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
@@ -79,46 +97,35 @@ func (u *Interceptor) Intercept(ctx context.Context, req any, info *grpc.UnarySe
 	}
 	ctx = context.Attach(grpcContext.SetMetadata(ctx, grpcMeta))
 
-	// Add our trace span.
-	opts := make([]span.Option, 0, len(u.spanOptions)+1)
-	opts = append(opts, span.WithName(info.FullMethod))
-	opts = append(opts, u.spanOptions...)
-	ctx, spanner := span.New(ctx, opts...)
-	defer spanner.End()
-
-	var err error
-	for _, i := range u.intercepts {
-		req, err = i(ctx, req, grpcMeta)
-		if err != nil {
-			return nil, u.errLogAndConvert(ctx, err, grpcMeta, req)
-		}
-	}
-
-	resp, err := handler(ctx, req)
-	if err != nil {
-		return nil, u.errLogAndConvert(ctx, err, grpcMeta, req)
-	}
-
-	return resp, err
+	return handler(ctx, req)
 }
 
-func (u *Interceptor) errLogAndConvert(ctx context.Context, err error, grpcMeta grpcContext.Metadata, req any) error {
+// errLogAndConvert is an interceptor that logs the error and converts it to a gRPC status.
+func (u *Interceptor) errLogAndConvert(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	// func(ctx context.Context, req any) (any, error
+	resp, err := handler(ctx, req)
+	if err == nil {
+		return resp, nil
+	}
+
+	md := grpcContext.GetMetadata(ctx)
+
 	if e, ok := err.(errors.Error); ok {
-		e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
+		e.Log(ctx, md.CallID, md.CustomerID, req)
 		if u.errConvert != nil {
-			status, cErr := u.errConvert(ctx, e, grpcMeta)
+			status, cErr := u.errConvert(ctx, e, md)
 			if cErr != nil {
 				ce := errors.E(ctx, nil, nil, cErr)
-				ce.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
-				return e
+				ce.Log(ctx, md.CallID, md.CustomerID, req)
+				return resp, e
 			}
-			return status.Err()
+			return resp, status.Err()
 		}
-		return e
+		return resp, e
 	}
 	e := errors.E(ctx, nil, nil, err)
-	e.Log(ctx, grpcMeta.CallID, grpcMeta.CustomerID, req)
-	return e
+	e.Log(ctx, md.CallID, md.CustomerID, req)
+	return resp, e
 }
 
 // mustUUID generates a new UUID v7. If it fails, it panics.

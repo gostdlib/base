@@ -100,9 +100,13 @@ func TestIntercept(t *testing.T) {
 	req := &pb.HelloReq{Name: "world"}
 
 	for _, test := range tests {
-		unary := &Interceptor{}
+		unary, err := New(t.Context(), nil)
+		if err != nil {
+			t.Errorf("TestUnaryIntercept(%s): Failed to create unary interceptor: %v", test.name, err)
+			continue
+		}
 
-		_, err := unary.Intercept(test.ctx, req, info, test.handler)
+		_, err = unary.Intercept(test.ctx, req, info, test.handler)
 
 		switch {
 		case err == nil && test.wantErr != nil:
@@ -145,9 +149,10 @@ type testIntercept struct {
 	receivedMeta grpcContext.Metadata
 }
 
-func (t *testIntercept) intercept(ctx context.Context, req any, md grpcContext.Metadata) (any, error) {
+func (t *testIntercept) intercept(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 	t.called = true
 	t.receivedReq = req
+	md := grpcContext.GetMetadata(ctx)
 	t.receivedMeta = md
 
 	if t.returnErr != nil {
@@ -157,11 +162,11 @@ func (t *testIntercept) intercept(ctx context.Context, req any, md grpcContext.M
 	if t.modifyReq {
 		// Modify the request to test that changes are passed through
 		if helloReq, ok := req.(*pb.HelloReq); ok {
-			return &pb.HelloReq{Name: helloReq.Name + "_modified"}, nil
+			return handler(ctx, &pb.HelloReq{Name: helloReq.Name + "_modified"})
 		}
 	}
 
-	return req, nil
+	return handler(ctx, req)
 }
 
 func TestWithIntercept(t *testing.T) {
@@ -261,7 +266,7 @@ func TestWithIntercept(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		intercepts := make([]Intercept, len(test.intercepts))
+		intercepts := make([]grpc.UnaryServerInterceptor, len(test.intercepts))
 		for i, ti := range test.intercepts {
 			intercepts[i] = ti.intercept
 		}
@@ -353,7 +358,7 @@ func TestWithInterceptRequestModification(t *testing.T) {
 	for _, test := range tests {
 		req := &pb.HelloReq{Name: test.originalReqName}
 
-		intercepts := make([]Intercept, len(test.intercepts))
+		intercepts := make([]grpc.UnaryServerInterceptor, len(test.intercepts))
 		for i, ti := range test.intercepts {
 			intercepts[i] = ti.intercept
 		}
@@ -389,10 +394,10 @@ func TestWithInterceptNilIntercept(t *testing.T) {
 		t.Error("Expected error when passing nil intercept, got none")
 	}
 
-	// Test that WithIntercept rejects intercepts that include nil
-	validIntercept := func(ctx context.Context, req any, md grpcContext.Metadata) (any, error) {
-		return req, nil
+	validIntercept := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		return handler(ctx, req)
 	}
+
 	_, err = New(context.Background(), nil, WithIntercept(validIntercept, nil))
 	if err == nil {
 		t.Error("Expected error when passing nil intercept in list, got none")
@@ -488,8 +493,11 @@ func TestWithInterceptErrorConversion(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		intercept := func(ctx context.Context, req any, md grpcContext.Metadata) (any, error) {
-			return nil, test.err
+		intercept := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+			if test.err != nil {
+				return nil, test.err
+			}
+			return handler(ctx, req)
 		}
 
 		unary, err := New(context.Background(), test.errConvert, WithIntercept(intercept))

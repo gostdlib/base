@@ -64,7 +64,6 @@ import (
 
 	grpcContext "github.com/gostdlib/base/context/grpc"
 	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/stream"
-	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/unary"
 
 	"github.com/gostdlib/base/errors"
 	goinit "github.com/gostdlib/base/init"
@@ -95,7 +94,7 @@ type reg struct {
 type Server struct {
 	mu                 sync.Mutex
 	registrations      []reg
-	unaryInterceptors  []unary.Intercept
+	unaryInterceptors  []grpc.UnaryServerInterceptor
 	streamInterceptors []stream.Intercept
 	server             *grpc.Server
 	health             grpc_health_v1.HealthServer
@@ -105,14 +104,9 @@ type Server struct {
 // Option is an optional argument to New.
 type Option func(*Server) error
 
-// UnaryIntercept is a unary interceptor for gRPC that can be provided by the user.
-// It returns the request or an error. This allows modification of the request before it
-// is sent to the handler.
-type UnaryIntercept = unary.Intercept
-
 // WithUnaryInterceptor adds a unary interceptor to the server. These intercept a
 // call to a gRPC method and allow you to modify the request or response.
-func WithUnaryInterceptors(interceptors ...UnaryIntercept) Option {
+func WithUnaryInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 	return func(s *Server) error {
 		for _, interceptor := range interceptors {
 			if interceptor == nil {

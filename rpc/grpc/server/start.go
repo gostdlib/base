@@ -53,7 +53,7 @@ type starter struct {
 
 	lis                net.Listener
 	options            []StartOption
-	unaryInterceptors  []unary.Intercept
+	unaryInterceptors  []grpc.UnaryServerInterceptor
 	streamInterceptors []stream.Intercept
 
 	opts startOptions
