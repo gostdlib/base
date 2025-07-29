@@ -9,6 +9,7 @@ require (
 	github.com/gofiber/fiber/v2 v2.52.9
 	github.com/google/uuid v1.6.0
 	github.com/gostdlib/concurrency v0.0.0-20241230205952-55ea9e292314
+	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1
 	github.com/kylelemons/godebug v1.1.0
 	github.com/orcaman/concurrent-map v1.0.0
