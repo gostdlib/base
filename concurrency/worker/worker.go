@@ -352,6 +352,7 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 	// and submit the job to that goroutine. This goroutine will be collected if it sits idle.
 	// for too long.
 	default:
+	tryAgain:
 		r := runner{queue: p.queue, timeout: p.opts.timeout, goRoutines: &p.goRoutines, metrics: p.metrics}
 		go r.run()
 
@@ -360,6 +361,11 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 			args.done() // This will decrement the waitgroup.
 			return context.Cause(ctx)
 		case p.queue <- args:
+		// default can happen if the queue fills again with another job before we can submit. In those cases,
+		// we will try again to create a new goroutine and submit the job. This is a rare case, but can happen
+		// if the number of CPUs is very low.
+		default:
+			goto tryAgain
 		}
 	}
 	p.submitEvent(spanner, now)
@@ -489,15 +495,13 @@ func (r runner) run() {
 
 // runAlways runs the runner without a timeout. However it can be stopped by closing the queue.
 func (r runner) runAlways() error {
-	select {
-	case args, ok := <-r.queue:
-		if !ok {
-			return fmt.Errorf("runner canceled")
-		}
-		r.metrics.StaticRunning.Add(context.Background(), 1)
-		args.run()
-		r.metrics.StaticRunning.Add(context.Background(), -1)
+	args, ok := <-r.queue
+	if !ok {
+		return fmt.Errorf("runner canceled")
 	}
+	r.metrics.StaticRunning.Add(context.Background(), 1)
+	args.run()
+	r.metrics.StaticRunning.Add(context.Background(), -1)
 	return nil
 }
 
