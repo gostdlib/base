@@ -150,7 +150,7 @@ func (t *Tasks) taskWrapper(name string, bm *backgroundTaskMetrics, task Task) e
 		defer log.Default().LogAttrs(
 			ctx,
 			slog.LevelInfo,
-			"end background teask",
+			"end background task",
 			slog.String(backgroundKey, "task"),
 			slog.String(logNameKey, name),
 			slog.String(logEventKey, "end"),
