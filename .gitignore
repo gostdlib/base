@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# misc. dev files
+*.un~
+*.swp
+
 # Test binary, built with `go test -c`
 *.test
 
