@@ -2,8 +2,10 @@ package metrics
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -105,6 +107,68 @@ func TestIniterServe(t *testing.T) {
 		if !value {
 			t.Errorf("metric not found: %s", key)
 		}
+	}
+}
+
+// TestIniterServeWithOtherProvider tests that when using a different provider,
+// we don't see the "reader is not registered" log when scraping metrics which
+// would indicate that there is an unused exporter. This log is noisy since it
+// will show up every time the endpoint is scraped.
+func TestIniterServeWithOtherProvider(t *testing.T) {
+	const targetInfo = "testing"
+
+	origDefault := defaultProvider
+	t.Cleanup(func() { Set(origDefault) })
+	origOtel := otel.GetMeterProvider()
+	t.Cleanup(func() { otel.SetMeterProvider(origOtel) })
+
+	// Capture log output
+	var logBuf bytes.Buffer
+	origOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origOutput) })
+
+	rsc, err := resource.New(
+		context.Background(),
+		resource.WithAttributes(
+			attribute.String(string(semconv.ServiceNameKey), targetInfo),
+		),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	// Set the provider to otherProvider instead of default
+	Set(otherProvider{})
+
+	port, err := freePort()
+	if err != nil {
+		panic(err)
+	}
+
+	if err := initer(rsc, uint16(port)); err != nil {
+		t.Fatalf("TestIniterServeWithOtherProvider(): failed to init metrics: %v", err)
+	}
+	defer Close()
+
+	time.Sleep(1 * time.Second)
+
+	// Clear the log buffer before scraping
+	logBuf.Reset()
+
+	// Scrape the metrics endpoint - this is when the log would appear if we have an unused exporter
+	// that is not registered.
+	hclient := http.Client{}
+	resp, err := hclient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Check that we don't see the "reader is not registered" log
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "reader is not registered") {
+		t.Errorf("TestIniterServeWithOtherProvider: unexpected 'reader is not registered' log: %s", logOutput)
 	}
 }
 
