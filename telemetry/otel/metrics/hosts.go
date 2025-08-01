@@ -47,14 +47,13 @@ func initer(meta *resource.Resource, port uint16) error {
 		return fmt.Errorf("metrics.Init()resource must have a service name attribute")
 	}
 
-	metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(prometheus.DefaultRegisterer))
-	if err != nil {
-		return fmt.Errorf("failed to create metrics exporter: %w", err)
-	}
-
 	var meterProvider metric.MeterProvider
 
 	if defaultProvider == nil {
+		metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(prometheus.DefaultRegisterer))
+		if err != nil {
+			return fmt.Errorf("failed to create metrics exporter: %w", err)
+		}
 		meterProvider = sdkmetric.NewMeterProvider(
 			sdkmetric.WithReader(metricExporter),
 			sdkmetric.WithResource(meta),
