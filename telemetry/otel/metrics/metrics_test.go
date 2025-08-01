@@ -168,7 +168,7 @@ func TestIniterServeWithOtherProvider(t *testing.T) {
 	// Check that we don't see the "reader is not registered" log
 	logOutput := logBuf.String()
 	if strings.Contains(logOutput, "reader is not registered") {
-		t.Errorf("TestIniterServeWithOtherProvider: expected to see 'reader is not registered' log, but got: %s", logOutput)
+		t.Errorf("TestIniterServeWithOtherProvider: unexpected 'reader is not registered' log: %s", logOutput)
 	}
 }
 
