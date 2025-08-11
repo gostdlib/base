@@ -162,7 +162,7 @@ type Pool struct {
 
 	wg         sync.WaitGroup
 	running    atomic.Int64
-	goRoutines atomic.Int64
+	goRoutines *atomic.Int64
 	metrics    *poolMetrics
 
 	// child indicates this pool is not a root pool but one that is created with .Sub().
@@ -192,7 +192,7 @@ type Option func(poolOpts) (poolOpts, error)
 
 // WithSize sets the amount of goroutines that are always available. By default this is set to the number
 // of CPUs on the machine. Any submissions that exceed this number will cause a new goroutine to be created
-// and stored in a sync.Pool for reuse.For spikey workloads, the defaults should be sufficient. For constant
+// and stored in a sync.Pool for reuse. For spikey workloads, the defaults should be sufficient. For constant
 // high loads, you may want to increase this number. Remember that increased number of goroutines over the
 // number of CPUs will cause context switching and slow down processing if doing data intensive work that doesn't
 // require immediate responses.
@@ -231,21 +231,24 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 		}
 	}
 
-	queue := make(chan runArgs, 1)
+	// HEY YOU, YEAH YOU! NEVER give this buffer, if you do this is going to give you a nasty
+	// bug that is impossible to track down.
+	queue := make(chan runArgs) // If you put a buffer here, I'll be the girl with the hair in The Ring and you have 7 days before I get you
 
 	mp := internalCtx.MeterProvider(ctx)
 	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
 	pm := newPoolMetrics(meter)
 
 	p := &Pool{
-		queue:   queue,
-		opts:    opts,
-		metrics: pm,
+		queue:      queue,
+		opts:       opts,
+		metrics:    pm,
+		goRoutines: &atomic.Int64{},
 	}
 
 	// Start the goroutines that will run forever.
 	for i := 0; i < opts.size; i++ {
-		r := runner{queue: queue, goRoutines: &p.goRoutines, metrics: pm}
+		r := runner{queue: queue, goRoutines: p.goRoutines, metrics: pm}
 		go r.run()
 	}
 
@@ -296,8 +299,9 @@ func (p *Pool) Close(ctx context.Context) error {
 
 // Wait will wait for all goroutines in the pool to finish execution. The pool's goroutines will continue to
 // run and be available for reuse. Rarely used. Generally you should use .Group() to wait for a specific group of
-// goroutines to finish. If a Sub pool, this will only wait for its running goroutines, not the parent. The parent
-// also won't wait for the children.
+// goroutines to finish. If a Sub pool, this will only wait for its running goroutines, not the parent.
+// Because this uses a WaitGroup underneath, if you submit to the pool after calling Wait(), this will cause a
+// race condition.
 func (p *Pool) Wait() {
 	p.wg.Wait()
 }
@@ -353,7 +357,7 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 	// for too long.
 	default:
 	tryAgain:
-		r := runner{queue: p.queue, timeout: p.opts.timeout, goRoutines: &p.goRoutines, metrics: p.metrics}
+		r := runner{queue: p.queue, timeout: p.opts.timeout, goRoutines: p.goRoutines, metrics: p.metrics}
 		go r.run()
 
 		select {
@@ -394,12 +398,15 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 	}
 
 	pool := &Pool{
-		queue:   p.queue,
-		opts:    p.opts,
-		metrics: pm,
-		child:   true,
+		queue:      p.queue,
+		opts:       p.opts,
+		metrics:    pm,
+		wg:         sync.WaitGroup{},
+		goRoutines: p.goRoutines,
+		child:      true,
 	}
 	pool.goRoutines.Add(goRoutines)
+
 	return pool
 }
 
@@ -452,8 +459,7 @@ func (p *Pool) newRunArgs(f func()) runArgs {
 // to have a pool of goroutines that are always available and a pool of goroutines that are created on demand
 // and then collected if they are idle for too long.
 type runner struct {
-	// goRoutines is the number of goroutines that are currently running. This is passed
-	// by reference from the Pool to keep track of the number of running goroutines.
+	// goRoutines is the number of goroutines that are currently running.
 	goRoutines *atomic.Int64
 	// queue is the channel that contains the functions to be run.
 	queue chan runArgs
