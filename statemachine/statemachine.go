@@ -492,3 +492,18 @@ func methodName(method any) string {
 		return "<not a function>"
 	}
 }
+
+// MethodName takes a function or a method and returns its name. This is useful in testing
+// to determine the name of the next state in a state machine and do a comparison.
+func MethodName(method any) string {
+	if method == nil {
+		return "<nil>"
+	}
+	valueOf := reflect.ValueOf(method)
+	switch valueOf.Kind() {
+	case reflect.Func:
+		return strings.TrimSuffix(strings.TrimSuffix(runtime.FuncForPC(valueOf.Pointer()).Name(), "-fm"), "[...]")
+	default:
+		return "<not a function>"
+	}
+}
