@@ -1,4 +1,4 @@
-package debugstrip
+package main
 
 import (
 	"bytes"

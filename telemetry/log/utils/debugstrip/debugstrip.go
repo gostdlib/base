@@ -4,7 +4,7 @@
 // This is useful when not using a structured log viewer, such as when you want to quickly scan logs in a terminal.
 // It reads from standard input and writes to standard output. Lines that are not valid JSON or do not
 // contain the expected fields are passed through unchanged.
-package debugstrip
+package main
 
 import (
 	"bufio"
