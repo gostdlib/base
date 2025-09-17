@@ -2,97 +2,79 @@
 package sets
 
 import (
-	"cmp"
 	"fmt"
-	"slices"
+
+	"github.com/gostdlib/base/concurrency/sync"
 )
 
 // Set is a generic set type.
-type Set[E cmp.Ordered] struct {
-	m map[E]struct{}
-}
-
-func (s *Set[E]) init() {
-	if s.m == nil {
-		s.m = make(map[E]struct{})
-	}
+type Set[E comparable] struct {
+	m sync.ShardedMap[E, struct{}]
 }
 
 // Len returns the number of elements in the Set.
 func (s *Set[E]) Len() int {
-	return len(s.m)
+	return s.m.Len()
 }
 
-// Init can be used to initialize a Set with values. This is useful when you want to create a
-// Set at the package level in a single line. If this is called after other values have been added to the Set,
-// it will panic. It is NOT required to use Init with a Set.
-func (s Set[E]) Init(vals ...E) Set[E] {
-	if len(s.m) > 0 {
-		panic("Set is already initialized")
-	}
-	s.init()
-	s.Add(vals...)
-	return s
-}
-
-// Add adds the given values to the Set.
+// Add adds the given values to the Set. Thread safe.
 func (s *Set[E]) Add(vals ...E) {
-	s.init()
 	for _, v := range vals {
-		s.m[v] = struct{}{}
+		s.m.Set(v, struct{}{})
 	}
+	return
 }
 
-// Remove removes the given value from the Set.
+// Remove removes the given value from the Set. If the value is not in the Set, this is a no-op. Thread safe.
 func (s *Set[E]) Remove(v E) {
-	delete(s.m, v)
+	s.m.Del(v)
 }
 
-// Contains returns true if the Set contains the given value.
+// Contains returns true if the Set contains the given value. Thread safe.
 func (s *Set[E]) Contains(v E) bool {
-	if s.m == nil {
-		return false
-	}
-	_, ok := s.m[v]
+	_, ok := s.m.Get(v)
 	return ok
 }
 
 // Members returns all the members of the Set. This is a copy of the entries in the Set.
-// This returned slice is sorted. This is a new slice and can be modified without affecting the Set.
+// This returned slice is has random order. This is a new slice and can be modified without affecting the Set, but modifying
+// the elements themselves will affect the Set if they are reference types.
+// Not thread safe.
 func (s *Set[E]) Members() []E {
-	if s.m == nil {
+	if s.m.Len() == 0 {
 		return nil
 	}
 
-	result := make([]E, 0, len(s.m))
-	for v := range s.m {
-		result = append(result, v)
+	result := make([]E, 0, s.m.Len())
+	for k, _ := range s.m.All() {
+		result = append(result, k)
 	}
 
-	slices.Sort(result)
 	return result
 }
 
 // String returns a string representation of the Set. This implements the fmt.Stringer interface.
+// Not thread safe.
 func (s *Set[E]) String() string {
 	return fmt.Sprintf("%v", s.Members())
 }
 
 // Union returns a new Set that is the union of the two Sets. This creates a new Set.
-func (s *Set[E]) Union(s2 Set[E]) Set[E] {
+func (s *Set[E]) Union(s2 *Set[E]) Set[E] {
 	result := Set[E]{}
 	result.Add(s.Members()...)
 	result.Add(s2.Members()...)
-	return result
+	return result // It is okay that this copies a lock value, because it is unused.
 }
 
 // Intersection returns a new Set that is the intersection of the two Sets.
-func (s Set[E]) Intersection(s2 Set[E]) Set[E] {
+// This is not thread safe.
+func (s *Set[E]) Intersection(s2 *Set[E]) Set[E] {
 	result := Set[E]{}
 	for _, v := range s.Members() {
 		if s2.Contains(v) {
 			result.Add(v)
 		}
 	}
-	return result
+	return result // It is okay that this copies a lock value, because it is unused.
 }

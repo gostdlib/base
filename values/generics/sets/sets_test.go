@@ -1,6 +1,9 @@
 package sets
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestNilMap(t *testing.T) {
 	s := Set[int]{}
@@ -17,37 +20,27 @@ func TestNilMap(t *testing.T) {
 	if len(s.Members()) != 0 {
 		t.Errorf("Expected empty set members, got %v", s.Members())
 	}
-	union := s.Union(Set[int]{})
+	union := s.Union(&Set[int]{})
 	if union.Len() != 0 {
 		t.Errorf("Expected empty union, got %v", union.Members())
 	}
 	s2 := Set[int]{}
 	s2.Add(1, 2, 3)
-	union = s.Union(s2)
+	union = s.Union(&s2)
 	if union.Len() != 3 {
 		t.Errorf("Expected union length 3, got %d", union.Len())
 	}
-	intersection := s.Intersection(Set[int]{})
+	intersection := s.Intersection(&Set[int]{})
 	if intersection.Len() != 0 {
 		t.Errorf("Expected nil intersection, got %v", intersection.Members())
 	}
-	intersection = s.Intersection(s2)
+	intersection = s.Intersection(&s2)
 	if intersection.Len() != 0 {
 		t.Errorf("Expected intersection length 0, got %d", intersection.Len())
 	}
 	s.Add(1, 2, 3)
 	if s.Len() != 3 {
 		t.Errorf("Expected set length 3, got %d", s.Len())
-	}
-}
-
-func TestNew(t *testing.T) {
-	s := Set[int]{}.Init(1, 2, 3)
-	if s.Len() != 3 {
-		t.Errorf("Expected set length 3, got %d", s.Len())
-	}
-	if !s.Contains(1) || !s.Contains(2) || !s.Contains(3) {
-		t.Errorf("Set does not contain expected elements")
 	}
 }
 
@@ -64,7 +57,7 @@ func TestAdd(t *testing.T) {
 
 func TestRemove(t *testing.T) {
 	s := Set[int]{}
-	s = s.Init(1, 2, 3)
+	s.Add(1, 2, 3)
 	s.Remove(2)
 	if s.Len() != 2 {
 		t.Errorf("Expected set length 2, got %d", s.Len())
@@ -104,9 +97,9 @@ func TestString(t *testing.T) {
 	s := Set[int]{}
 	s.Add(1, 2, 3)
 	str := s.String()
-	expected := "[1 2 3]"
-	if str != expected {
-		t.Errorf("Expected string %s, got %s", expected, str)
+	expected := []string{"[1 2 3]", "[1 3 2]", "[2 1 3]", "[2 3 1]", "[3 1 2]", "[3 2 1]"}
+	if !slices.Contains(expected, str) {
+		t.Errorf("String representation %s not in expected set %v", str, expected)
 	}
 }
 
@@ -115,7 +108,7 @@ func TestUnion(t *testing.T) {
 	s2 := Set[int]{}
 	s1.Add(1, 2, 3)
 	s2.Add(3, 4, 5)
-	union := s1.Union(s2)
+	union := s1.Union(&s2)
 	if union.Len() != 5 {
 		t.Errorf("Expected union length 5, got %d", union.Len())
 	}
@@ -132,7 +125,7 @@ func TestIntersection(t *testing.T) {
 	s2 := Set[int]{}
 	s1.Add(1, 2, 3)
 	s2.Add(3, 4, 5)
-	intersection := s1.Intersection(s2)
+	intersection := s1.Intersection(&s2)
 	if intersection.Len() != 1 {
 		t.Errorf("Expected intersection length 1, got %d", intersection.Len())
 	}
