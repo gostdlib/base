@@ -17,13 +17,27 @@ func TestMapHolderValid(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "Success: all required keys present",
+			name: "Success: all required keys present at top level",
 			m: map[string]any{
 				"time":  "2025-09-09T18:23:06.102045-07:00",
 				"level": "ERROR",
 				"file":  "/path/to/file.go",
 				"line":  110,
 				"msg":   "test message",
+			},
+			want: true,
+		},
+		{
+			name: "Success: file and line in source object",
+			m: map[string]any{
+				"time":  "2025-09-09T18:23:06.102045-07:00",
+				"level": "ERROR",
+				"source": map[string]any{
+					"function": "path/to/package.(*Type).read",
+					"file":     "/path/to/file.go",
+					"line":     110,
+				},
+				"msg": "test message",
 			},
 			want: true,
 		},
@@ -48,7 +62,7 @@ func TestMapHolderValid(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "Error: missing file key",
+			name: "Error: missing file key in both top level and source",
 			m: map[string]any{
 				"time":  "2025-09-09T18:23:06.102045-07:00",
 				"level": "ERROR",
@@ -58,7 +72,7 @@ func TestMapHolderValid(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "Error: missing line key",
+			name: "Error: missing line key in both top level and source",
 			m: map[string]any{
 				"time":  "2025-09-09T18:23:06.102045-07:00",
 				"level": "ERROR",
@@ -80,6 +94,18 @@ func TestMapHolderValid(t *testing.T) {
 		{
 			name: "Error: empty map",
 			m:    map[string]any{},
+			want: false,
+		},
+		{
+			name: "Error: source object missing line",
+			m: map[string]any{
+				"time":  "2025-09-09T18:23:06.102045-07:00",
+				"level": "ERROR",
+				"source": map[string]any{
+					"file": "/path/to/file.go",
+				},
+				"msg": "test message",
+			},
 			want: false,
 		},
 	}
@@ -152,8 +178,15 @@ func TestMapHolderLine(t *testing.T) {
 		want int
 	}{
 		{
-			name: "Success: valid line number",
+			name: "Success: valid line number at top level",
 			m:    map[string]any{"line": 110},
+			want: 110,
+		},
+		{
+			name: "Success: line number in source object",
+			m: map[string]any{
+				"source": map[string]any{"line": 110},
+			},
 			want: 110,
 		},
 		{
@@ -191,6 +224,13 @@ func TestMapHolderLine(t *testing.T) {
 			m:    map[string]any{"line": 110.7},
 			want: 110,
 		},
+		{
+			name: "Success: float line in source object",
+			m: map[string]any{
+				"source": map[string]any{"line": 110.0},
+			},
+			want: 110,
+		},
 	}
 
 	for _, test := range tests {
@@ -211,8 +251,15 @@ func TestMapHolderShortFile(t *testing.T) {
 		want string
 	}{
 		{
-			name: "Success: full path with multiple directories",
+			name: "Success: full path with multiple directories at top level",
 			m:    map[string]any{"file": "/path/to/very/long/directory/structure/file.go"},
+			want: "file.go",
+		},
+		{
+			name: "Success: file in source object",
+			m: map[string]any{
+				"source": map[string]any{"file": "/path/to/very/long/directory/structure/file.go"},
+			},
 			want: "file.go",
 		},
 		{
@@ -236,7 +283,7 @@ func TestMapHolderShortFile(t *testing.T) {
 			want: "unknown",
 		},
 		{
-			name: "Error: missing file key",
+			name: "Error: missing file key in both top level and source",
 			m:    map[string]any{},
 			want: "unknown",
 		},
@@ -383,9 +430,14 @@ func TestReframe(t *testing.T) {
 		want []byte
 	}{
 		{
-			name: "Success: valid JSON log line",
+			name: "Success: valid JSON log line with top level fields",
 			line: []byte(`{"time":"2025-09-09T18:23:06.102045-07:00","level":"ERROR","file":"/path/to/checker.go","line":110,"msg":"failed to read configuration file"}`),
 			want: []byte("[ERROR][18:23:06][.../checker.go:110]: failed to read configuration file"),
+		},
+		{
+			name: "Success: valid JSON log line with source object",
+			line: []byte(`{"time":"2025-09-09T18:23:06.102045-07:00","level":"ERROR","source":{"function":"path/to/package.(*Type).read","file":"/file/on/the/filesystem/it/was/created/on/checker.go","line":110},"msg":"failed to read configuration file: Internal error occurred: test error"}`),
+			want: []byte("[ERROR][18:23:06][.../checker.go:110]: failed to read configuration file: Internal error occurred: test error"),
 		},
 		{
 			name: "Success: different level and time",
@@ -393,8 +445,8 @@ func TestReframe(t *testing.T) {
 			want: []byte("[INFO][15:30:45][.../file.go:25]: processing request"),
 		},
 		{
-			name: "Success: debug level",
-			line: []byte(`{"time":"2025-09-09T09:15:30.123Z","level":"debug","file":"/debug/test.go","line":1,"msg":"debug message"}`),
+			name: "Success: debug level with source object",
+			line: []byte(`{"time":"2025-09-09T09:15:30.123Z","level":"debug","source":{"file":"/debug/test.go","line":1},"msg":"debug message"}`),
 			want: []byte("[DEBUG][09:15:30][.../test.go:1]: debug message"),
 		},
 		{
@@ -530,8 +582,14 @@ func TestScan(t *testing.T) {
 		want  string
 	}{
 		{
-			name: "Success: single valid JSON log line",
+			name: "Success: single valid JSON log line with top level fields",
 			input: `{"time":"2025-09-09T18:23:06.102045-07:00","level":"ERROR","file":"/path/to/checker.go","line":110,"msg":"failed to read configuration file"}
+`,
+			want: "[ERROR][18:23:06][.../checker.go:110]: failed to read configuration file\n",
+		},
+		{
+			name: "Success: single valid JSON log line with source object",
+			input: `{"time":"2025-09-09T18:23:06.102045-07:00","level":"ERROR","source":{"function":"path/to/package.(*Type).read","file":"/file/on/the/filesystem/it/was/created/on/checker.go","line":110},"msg":"failed to read configuration file"}
 `,
 			want: "[ERROR][18:23:06][.../checker.go:110]: failed to read configuration file\n",
 		},
@@ -584,6 +642,13 @@ yet another line
 {"time":"2025-09-09T12:02:00Z","level":"error","file":"/test.go","line":3,"msg":"error message"}
 `,
 			want: "[DEBUG][12:00:00][.../test.go:1]: debug message\n[WARN][12:01:00][.../test.go:2]: warning message\n[ERROR][12:02:00][.../test.go:3]: error message\n",
+		},
+		{
+			name: "Success: mix of source object and top level fields",
+			input: `{"time":"2025-09-09T12:00:00Z","level":"debug","source":{"file":"/test.go","line":1},"msg":"with source"}
+{"time":"2025-09-09T12:01:00Z","level":"warn","file":"/test.go","line":2,"msg":"without source"}
+`,
+			want: "[DEBUG][12:00:00][.../test.go:1]: with source\n[WARN][12:01:00][.../test.go:2]: without source\n",
 		},
 	}
 

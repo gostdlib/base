@@ -4,6 +4,7 @@ import (
 	"context"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/tidwall/lotsa"
 )
@@ -45,6 +46,7 @@ func TestCleanup(t *testing.T) {
 		t.Fatalf("pool buffer not empty: %d", len(pool.buffer))
 	}
 	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
 	if len(pool.buffer) != 1 {
 		t.Fatalf("pool buffer empty after GC: %d", len(pool.buffer))
 	}

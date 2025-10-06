@@ -50,11 +50,11 @@ func scan(ctx context.Context, in io.Reader, out io.Writer) {
 var reqKeys = []string{
 	"time",
 	"level",
-	"file",
-	"line",
 	"msg",
 }
 
+// mapHolder holds a map that we can then look through to see if we have the keys
+// required to be one of our log messages before reformatting.
 type mapHolder struct {
 	m map[string]any
 }
@@ -65,7 +65,27 @@ func (m mapHolder) valid() bool {
 			return false
 		}
 	}
-	return true
+	// Check for file and line either at top level or in source object
+	hasFile := false
+	hasLine := false
+
+	if _, ok := m.m["file"]; ok {
+		hasFile = true
+	}
+	if _, ok := m.m["line"]; ok {
+		hasLine = true
+	}
+
+	if source, ok := m.m["source"].(map[string]any); ok {
+		if _, ok := source["file"]; ok {
+			hasFile = true
+		}
+		if _, ok := source["line"]; ok {
+			hasLine = true
+		}
+	}
+
+	return hasFile && hasLine
 }
 
 func (m mapHolder) MarshalJSON() ([]byte, error) {
@@ -85,20 +105,40 @@ func (m mapHolder) level() string {
 }
 
 func (m mapHolder) line() int {
+	// Try top level first
 	switch v := m.m["line"].(type) {
 	case int:
 		return v
 	case float64:
 		return int(v)
-	default:
-		return 0
 	}
+
+	// Try source object
+	if source, ok := m.m["source"].(map[string]any); ok {
+		switch v := source["line"].(type) {
+		case int:
+			return v
+		case float64:
+			return int(v)
+		}
+	}
+
+	return 0
 }
 
 func (m mapHolder) shortFile() string {
+	// Try top level first
 	v, ok := m.m["file"].(string)
 	if !ok {
-		return "unknown"
+		// Try source object
+		if source, ok := m.m["source"].(map[string]any); ok {
+			v, ok = source["file"].(string)
+			if !ok {
+				return "unknown"
+			}
+		} else {
+			return "unknown"
+		}
 	}
 	parts := strings.Split(v, "/")
 	if len(parts) == 0 {
