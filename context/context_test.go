@@ -153,3 +153,52 @@ func TestShouldTrace(t *testing.T) {
 		t.Fatalf("TestShouldTrace: ShouldTrace() = false, want true")
 	}
 }
+
+func TestAttrs(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func() context.Context
+		wantAttrs []slog.Attr
+	}{
+		{
+			name: "Success: Add multiple attributes to empty context",
+			setup: func() context.Context {
+				ctx := context.Background()
+				return AddAttrs(ctx, slog.String("key1", "value1"), slog.Int("key2", 42))
+			},
+			wantAttrs: []slog.Attr{slog.String("key1", "value1"), slog.Int("key2", 42)},
+		},
+		{
+			name: "Success: Add attributes to context with existing attributes",
+			setup: func() context.Context {
+				ctx := context.Background()
+				ctx = AddAttrs(ctx, slog.String("key1", "value1"))
+				return AddAttrs(ctx, slog.String("key2", "value2"))
+			},
+			wantAttrs: []slog.Attr{slog.String("key1", "value1"), slog.String("key2", "value2")},
+		},
+		{
+			name: "Success: Get attributes from empty context",
+			setup: func() context.Context {
+				return context.Background()
+			},
+			wantAttrs: nil,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := test.setup()
+		got := Attrs(ctx)
+
+		if len(got) != len(test.wantAttrs) {
+			t.Errorf("TestAttrs(%s): got %d attrs, want %d attrs", test.name, len(got), len(test.wantAttrs))
+			continue
+		}
+
+		for i := range got {
+			if !got[i].Equal(test.wantAttrs[i]) {
+				t.Errorf("TestAttrs(%s): attr[%d] = %v, want %v", test.name, i, got[i], test.wantAttrs[i])
+			}
+		}
+	}
+}

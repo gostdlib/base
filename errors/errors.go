@@ -186,6 +186,7 @@ import (
 	"time"
 	"unsafe"
 
+	goctx "github.com/gostdlib/base/context"
 	ictx "github.com/gostdlib/base/internal/context"
 	ierr "github.com/gostdlib/base/internal/errors"
 	"github.com/gostdlib/base/telemetry/log"
@@ -265,6 +266,8 @@ type Error struct {
 	// StackTrace is the stack trace of the error. This is automatically filled
 	// in by E() if WithStackTrace() is used.
 	StackTrace string
+
+	attrs []slog.Attr
 }
 
 // EOption is an optional argument for E().
@@ -342,6 +345,8 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 		Msg:        msg,
 		ErrTime:    now().UTC(),
 		StackTrace: st,
+
+		attrs: goctx.Attrs(ctx),
 	}
 
 	e.trace(ctx, opts.SuppressTraceErr)
@@ -377,7 +382,9 @@ func (e Error) Unwrap() error {
 	return e.Msg
 }
 
-// LogAttrs implements the LogAttrer.LogAttrs() interface.
+// LogAttrs implements the LogAttrer.LogAttrs() interface. Note that LogAttrs() will not get
+// attrs that are in the passed Context, it returns the errors standard attributes + attributes
+// from when the error was created.
 func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 	var (
 		cat = "Unknown"
@@ -398,7 +405,8 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 		}
 	}
 
-	attrs := make([]slog.Attr, 0, 7)
+	attrs := make([]slog.Attr, 0, 7+len(e.attrs))
+	attrs = append(attrs, e.attrs...)
 	if cat != "" {
 		attrs = append(attrs, slog.String("Category", cat))
 	}

@@ -25,6 +25,7 @@ type (
 	loggerKey  struct{}
 	poolKey    struct{}
 	tasksKey   struct{}
+	attrsKey   struct{}
 	metricsKey = internalCtx.MetricsKey
 )
 
@@ -123,6 +124,30 @@ func Tasks(ctx Context) *background.Tasks {
 		return background.Default()
 	}
 	return t
+}
+
+// AddAttrs adds slog.Attr attributes to the context. These attributes can be used by logging,
+// tracing or errors packages to add additional context to logs, traces or errors. Duplicate attr
+// keys are allowed, but upper layer packages will apply the last value for a given key.
+func AddAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
+	a := ctx.Value(attrsKey{})
+	if a == nil {
+		ctx = context.WithValue(ctx, attrsKey{}, attrs)
+		return ctx
+	}
+	s := make([]slog.Attr, 0, len(a.([]slog.Attr))+len(attrs))
+	s = append(s, a.([]slog.Attr)...)
+	s = append(s, attrs...)
+	return context.WithValue(ctx, attrsKey{}, s)
+}
+
+// Attrs returns the slog.Attr attributes attached to the context. If no attributes are attached, it returns nil.
+func Attrs(ctx context.Context) []slog.Attr {
+	a := ctx.Value(attrsKey{})
+	if a == nil {
+		return nil
+	}
+	return a.([]slog.Attr)
 }
 
 // SetShouldTrace attaches a boolean value to the context to indicate if the request should be traced.

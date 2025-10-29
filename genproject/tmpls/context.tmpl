@@ -55,6 +55,14 @@ func Meter(ctx Context, opts ...metric.MeterOption) metric.Meter {
     return context.MeterWithStackFrame(ctx, stackFrame, opts...)
 }
 
+// MeterWithStackFrame returns a metric.Meter scoped to the stack frame number provided by "sf".
+// This is for uses by packages that use this underneath so they can get the write stack frame.
+// Generally, you should be using Meter().
+func MeterWithStackFrame(ctx Context, sf uint, opts ...metric.MeterOption) metric.Meter {
+    // The sf passed in is relative to this function, so we need to add 1 to get the caller of this function.
+    return context.MeterWithStackFrame(ctx, sf+1, opts...)
+}
+
 // MeterProvider returns a metric.MeterProvider attached to the context. If no meter provider is attached,
 // it returns metrics.Default(). This may be a noop provider.
 func MeterProvider(ctx Context) metric.MeterProvider {
@@ -70,6 +78,18 @@ func Pool(ctx Context) *worker.Pool {
 // it returns background.Default().
 func Tasks(ctx Context) *background.Tasks {
     return context.Tasks(ctx)
+}
+
+// AddAttrs adds slog.Attr attributes to the context. These attributes can be used by logging,
+// tracing or errors packages to add additional context to logs, traces or errors. Duplicate attr
+// keys are allowed, but upper layer packages will apply the last value for a given key.
+func AddAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
+	return context.AddAttrs(ctx, attrs...)
+}
+
+// Attrs returns the slog.Attr attributes attached to the context. If no attributes are attached, it returns nil.
+func Attrs(ctx context.Context) []slog.Attr {
+    return context.Attrs(ctx)
 }
 
 // SetShouldTrace attaches a boolean value to the context to indicate if the request should be traced.
