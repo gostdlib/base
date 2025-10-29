@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"runtime"
 	"testing"
 	"time"
 
+	goctx "github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/telemetry/log"
 
 	"github.com/go-json-experiment/json"
@@ -479,6 +481,28 @@ func TestLog(t *testing.T) {
 				"key":        "value",
 			},
 		},
+		{
+			name: "Error created with context that has attributes",
+			e: E(
+				goctx.AddAttrs(context.Background(), slog.String("contextKey1", "contextValue1"), slog.Int("contextKey2", 42)),
+				CatReq,
+				TypeBadRequest,
+				fmt.Errorf("something went wrong"),
+			),
+			want: map[string]any{
+				"Category":    "Request",
+				"CustomerID":  "customerID",
+				"ErrSrc":      "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
+				"ErrLine":     486,
+				"CallID":      "callID",
+				"ErrTime":     ti.UTC(),
+				"Type":        "BadRequest",
+				"level":       "ERROR",
+				"msg":         "something went wrong",
+				"contextKey1": "contextValue1",
+				"contextKey2": 42,
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -510,7 +534,8 @@ func TestLog(t *testing.T) {
 			}
 		}
 		delete(got, "time") // This is the logging library time notation, which we don't control.
-
+		test.want["ErrSrc"] = path.Base(test.want["ErrSrc"].(string))
+		got["ErrSrc"] = path.Base(got["ErrSrc"].(string))
 		if diff := pretty.Compare(test.want, got); diff != "" {
 			t.Errorf("TestLog(%s): -want/+got:\n%s", test.name, diff)
 		}
