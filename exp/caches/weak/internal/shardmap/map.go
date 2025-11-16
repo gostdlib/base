@@ -12,8 +12,9 @@ import (
 	"sync/atomic"
 	"weak"
 
-	"github.com/gostdlib/base/exp/caches/internal/btree"
-	rhh "github.com/gostdlib/base/exp/caches/internal/hashmap"
+	"github.com/gostdlib/base/exp/caches/weak/internal/btree"
+	rhh "github.com/gostdlib/base/exp/caches/weak/internal/hashmap"
+	"github.com/gostdlib/base/exp/caches/weak/internal/metrics"
 )
 
 // Map is a hashmap. Like map[string]interface{}, but sharded and thread-safe.
@@ -30,7 +31,8 @@ type Map[K comparable, V any] struct {
 	tree *btree.BTreeG[weak.Pointer[V]]
 	less func(a, b weak.Pointer[V]) bool
 
-	count atomic.Int64
+	count   atomic.Int64
+	metrics *metrics.Cache
 
 	seed maphash.Seed
 }
@@ -39,13 +41,13 @@ type Map[K comparable, V any] struct {
 // needed when you must define a minimum capacity, otherwise just use:
 //
 //	var m shardmap.Map
-func New[K comparable, V any](less func(a, b weak.Pointer[V]) bool) *Map[K, V] {
+func New[K comparable, V any](less func(a, b weak.Pointer[V]) bool, metrics *metrics.Cache) *Map[K, V] {
 	var tree *btree.BTreeG[weak.Pointer[V]]
 	if less != nil {
 		tree = btree.NewBTreeG[weak.Pointer[V]](less)
 	}
 
-	m := &Map[K, V]{tree: tree, less: less}
+	m := &Map[K, V]{tree: tree, less: less, metrics: metrics, cap: 1024}
 	m.initDo()
 	return m
 }

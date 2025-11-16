@@ -12,7 +12,13 @@ import (
 	"testing"
 	"time"
 	"weak"
+
+	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/exp/caches/weak/internal/metrics"
+	baseMetrics "github.com/gostdlib/base/telemetry/otel/metrics"
 )
+
+var cm = metrics.New(context.MeterProvider(context.Background()).Meter(baseMetrics.MeterName(2) + "/" + "shardmapTest"))
 
 type keyT = string
 
@@ -61,7 +67,7 @@ func TestRandomData(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < time.Second*2 {
 		nums := random(N, true)
-		m := New[string, string](nil)
+		m := New[string, string](nil, cm)
 
 		// Keep strong references to prevent GC
 		strongRefs := make(map[string]*string)
@@ -230,7 +236,7 @@ func TestDeleteIfNil(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		m := New[string, int](nil)
+		m := New[string, int](nil, cm)
 
 		if test.wantDeleted {
 			// Create value that will be GC'd
@@ -265,7 +271,7 @@ func TestDeleteIfNil(t *testing.T) {
 	}
 
 	// Test non-existent key
-	m := New[string, int](nil)
+	m := New[string, int](nil, cm)
 	_, deleted := m.DeleteIfNil("nonexistent")
 	if deleted {
 		t.Errorf("TestDeleteIfNil: deleted non-existent key")
@@ -273,7 +279,7 @@ func TestDeleteIfNil(t *testing.T) {
 }
 
 func TestCleanShards(t *testing.T) {
-	m := New[string, int](nil)
+	m := New[string, int](nil, cm)
 
 	// Keep strong references for some values
 	strongRefs := make(map[string]*int)
@@ -315,7 +321,7 @@ func TestCleanShards(t *testing.T) {
 }
 
 func TestLenAtomicCount(t *testing.T) {
-	m := New[string, int](nil)
+	m := New[string, int](nil, cm)
 
 	// Keep strong references
 	strongRefs := make(map[string]*int)
@@ -409,7 +415,7 @@ func TestBTreeDeduplication(t *testing.T) {
 		return *aVal < *bVal
 	}
 
-	m := New[string, int](less)
+	m := New[string, int](less, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 3)
@@ -471,7 +477,7 @@ func TestBTreeDeduplicationWithDeletion(t *testing.T) {
 		return *aVal < *bVal
 	}
 
-	m := New[string, int](less)
+	m := New[string, int](less, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 2)
@@ -534,7 +540,7 @@ func TestBTreeDeduplicationWithDeletion(t *testing.T) {
 }
 
 func TestBTreeNilLessNoDeduplication(t *testing.T) {
-	m := New[string, int](nil)
+	m := New[string, int](nil, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 2)
@@ -595,7 +601,7 @@ func TestBTreeClear(t *testing.T) {
 		return *aVal < *bVal
 	}
 
-	m := New[string, int](less)
+	m := New[string, int](less, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 3)
