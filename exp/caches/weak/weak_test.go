@@ -33,7 +33,7 @@ func TestNew(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, test.options...)
+		cache, err := New[string, testValue](ctx, "test", test.options...)
 
 		switch {
 		case err == nil && test.wantErr:
@@ -139,7 +139,7 @@ func TestCacheBasicOperations(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestCacheBasicOperations(%s): failed to create cache: %v", test.name, err)
 		}
@@ -202,7 +202,7 @@ func TestConcurrentGetSet(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[int, testValue](ctx)
+		cache, err := New[int, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestConcurrentGetSet(%s): failed to create cache: %v", test.name, err)
 		}
@@ -288,7 +288,7 @@ func TestConcurrentDelete(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[int, testValue](ctx)
+		cache, err := New[int, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestConcurrentDelete(%s): failed to create cache: %v", test.name, err)
 		}
@@ -341,7 +341,7 @@ func TestWeakPointerCleanup(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestWeakPointerCleanup(%s): failed to create cache: %v", test.name, err)
 		}
@@ -409,7 +409,7 @@ func TestWeakPointerCollectedCleanup(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestWeakPointerCollectedCleanup(%s): failed to create cache: %v", test.name, err)
 		}
@@ -497,7 +497,7 @@ func TestSetWithNilValue(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestSetWithNilValue(%s): failed to create cache: %v", test.name, err)
 		}
@@ -545,7 +545,7 @@ func TestDelTwice(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestDelTwice(%s): failed to create cache: %v", test.name, err)
 		}
@@ -594,7 +594,7 @@ func TestMultipleSetOverwrites(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestMultipleSetOverwrites(%s): failed to create cache: %v", test.name, err)
 		}
@@ -668,7 +668,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[int, testValue](ctx)
+		cache, err := New[int, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestConcurrentMixedOperations(%s): failed to create cache: %v", test.name, err)
 		}
@@ -778,7 +778,7 @@ func TestCacheLen(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestCacheLen(%s): failed to create cache: %v", test.name, err)
 		}
@@ -821,7 +821,7 @@ func TestWithTTL(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, WithTTL(test.ttl, test.interval))
+		cache, err := New[string, testValue](ctx, "test", WithTTL(test.ttl, test.interval))
 
 		switch {
 		case err == nil && test.wantErr:
@@ -851,7 +851,7 @@ func TestTTLPreventsPrematureGC(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, WithTTL(5*time.Second, 1*time.Second))
+		cache, err := New[string, testValue](ctx, "test", WithTTL(5*time.Second, 1*time.Second))
 		if err != nil {
 			t.Fatalf("TestTTLPreventsPrematureGC(%s): failed to create cache: %v", test.name, err)
 		}
@@ -892,7 +892,7 @@ func TestTTLWithDel(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, WithTTL(5*time.Second, 1*time.Second))
+		cache, err := New[string, testValue](ctx, "test", WithTTL(5*time.Second, 1*time.Second))
 		if err != nil {
 			t.Fatalf("TestTTLWithDel(%s): failed to create cache: %v", test.name, err)
 		}
@@ -937,7 +937,7 @@ func TestTTLExpiration(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, WithTTL(100*time.Millisecond, 1*time.Second))
+		cache, err := New[string, testValue](ctx, "test", WithTTL(100*time.Millisecond, 1*time.Second))
 		if err != nil {
 			t.Fatalf("TestTTLExpiration(%s): failed to create cache: %v", test.name, err)
 		}
@@ -994,7 +994,7 @@ func TestTTLConcurrentAccess(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[int, testValue](ctx, WithTTL(5*time.Second, 1*time.Second))
+		cache, err := New[int, testValue](ctx, "test", WithTTL(5*time.Second, 1*time.Second))
 		if err != nil {
 			t.Fatalf("TestTTLConcurrentAccess(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1058,7 +1058,7 @@ func TestTTLReset(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, WithTTL(200*time.Millisecond, 1*time.Second))
+		cache, err := New[string, testValue](ctx, "test", WithTTL(200*time.Millisecond, 1*time.Second))
 		if err != nil {
 			t.Fatalf("TestTTLReset(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1109,7 +1109,7 @@ func TestCacheWithoutTTL(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx)
+		cache, err := New[string, testValue](ctx, "test")
 		if err != nil {
 			t.Fatalf("TestCacheWithoutTTL(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1147,7 +1147,7 @@ func TestTTLContextCancellation(t *testing.T) {
 	for _, test := range tests {
 		ctx, cancel := context.WithCancel(t.Context())
 
-		cache, err := New[string, testValue](ctx, WithTTL(1*time.Second, 1*time.Second))
+		cache, err := New[string, testValue](ctx, "test", WithTTL(1*time.Second, 1*time.Second))
 		if err != nil {
 			t.Fatalf("TestTTLContextCancellation(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1247,7 +1247,7 @@ func TestFiller(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		cache, err := New[string, testValue](ctx, WithFiller(test.filler))
+		cache, err := New[string, testValue](ctx, "test", WithFiller(test.filler))
 		if err != nil {
 			t.Fatalf("TestFiller(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1349,7 +1349,7 @@ func TestSetter(t *testing.T) {
 			return test.setter(ctx, k, v)
 		}
 
-		cache, err := New[string, testValue](ctx, WithSetter(wrappedSetter))
+		cache, err := New[string, testValue](ctx, "test", WithSetter(wrappedSetter))
 		if err != nil {
 			t.Fatalf("TestSetter(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1465,7 +1465,7 @@ func TestDeleter(t *testing.T) {
 			return test.deleter(ctx, k)
 		}
 
-		cache, err := New[string, testValue](ctx, WithDeleter(wrappedDeleter))
+		cache, err := New[string, testValue](ctx, "test", WithDeleter(wrappedDeleter))
 		if err != nil {
 			t.Fatalf("TestDeleter(%s): failed to create cache: %v", test.name, err)
 		}
@@ -1555,9 +1555,9 @@ func TestFillerConcurrent(t *testing.T) {
 		var cache *Cache[string, testValue]
 		var err error
 		if test.useFlight {
-			cache, err = New[string, testValue](ctx, WithFiller(filler), WithSingleFlight[string, testValue]())
+			cache, err = New[string, testValue](ctx, "test", WithFiller(filler), WithSingleFlight[string, testValue]())
 		} else {
-			cache, err = New[string, testValue](ctx, WithFiller(filler))
+			cache, err = New[string, testValue](ctx, "test", WithFiller(filler))
 		}
 		if err != nil {
 			t.Fatalf("TestFillerConcurrent(%s): failed to create cache: %v", test.name, err)
@@ -1628,7 +1628,7 @@ func TestSetterAndDeleterTogether(t *testing.T) {
 			return nil
 		}
 
-		cache, err := New[string, testValue](ctx, WithSetter(setter), WithDeleter(deleter))
+		cache, err := New[string, testValue](ctx, "test", WithSetter(setter), WithDeleter(deleter))
 		if err != nil {
 			t.Fatalf("TestSetterAndDeleterTogether(%s): failed to create cache: %v", test.name, err)
 		}

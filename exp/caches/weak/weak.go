@@ -13,11 +13,12 @@ import (
 	"time"
 	"weak"
 
-	"github.com/gostdlib/base/context"
-
 	"github.com/gostdlib/base/concurrency/sync"
-	"github.com/gostdlib/base/exp/caches/internal/hashmap"
-	"github.com/gostdlib/base/exp/caches/internal/shardmap"
+	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/exp/caches/weak/internal/hashmap"
+	cacheMetrics "github.com/gostdlib/base/exp/caches/weak/internal/metrics"
+	"github.com/gostdlib/base/exp/caches/weak/internal/shardmap"
+	"github.com/gostdlib/base/telemetry/otel/metrics"
 )
 
 type ttlEntry[V any] struct {
@@ -39,6 +40,8 @@ type Cache[K comparable, V any] struct {
 	filler  Filler[K, V]
 	setter  Setter[K, V]
 	deleter Deleter[K]
+
+	metrics *cacheMetrics.Cache
 }
 
 type opts struct {
@@ -87,7 +90,8 @@ func WithSingleFlight[K comparable, V any]() Option {
 }
 
 // Filler is a function that will be run if the cache needs to fill a missing value. If this function
-// returns a value, it will be set in the cache and returned to the caller. If it returns an error, the Get call will fail.
+// returns a value, it will be set in the cache and returned to the caller. If it returns an error, the Get call will fail with
+// that error.
 type Filler[K comparable, V any] = shardmap.Filler[K, V]
 
 // WithFiller sets a custom filler function for the cache. This is used to load missing values into the cache on Get calls.
@@ -135,8 +139,25 @@ func WithDeDupe[V any](less func(a, b weak.Pointer[V]) bool) Option {
 	}
 }
 
-// New creates a new Cache with the given options.
-func New[K comparable, V any](ctx context.Context, options ...Option) (*Cache[K, V], error) {
+func fillMetricWrap[K comparable, V any](metrics *cacheMetrics.Cache, f Filler[K, V]) Filler[K, V] {
+	return func(ctx context.Context, k K) (*V, bool, error) {
+		v, ok, err := f(ctx, k)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+		metrics.Fills.Add(ctx, 1)
+		return v, true, nil
+	}
+}
+
+// New creates a new Cache with the given options. Name is a unique identifier for the cache, used for metrics.
+func New[K comparable, V any](ctx context.Context, name string, options ...Option) (*Cache[K, V], error) {
+	if name == "" {
+		return nil, fmt.Errorf("name cannot be empty")
+	}
 	o := opts{}
 	for _, option := range options {
 		var err error
@@ -145,18 +166,25 @@ func New[K comparable, V any](ctx context.Context, options ...Option) (*Cache[K,
 			return nil, err
 		}
 	}
+
+	mp := context.MeterProvider(ctx)
+	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
+	cm := cacheMetrics.New(meter)
+
 	var m *shardmap.Map[K, V]
 	if o.less != nil {
-		m = shardmap.New[K, V](o.less.(func(a, b weak.Pointer[V]) bool))
+		m = shardmap.New[K, V](o.less.(func(a, b weak.Pointer[V]) bool), cm)
 	} else {
-		m = shardmap.New[K, V](nil)
+		m = shardmap.New[K, V](nil, cm)
 	}
+
 	c := &Cache[K, V]{
 		m:          m,
 		useFlights: o.useFlights,
+		metrics:    cm,
 	}
 	if o.filler != nil {
-		c.filler = o.filler.(Filler[K, V])
+		c.filler = fillMetricWrap(c.metrics, o.filler.(Filler[K, V]))
 	}
 	if o.setter != nil {
 		c.setter = o.setter.(Setter[K, V])
@@ -213,6 +241,9 @@ func (m *Cache[K, V]) ttlExpire(ctx context.Context) {
 func (m *Cache[K, V]) Set(ctx context.Context, k K, v *V) (prev *V, replaced bool, err error) {
 	if v == nil {
 		prev, deleted, err := m.Del(ctx, k)
+		if deleted {
+			m.metrics.CacheItems.Add(ctx, -1)
+		}
 		return prev, deleted, err
 	}
 
@@ -241,9 +272,8 @@ func (m *Cache[K, V]) set(ctx context.Context, k K, v *V) (prev *V, replaced boo
 	if !replaced {
 		return nil, false, nil
 	}
-	if prev == nil {
-		return nil, false, nil
-	}
+	m.metrics.CacheItems.Add(ctx, 1)
+
 	return prev, replaced, nil
 }
 
@@ -261,6 +291,11 @@ func (m *Cache[K, V]) Get(ctx context.Context, k K) (value *V, ok bool, err erro
 		)
 		return value, ok, err
 	}
+	if ok {
+		m.metrics.CacheHits.Add(ctx, 1)
+	} else {
+		m.metrics.CacheMisses.Add(ctx, 1)
+	}
 	return m.m.Get(ctx, k, m.filler)
 }
 
@@ -272,7 +307,12 @@ func (m *Cache[K, V]) Del(ctx context.Context, k K) (prev *V, deleted bool, err 
 		m.ttlMap.Delete(k)
 		m.ttlLock.Unlock()
 	}
-	return m.m.Delete(ctx, k, m.deleter)
+
+	prev, deleted, err = m.m.Delete(ctx, k, m.deleter)
+	if deleted {
+		m.metrics.CacheItems.Add(ctx, -1)
+	}
+	return prev, deleted, err
 }
 
 // Len returns the number of values in map. This is an approximation since keys may hold nil values that

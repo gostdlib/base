@@ -234,8 +234,9 @@ func (tr *BTreeG[T]) setHint(item T, hint *PathHint) (itemToUse T, found bool) {
 	return item, false
 }
 
-// Set or replace a value for a key
-func (tr *BTreeG[T]) Set(item T) (T, bool) {
+// Set a value. If the value already exists, that item is returned instead of the new item. Found will
+// be true if an existing item was found.
+func (tr *BTreeG[T]) Set(item T) (itemToUse T, found bool) {
 	return tr.SetHint(item, nil)
 }
 
