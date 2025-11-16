@@ -111,11 +111,14 @@ func TestRandomData(t *testing.T) {
 			// Create a new heap-allocated string
 			ptr := new(string)
 			*ptr = strconv.Itoa(add(nums[i], 1))
-			strongRefs[nums[i]] = ptr
 			v, ok, _ := m.Set(t.Context(), nums[i], ptr, nil)
 			if !ok || *v != nums[i] {
 				t.Fatalf("expected %v, got %v", nums[i], v)
 			}
+			// Keep the old value alive until we've validated it
+			runtime.KeepAlive(v)
+			// Now replace the strong reference with the new value
+			strongRefs[nums[i]] = ptr
 		}
 		if m.Len() != N {
 			t.Fatalf("expected %v, got %v", N, m.Len())
@@ -139,6 +142,8 @@ func TestRandomData(t *testing.T) {
 			if !ok || *v != wantStr {
 				t.Fatalf("expected %v, got %v", add(nums[i], 1), v)
 			}
+			// Keep the deleted value alive until we've validated it
+			runtime.KeepAlive(v)
 		}
 		if m.Len() != N/2 {
 			t.Fatalf("expected %v, got %v", N/2, m.Len())
@@ -192,6 +197,8 @@ func TestRandomData(t *testing.T) {
 			if !ok || *v != valStr {
 				t.Fatalf("expected %v, got %v", add(nums[i], 1), v)
 			}
+			// Keep the deleted value alive until we've validated it
+			runtime.KeepAlive(v)
 		}
 		// Keep strong references alive until the end of the iteration
 		runtime.KeepAlive(strongRefs)
