@@ -76,7 +76,7 @@ func (m *imap[K, V]) Set(key K, value V) (V, bool) {
 	if m.m == nil {
 		m.m = new(Map[K, V])
 	}
-	return m.m.Set(key, value)
+	return m.m.Set(key, value, time.Time{})
 }
 func (m *imap[K, V]) Delete(key K) (V, bool) {
 	if m.m == nil {
@@ -281,7 +281,7 @@ func testPerf[K comparable, V any](nums []K, pnums []V, which string) {
 		}
 	case "tidwall":
 		var m Map[K, V]
-		setop = func(i, _ int) { m.Set(nums[i], pnums[i]) }
+		setop = func(i, _ int) { m.Set(nums[i], pnums[i], time.Time{}) }
 		getop = func(i, _ int) { m.Get(nums[i]) }
 		delop = func(i, _ int) { m.Delete(nums[i]) }
 		scnop = func() {
@@ -368,7 +368,7 @@ func TestIntInt(t *testing.T) {
 	keys := rand.Perm(1000000)
 
 	for i := 0; i < len(keys); i++ {
-		_, ok := m.Set(keys[i], keys[i]*10)
+		_, ok := m.Set(keys[i], keys[i]*10, time.Time{})
 		if ok {
 			t.Fatalf("expected false")
 		}
@@ -403,7 +403,7 @@ func TestIntInt(t *testing.T) {
 
 func TestMapValues(t *testing.T) {
 	var m Map[int, int]
-	m.Set(1, 2)
+	m.Set(1, 2, time.Time{})
 	expect := []int{2}
 	got := m.Values()
 	if !reflect.DeepEqual(got, expect) {
@@ -492,7 +492,7 @@ func TestMapCopy(t *testing.T) {
 	// create the initial map
 	m1 := New[int, int](0)
 	for m1.Len() < N {
-		m1.Set(rand.Int(), rand.Int())
+		m1.Set(rand.Int(), rand.Int(), time.Time{})
 	}
 	e11 := copyMapEntries(m1)
 	dur := time.Second * 2
@@ -530,7 +530,7 @@ func TestGetPos(t *testing.T) {
 		t.Fatal()
 	}
 	for i := 0; i < 1000; i++ {
-		m.Set(i, i+1)
+		m.Set(i, i+1, time.Time{})
 	}
 	m2 := make(map[int]int)
 	for i := 0; i < 10000; i++ {
@@ -547,15 +547,15 @@ func TestGetPos(t *testing.T) {
 
 func TestIssue3(t *testing.T) {
 	m := New[string, int](50)
-	m.Set("key:808943", 1)
-	m.Set("key:5834", 2)
-	m.Set("key:51630", 3)
-	m.Set("key:49504", 4)
-	m.Set("key:346528", 5)
-	m.Set("key:189743", 6)
-	m.Set("key:4112608", 7)
-	m.Set("key:21749", 8)
-	m.Set("key:844131", 9)
+	m.Set("key:808943", 1, time.Time{})
+	m.Set("key:5834", 2, time.Time{})
+	m.Set("key:51630", 3, time.Time{})
+	m.Set("key:49504", 4, time.Time{})
+	m.Set("key:346528", 5, time.Time{})
+	m.Set("key:189743", 6, time.Time{})
+	m.Set("key:4112608", 7, time.Time{})
+	m.Set("key:21749", 8, time.Time{})
+	m.Set("key:844131", 9, time.Time{})
 	if v, _ := m.Delete("key:844131"); v != 9 {
 		t.Fatal()
 	}
@@ -568,7 +568,7 @@ func TestIssue3(t *testing.T) {
 		keys := make([]string, j)
 		for i := 0; i < len(keys); i++ {
 			keys[i] = fmt.Sprintf("key:%d", i)
-			m.Set(keys[i], i)
+			m.Set(keys[i], i, time.Time{})
 		}
 		for i := 0; i < len(keys); i++ {
 			if v, _ := m.Get(keys[i]); v != i {
