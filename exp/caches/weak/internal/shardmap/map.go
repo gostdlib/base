@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"weak"
 
 	"github.com/gostdlib/base/exp/caches/weak/internal/btree"
@@ -28,8 +29,9 @@ type Map[K comparable, V any] struct {
 	mus     []sync.RWMutex
 	maps    []*rhh.Map[K, weak.Pointer[V]]
 
-	tree *btree.BTreeG[weak.Pointer[V]]
-	less func(a, b weak.Pointer[V]) bool
+	tree   *btree.BTreeG[weak.Pointer[V]]
+	less   func(a, b weak.Pointer[V]) bool
+	maxTTL time.Duration
 
 	count   atomic.Int64
 	metrics *metrics.Cache
@@ -41,13 +43,13 @@ type Map[K comparable, V any] struct {
 // needed when you must define a minimum capacity, otherwise just use:
 //
 //	var m shardmap.Map
-func New[K comparable, V any](less func(a, b weak.Pointer[V]) bool, metrics *metrics.Cache) *Map[K, V] {
+func New[K comparable, V any](less func(a, b weak.Pointer[V]) bool, maxTTL time.Duration, metrics *metrics.Cache) *Map[K, V] {
 	var tree *btree.BTreeG[weak.Pointer[V]]
 	if less != nil {
 		tree = btree.NewBTreeG[weak.Pointer[V]](less)
 	}
 
-	m := &Map[K, V]{tree: tree, less: less, metrics: metrics, cap: 1024}
+	m := &Map[K, V]{tree: tree, less: less, maxTTL: maxTTL, metrics: metrics, cap: 1024}
 	m.initDo()
 	return m
 }
@@ -88,7 +90,11 @@ func (m *Map[K, V]) Set(ctx context.Context, key K, value *V, setter Setter[K, V
 	if m.tree != nil {
 		wp, _ = m.tree.Set(wp)
 	}
-	wp, replaced = m.maps[shard].Set(key, wp)
+	var maxTTL time.Time
+	if m.maxTTL > 0 {
+		maxTTL = time.Now().Add(m.maxTTL)
+	}
+	wp, replaced = m.maps[shard].Set(key, wp, maxTTL)
 	m.mus[shard].Unlock()
 	prev = wp.Value()
 	if replaced && prev != nil {
@@ -111,7 +117,11 @@ func (m *Map[K, V]) SetIfNil(ctx context.Context, key K, value *V) (setOk bool, 
 			return false, nil
 		}
 	}
-	m.maps[shard].Set(key, weak.Make(value))
+	var maxTTL time.Time
+	if m.maxTTL > 0 {
+		maxTTL = time.Now().Add(m.maxTTL)
+	}
+	m.maps[shard].Set(key, weak.Make(value), maxTTL)
 	m.mus[shard].Unlock()
 	m.count.Add(1)
 	return true, nil
@@ -163,16 +173,11 @@ type Deleter[K comparable] func(ctx context.Context, k K) error
 
 // Delete deletes a value for a key.
 // Returns the deleted value, or false when no value was assigned.
-func (m *Map[K, V]) Delete(ctx context.Context, key K, deleter Deleter[K]) (prev *V, deleted bool, err error) {
+func (m *Map[K, V]) Delete(ctx context.Context, key K) (prev *V, deleted bool, err error) {
 	m.initDo()
 	shard := m.choose(key)
 	m.mus[shard].Lock()
-	if deleter != nil {
-		if err := deleter(ctx, key); err != nil {
-			m.mus[shard].Unlock()
-			return nil, false, err
-		}
-	}
+
 	wp, deleted := m.maps[shard].Delete(key)
 	if !deleted {
 		m.mus[shard].Unlock()
@@ -189,6 +194,16 @@ func (m *Map[K, V]) Delete(ctx context.Context, key K, deleter Deleter[K]) (prev
 	}
 	m.mus[shard].Unlock()
 	return prev, deleted, nil
+}
+
+// DeleteIfMaxTTL deletes a value for a key only if the current value's TTL is less than or equal to maxTTL.
+func (m *Map[K, V]) DeleteIfMaxTTL(key K, maxTTL time.Time) (prev *V, deleted bool) {
+	m.initDo()
+	shard := m.choose(key)
+	m.mus[shard].Lock()
+	wp, deleted := m.maps[shard].DeleteIfMaxTTL(key, maxTTL)
+	m.mus[shard].Unlock()
+	return wp.Value(), deleted
 }
 
 // DeleteIfNil deletes a value for a key only if the current value's weak pointer is nil.

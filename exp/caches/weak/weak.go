@@ -19,36 +19,51 @@ import (
 	cacheMetrics "github.com/gostdlib/base/exp/caches/weak/internal/metrics"
 	"github.com/gostdlib/base/exp/caches/weak/internal/shardmap"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
+	"github.com/tidwall/btree"
 )
 
-type ttlEntry[V any] struct {
-	hold  time.Time
+type ttlEntry[K comparable, V any] struct {
+	// hold is the time until which we should keep a strong reference to the value.
+	hold        time.Time
+	expireAfter time.Time
+	key         K
+
 	value *V
+}
+
+func (e ttlEntry[K, V]) less(than ttlEntry[K, V]) bool {
+	return e.expireAfter.Before(than.expireAfter)
+}
+
+type mapEntry[V any] struct {
+	maxTTL time.Time
+	value  weak.Pointer[V]
 }
 
 // Cache is a weak pointer cache.
 type Cache[K comparable, V any] struct {
 	m          *shardmap.Map[K, V]
 	ttl        time.Duration
+	maxTTL     time.Duration
 	interval   time.Duration
 	useFlights bool
 	getFlight  sync.Flight[K, struct{}]
 
-	ttlLock sync.Mutex
-	ttlMap  hashmap.Map[K, ttlEntry[V]]
+	ttlLock     sync.Mutex
+	ttlMap      hashmap.Map[K, ttlEntry[K, V]]
+	expireAfter *btree.BTreeG[ttlEntry[K, V]]
 
-	filler  Filler[K, V]
-	setter  Setter[K, V]
-	deleter Deleter[K]
+	filler Filler[K, V]
+	setter Setter[K, V]
 
 	metrics *cacheMetrics.Cache
 }
 
 type opts struct {
-	ttl        time.Duration
-	interval   time.Duration
-	useFlights bool
-	less       any
+	ttl, maxTTL time.Duration
+	interval    time.Duration
+	useFlights  bool
+	less        any
 	// filler, setter and deleter are of type any to avoid always using generics on opts.
 	// They will be type asserted when used.
 	filler  any
@@ -61,17 +76,27 @@ type Option func(o opts) (opts, error)
 
 // WithTTL sets the time-to-live for entries in the cache and the cleanup interval.
 // Entries older than ttl will be removed during cleanup.
-// The cleanup interval must be at least 1 second.
-// If ttl is 0, an error is returned.
-func WithTTL(ttl, interval time.Duration) Option {
+// The ttl must be at least 1 second and is the minimum duration an entry will be kept in the cache.
+// The maxTTL parameter is optional and can be set to 0 to disable it. If set, ttl cannot be greater than maxTTL.
+// This causes entries to be removed after maxTTL even if they are still being referenced. The maxTTL cleanup happens
+// during the same cleanup process as the regular ttl, so it may stick around for up to interval longer than maxTTL.
+// The interval parameter sets how often the cleanup runs, which must be at least 1 second.
+func WithTTL(ttl, maxTTL, interval time.Duration) Option {
 	return func(o opts) (opts, error) {
 		if interval < 1*time.Second {
 			return o, fmt.Errorf("cleanup interval must be at least 1 second")
 		}
-		if ttl == 0 {
+		if ttl <= 0 {
 			return o, fmt.Errorf("ttl must be greater than 0")
 		}
+		if ttl < 1*time.Second {
+			return o, fmt.Errorf("ttl must be at least 1 second")
+		}
+		if maxTTL > 0 && ttl > maxTTL {
+			return o, fmt.Errorf("ttl cannot be greater than maxTTL")
+		}
 		o.ttl = ttl
+		o.maxTTL = maxTTL
 		o.interval = interval
 		return o, nil
 	}
@@ -82,7 +107,7 @@ func WithTTL(ttl, interval time.Duration) Option {
 // Get() calls for the same key from causing multiple loads of the same value. Use this to
 // prevent thundering herd problems when loading values from the cache. If not using WithFiller() to
 // retrieve missing values, this option will likely slow operations down instead of speeding them up.
-func WithSingleFlight[K comparable, V any]() Option {
+func WithSingleFlight() Option {
 	return func(o opts) (opts, error) {
 		o.useFlights = true
 		return o, nil
@@ -110,20 +135,6 @@ type Setter[K comparable, V any] = shardmap.Setter[K, V]
 func WithSetter[K comparable, V any](s Setter[K, V]) Option {
 	return func(o opts) (opts, error) {
 		o.setter = s
-		return o, nil
-	}
-}
-
-// Deleter is a function that will be run when deleting a value from the cache. If this function
-// returns an error, the value will not be deleted. This is used to delete values from durable storage when they are removed
-// from the cache.
-type Deleter[K comparable] = shardmap.Deleter[K]
-
-// WithDeleter sets a custom deleter function for the cache. This is used to delete values from durable storage when they
-// are removed from the cache.
-func WithDeleter[K comparable](d Deleter[K]) Option {
-	return func(o opts) (opts, error) {
-		o.deleter = d
 		return o, nil
 	}
 }
@@ -173,9 +184,9 @@ func New[K comparable, V any](ctx context.Context, name string, options ...Optio
 
 	var m *shardmap.Map[K, V]
 	if o.less != nil {
-		m = shardmap.New[K, V](o.less.(func(a, b weak.Pointer[V]) bool), cm)
+		m = shardmap.New[K, V](o.less.(func(a, b weak.Pointer[V]) bool), o.maxTTL, cm)
 	} else {
-		m = shardmap.New[K, V](nil, cm)
+		m = shardmap.New[K, V](nil, o.maxTTL, cm)
 	}
 
 	c := &Cache[K, V]{
@@ -189,8 +200,12 @@ func New[K comparable, V any](ctx context.Context, name string, options ...Optio
 	if o.setter != nil {
 		c.setter = o.setter.(Setter[K, V])
 	}
-	if o.deleter != nil {
-		c.deleter = o.deleter.(Deleter[K])
+	if o.maxTTL > 0 {
+		c.maxTTL = o.maxTTL
+		c.expireAfter = btree.NewBTreeGOptions(
+			func(a, b ttlEntry[K, V]) bool { return a.less(b) },
+			btree.Options{Degree: 2, NoLocks: true},
+		)
 	}
 	if o.ttl > 0 {
 		c.ttl = o.ttl
@@ -224,10 +239,26 @@ func (m *Cache[K, V]) ttlExpire(ctx context.Context) {
 			for k, v := range m.ttlMap.All() {
 				if v.hold.Before(now) {
 					deletions = append(deletions, k)
+					if !v.expireAfter.IsZero() {
+						m.expireAfter.Set(v)
+					}
 				}
 			}
 			for _, k := range deletions {
 				m.ttlMap.Delete(k)
+			}
+
+			if m.expireAfter != nil {
+				m.expireAfter.DeleteAscend(
+					ttlEntry[K, V]{expireAfter: now.Add(-1 * time.Second)},
+					func(item ttlEntry[K, V]) btree.Action {
+						if !item.expireAfter.Before(now) {
+							return btree.Stop
+						}
+						m.delWithTTL(ctx, item.key, item.expireAfter)
+						return btree.Delete
+					},
+				)
 			}
 			m.ttlLock.Unlock()
 			deletions = deletions[:0]
@@ -252,8 +283,13 @@ func (m *Cache[K, V]) Set(ctx context.Context, k K, v *V) (prev *V, replaced boo
 
 func (m *Cache[K, V]) set(ctx context.Context, k K, v *V) (prev *V, replaced bool, err error) {
 	if m.ttl > 0 {
+		expire := time.Time{}
+		if m.expireAfter != nil {
+			expire = time.Now().Add(m.maxTTL)
+		}
 		m.ttlLock.Lock()
-		m.ttlMap.Set(k, ttlEntry[V]{hold: time.Now().Add(m.ttl), value: v})
+
+		m.ttlMap.Set(k, ttlEntry[K, V]{hold: time.Now().Add(m.ttl), expireAfter: expire, value: v}, time.Time{})
 		m.ttlLock.Unlock()
 	}
 
@@ -308,11 +344,18 @@ func (m *Cache[K, V]) Del(ctx context.Context, k K) (prev *V, deleted bool, err 
 		m.ttlLock.Unlock()
 	}
 
-	prev, deleted, err = m.m.Delete(ctx, k, m.deleter)
+	prev, deleted, err = m.m.Delete(ctx, k)
 	if deleted {
 		m.metrics.CacheItems.Add(ctx, -1)
 	}
 	return prev, deleted, err
+}
+
+func (m *Cache[K, V]) delWithTTL(ctx context.Context, k K, ttl time.Time) {
+	_, deleted := m.m.DeleteIfMaxTTL(k, ttl)
+	if deleted {
+		m.metrics.CacheItems.Add(ctx, -1)
+	}
 }
 
 // Len returns the number of values in map. This is an approximation since keys may hold nil values that

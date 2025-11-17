@@ -67,7 +67,7 @@ func TestRandomData(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < time.Second*2 {
 		nums := random(N, true)
-		m := New[string, string](nil, cm)
+		m := New[string, string](nil, 0, cm)
 
 		// Keep strong references to prevent GC
 		strongRefs := make(map[string]*string)
@@ -76,7 +76,7 @@ func TestRandomData(t *testing.T) {
 		if ok || v != nil {
 			t.Fatalf("expected %v, got %v", nil, v)
 		}
-		v, ok, _ = m.Delete(t.Context(), k(999), nil)
+		v, ok, _ = m.Delete(t.Context(), k(999))
 		if ok || v != nil {
 			t.Fatalf("expected %v, got %v", nil, v)
 		}
@@ -136,7 +136,7 @@ func TestRandomData(t *testing.T) {
 		// remove half the items
 		shuffle(nums)
 		for i := 0; i < len(nums)/2; i++ {
-			v, ok, _ := m.Delete(t.Context(), nums[i], nil)
+			v, ok, _ := m.Delete(t.Context(), nums[i])
 			want := add(nums[i], 1)
 			wantStr := strconv.Itoa(want)
 			if !ok || *v != wantStr {
@@ -166,7 +166,7 @@ func TestRandomData(t *testing.T) {
 		}
 		// try to delete again, make sure they don't exist
 		for i := 0; i < len(nums)/2; i++ {
-			v, ok, _ := m.Delete(t.Context(), nums[i], nil)
+			v, ok, _ := m.Delete(t.Context(), nums[i])
 			if ok || v != nil {
 				t.Fatalf("expected %v, got %v", nil, v)
 			}
@@ -191,7 +191,7 @@ func TestRandomData(t *testing.T) {
 			t.Fatalf("expected %v, got %v", 1, n)
 		}
 		for i := len(nums) / 2; i < len(nums); i++ {
-			v, ok, _ := m.Delete(t.Context(), nums[i], nil)
+			v, ok, _ := m.Delete(t.Context(), nums[i])
 			val := add(nums[i], 1)
 			valStr := strconv.Itoa(val)
 			if !ok || *v != valStr {
@@ -243,7 +243,7 @@ func TestDeleteIfNil(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		m := New[string, int](nil, cm)
+		m := New[string, int](nil, 0, cm)
 
 		if test.wantDeleted {
 			// Create value that will be GC'd
@@ -278,7 +278,7 @@ func TestDeleteIfNil(t *testing.T) {
 	}
 
 	// Test non-existent key
-	m := New[string, int](nil, cm)
+	m := New[string, int](nil, 0, cm)
 	_, deleted := m.DeleteIfNil("nonexistent")
 	if deleted {
 		t.Errorf("TestDeleteIfNil: deleted non-existent key")
@@ -286,7 +286,7 @@ func TestDeleteIfNil(t *testing.T) {
 }
 
 func TestCleanShards(t *testing.T) {
-	m := New[string, int](nil, cm)
+	m := New[string, int](nil, 0, cm)
 
 	// Keep strong references for some values
 	strongRefs := make(map[string]*int)
@@ -328,7 +328,7 @@ func TestCleanShards(t *testing.T) {
 }
 
 func TestLenAtomicCount(t *testing.T) {
-	m := New[string, int](nil, cm)
+	m := New[string, int](nil, 0, cm)
 
 	// Keep strong references
 	strongRefs := make(map[string]*int)
@@ -371,14 +371,14 @@ func TestLenAtomicCount(t *testing.T) {
 		{
 			name: "Success: Len decreases after Delete",
 			op: func() {
-				m.Delete(t.Context(), "key1", nil)
+				m.Delete(t.Context(), "key1")
 			},
 			wantDelta: -1,
 		},
 		{
 			name: "Success: Len unchanged deleting non-existent",
 			op: func() {
-				m.Delete(t.Context(), "nonexistent", nil)
+				m.Delete(t.Context(), "nonexistent")
 			},
 			wantDelta: 0,
 		},
@@ -422,7 +422,7 @@ func TestBTreeDeduplication(t *testing.T) {
 		return *aVal < *bVal
 	}
 
-	m := New[string, int](less, cm)
+	m := New[string, int](less, 0, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 3)
@@ -484,7 +484,7 @@ func TestBTreeDeduplicationWithDeletion(t *testing.T) {
 		return *aVal < *bVal
 	}
 
-	m := New[string, int](less, cm)
+	m := New[string, int](less, 0, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 2)
@@ -513,7 +513,7 @@ func TestBTreeDeduplicationWithDeletion(t *testing.T) {
 	}
 
 	// Delete key1
-	deleted, ok, _ := m.Delete(t.Context(), "key1", nil)
+	deleted, ok, _ := m.Delete(t.Context(), "key1")
 	switch {
 	case !ok:
 		t.Errorf("TestBTreeDeduplicationWithDeletion: failed to delete key1")
@@ -547,7 +547,7 @@ func TestBTreeDeduplicationWithDeletion(t *testing.T) {
 }
 
 func TestBTreeNilLessNoDeduplication(t *testing.T) {
-	m := New[string, int](nil, cm)
+	m := New[string, int](nil, 0, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 2)
@@ -608,7 +608,7 @@ func TestBTreeClear(t *testing.T) {
 		return *aVal < *bVal
 	}
 
-	m := New[string, int](less, cm)
+	m := New[string, int](less, 0, cm)
 
 	// Keep strong references
 	strongRefs := make([]*int, 3)

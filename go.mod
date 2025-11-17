@@ -18,6 +18,7 @@ require (
 	github.com/samber/slog-zap/v2 v2.6.2
 	github.com/samber/slog-zerolog/v2 v2.7.3
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
+	github.com/tidwall/btree v1.8.1
 	github.com/tidwall/lotsa v1.0.3
 	github.com/tidwall/shardmap v0.0.0-20190927132224-c190691bd211
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.62.0

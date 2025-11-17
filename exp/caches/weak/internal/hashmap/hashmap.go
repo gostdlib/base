@@ -3,6 +3,7 @@ package hashmap
 import (
 	"hash/maphash"
 	"iter"
+	"time"
 )
 
 const (
@@ -16,9 +17,10 @@ const (
 var seed = maphash.MakeSeed()
 
 type entry[K comparable, V any] struct {
-	hdib  uint64 // bitfield { hash:48 dib:16 }
-	value V      // user value
-	key   K      // user key
+	hdib   uint64 // bitfield { hash:48 dib:16 }
+	value  V      // user value
+	key    K      // user key
+	maxTTL time.Time
 }
 
 func (e *entry[K, V]) dib() int {
@@ -75,7 +77,7 @@ func (m *Map[K, V]) resize(newCap int) {
 	nmap := New[K, V](newCap)
 	for i := 0; i < len(m.buckets); i++ {
 		if m.buckets[i].dib() > 0 {
-			nmap.set(m.buckets[i].hash(), m.buckets[i].key, m.buckets[i].value)
+			nmap.set(m.buckets[i].hash(), m.buckets[i].key, m.buckets[i].value, m.buckets[i].maxTTL)
 		}
 	}
 	cap := m.cap
@@ -85,18 +87,18 @@ func (m *Map[K, V]) resize(newCap int) {
 
 // Set assigns a value to a key.
 // Returns the previous value, or false when no value was assigned.
-func (m *Map[K, V]) Set(key K, value V) (V, bool) {
+func (m *Map[K, V]) Set(key K, value V, maxTTL time.Time) (V, bool) {
 	if len(m.buckets) == 0 {
 		*m = *New[K, V](0)
 	}
 	if m.length >= m.growAt {
 		m.resize(len(m.buckets) * 2)
 	}
-	return m.set(m.hash(key), key, value)
+	return m.set(m.hash(key), key, value, maxTTL)
 }
 
-func (m *Map[K, V]) set(hash int, key K, value V) (prev V, ok bool) {
-	e := entry[K, V]{makeHDIB(hash, 1), value, key}
+func (m *Map[K, V]) set(hash int, key K, value V, maxTTL time.Time) (prev V, ok bool) {
+	e := entry[K, V]{makeHDIB(hash, 1), value, key, maxTTL}
 	i := e.hash() & m.mask
 	for {
 		if m.buckets[i].dib() == 0 {
@@ -107,6 +109,7 @@ func (m *Map[K, V]) set(hash int, key K, value V) (prev V, ok bool) {
 		if e.hash() == m.buckets[i].hash() && e.key == m.buckets[i].key {
 			prev = m.buckets[i].value
 			m.buckets[i].value = e.value
+			m.buckets[i].maxTTL = e.maxTTL
 			return prev, true
 		}
 		if m.buckets[i].dib() < e.dib() {
@@ -130,6 +133,10 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 			return value, false
 		}
 		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
+			if !m.buckets[i].maxTTL.IsZero() && time.Now().After(m.buckets[i].maxTTL) {
+				m.Delete(key)
+				return value, false
+			}
 			return m.buckets[i].value, true
 		}
 		i = (i + 1) & m.mask
@@ -154,6 +161,30 @@ func (m *Map[K, V]) Delete(key K) (prev V, deleted bool) {
 			return prev, false
 		}
 		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
+			prev = m.buckets[i].value
+			m.remove(i)
+			return prev, true
+		}
+		i = (i + 1) & m.mask
+	}
+}
+
+// DeleteIfMaxTTL deletes a value for a key only if its maxTTL matches the provided maxTTL.
+// Returns the deleted value, or false when no value was assigned or maxTTL did not match.
+func (m *Map[K, V]) DeleteIfMaxTTL(key K, maxTTL time.Time) (prev V, deleted bool) {
+	if len(m.buckets) == 0 {
+		return prev, false
+	}
+	hash := m.hash(key)
+	i := hash & m.mask
+	for {
+		if m.buckets[i].dib() == 0 {
+			return prev, false
+		}
+		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
+			if m.buckets[i].maxTTL != maxTTL {
+				return prev, false
+			}
 			prev = m.buckets[i].value
 			m.remove(i)
 			return prev, true
