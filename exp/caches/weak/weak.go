@@ -271,11 +271,7 @@ func (m *Cache[K, V]) ttlExpire(ctx context.Context) {
 // Set a nil value, it is equivalent to Delete.
 func (m *Cache[K, V]) Set(ctx context.Context, k K, v *V) (prev *V, replaced bool, err error) {
 	if v == nil {
-		prev, deleted, err := m.Del(ctx, k)
-		if deleted {
-			m.metrics.CacheItems.Add(ctx, -1)
-		}
-		return prev, deleted, err
+		return m.Del(ctx, k)
 	}
 
 	return m.set(ctx, k, v)
@@ -306,9 +302,9 @@ func (m *Cache[K, V]) set(ctx context.Context, k K, v *V) (prev *V, replaced boo
 	)
 
 	if !replaced {
+		m.metrics.CacheItems.Add(ctx, 1)
 		return nil, false, nil
 	}
-	m.metrics.CacheItems.Add(ctx, 1)
 
 	return prev, replaced, nil
 }
@@ -325,14 +321,20 @@ func (m *Cache[K, V]) Get(ctx context.Context, k K) (value *V, ok bool, err erro
 				return struct{}{}, nil // We don't need the value.
 			},
 		)
+		if ok {
+			m.metrics.CacheHits.Add(ctx, 1)
+		} else {
+			m.metrics.CacheMisses.Add(ctx, 1)
+		}
 		return value, ok, err
 	}
+	value, ok, err = m.m.Get(ctx, k, m.filler)
 	if ok {
 		m.metrics.CacheHits.Add(ctx, 1)
 	} else {
 		m.metrics.CacheMisses.Add(ctx, 1)
 	}
-	return m.m.Get(ctx, k, m.filler)
+	return value, ok, err
 }
 
 // Del deletes a value for a key.
