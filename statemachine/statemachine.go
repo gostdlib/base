@@ -144,12 +144,12 @@ package statemachine
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
 	"reflect"
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -198,7 +198,7 @@ func newCyclicError(smName, lastStage string, stages *seenStages) error {
 
 // Error implements the error interface.
 func (c ErrCyclic) Error() string {
-	return fmt.Sprintf("statemachine had cyclic error")
+	return fmt.Sprintf("statemachine(%s) had cyclic error: stage(%s): callTrace: %s\n", c.SMName, c.LastStage, c.Stages)
 }
 
 // Is implements the errors.Is interface.
@@ -255,7 +255,6 @@ func (s *seenStages) seen(stage string) bool {
 func (s *seenStages) callTrace() string {
 	out := strings.Builder{}
 	for i, st := range *s {
-		log.Println(st)
 		if i != 0 {
 			out.WriteString(" -> ")
 		}
@@ -275,6 +274,8 @@ func (s *seenStages) Reset() *seenStages {
 // passed and it will modify Request.Data before it is returned by Run(). err indicates if you had an
 // error and what it was, otherwise the Request completed.
 type DeferFn[T any] func(ctx context.Context, data T, err error) T
+
+var logCounters = atomic.Uint32{}
 
 // Request are the request passed to a state function.
 type Request[T any] struct {
@@ -302,6 +303,10 @@ type Request[T any] struct {
 	// seenStages tracks what stages have been called in this Request. This is used to
 	// detect cyclic errors. If nil, cyclic errors are not checked.
 	seenStages *seenStages
+	// logStages indicates if each stage should be logged as it is executed. If true, each stage will be logged.
+	logStages bool
+	// reqID is a unique identifier for this Request. This is used for logging purposes.
+	reqID string
 }
 
 func (r Request[T]) otelStart() Request[T] {
@@ -372,6 +377,19 @@ func WithCyclicCheck[T any](req Request[T]) (Request[T], error) {
 	return req, nil
 }
 
+// WithLogStages is an option that causes the state machine to log each stage as it is executed at Info level. Useful for debugging.
+// Note that with an active OTEL span, more information will be available, but if you do not have OTEL enabled, this will
+// provide some insight into what stages are being executed and where errors or timeouts are. The id is a unique identifier
+// for this Request and is used to correlate log messages. If id is empty, an error is returned.
+func WithLogStages[T any](id string, req Request[T]) (Request[T], error) {
+	if id == "" {
+		return req, fmt.Errorf("WithLogStages: id cannot be empty")
+	}
+	req.logStages = true
+	req.reqID = id
+	return req, nil
+}
+
 // Run runs the state machine with the given a Request. name is the name of the statemachine for the
 // purpose of OTEL tracing. An error is returned if the state machine fails, name
 // is empty, the Request Ctx/Next is nil or the Err field is not nil.
@@ -421,9 +439,19 @@ func Run[T any](name string, req Request[T], options ...Option[T]) (Request[T], 
 				return req, newCyclicError(name, stateName, req.seenStages)
 			}
 		}
+		if req.logStages {
+			context.Log(req.Ctx).Info("statemachine executing state", slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+		}
 		req = execState(req, stateName)
+
+		if req.logStages {
+			context.Log(req.Ctx).Info("statemachine finished state", slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+		}
 		if req.Err != nil {
 			req = execDefer(req)
+			if req.logStages {
+				context.Log(req.Ctx).Info("statemachine error", slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+			}
 			req.span.Status(codes.Error, fmt.Sprintf("error in State(%s): %s", stateName, req.Err.Error()))
 			return req, req.Err
 		}
