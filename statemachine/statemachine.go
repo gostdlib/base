@@ -316,7 +316,7 @@ func (r Request[T]) otelStart() Request[T] {
 
 	j, err := json.Marshal(r.Data)
 	if err != nil {
-		j = []byte(fmt.Sprintf("Error marshaling data: %s", err.Error()))
+		j = fmt.Appendf([]byte{}, "Error marshaling data: %s", err.Error())
 	}
 
 	r.startTime = time.Now()
