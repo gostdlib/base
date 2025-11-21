@@ -15,6 +15,7 @@ import (
 	ierr "github.com/gostdlib/base/internal/errors"
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
+	"github.com/gostdlib/base/telemetry/otel/trace/span"
 
 	"go.opentelemetry.io/otel/metric"
 	metricsnoop "go.opentelemetry.io/otel/metric/noop"
@@ -97,6 +98,21 @@ func MeterWithStackFrame(ctx Context, sf uint, opts ...metric.MeterOption) metri
 // it returns metrics.Default(). This may be a noop provider.
 func MeterProvider(ctx Context) metric.MeterProvider {
 	return internalCtx.MeterProvider(ctx)
+}
+
+// NewSpan creates a new child span object from the span stored in Context. If that Span is
+// a noOp, the child span will be a noop too. If you pass a nil Context, this will return
+// the background Context with a noop span. If an option is passed that is not valid,
+// it is ignored and an error is logged. The span is created with a span kind of internal,
+// unless another span kind is passed using WithSpanStartOption(WithSpanKind([kind])).
+// This starts the span.
+func NewSpan(ctx Context, options ...span.Option) (Context, span.Span) {
+	return span.New(ctx, options...)
+}
+
+// Span returns the current span from the context. If no span is attached, it returns a noop span.
+func Span(ctx Context) span.Span {
+	return span.Get(ctx)
 }
 
 // Pool returns the worker pool attached to the context. If no pool is attached, it returns worker.Default().
