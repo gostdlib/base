@@ -14,6 +14,10 @@ type data struct {
 	Num int
 }
 
+func (d data) ID() string {
+	return fmt.Sprintf("data-%d", d.Num)
+}
+
 func steer(req Request[data]) Request[data] {
 	switch req.Data.Num {
 	case 0:
@@ -91,7 +95,7 @@ func TestRun(t *testing.T) {
 		name      string
 		argName   string
 		req       Request[data]
-		options   []Option[data]
+		options   []Option
 		wantReq   Request[data]
 		wantErr   bool
 		cyclicErr bool
@@ -166,7 +170,7 @@ func TestRun(t *testing.T) {
 				Next: cc.start,
 				Data: data{Num: 30},
 			},
-			options:   []Option[data]{WithCyclicCheck[data]},
+			options:   []Option{WithRequestOptions(CyclicCheck[data], LogStages[data])},
 			wantErr:   true,
 			cyclicErr: true,
 		},
