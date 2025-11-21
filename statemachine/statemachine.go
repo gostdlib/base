@@ -387,14 +387,14 @@ func WithRequestOptions[T any](ros ...RequestOption[T]) Option {
 	}
 }
 
-// CyclicCheck is a RequestDebugOption that causes the state machine to error if a state is called more than once.
+// CyclicCheck is a RequestOption that causes the state machine to error if a state is called more than once.
 // This effectively turns the state machine into a directed acyclic graph.
 func CyclicCheck[T any](req Request[T]) (Request[T], error) {
 	req.seenStages = seenStagesPool.Get(req.Ctx)
 	return req, nil
 }
 
-// LogStages is a RequestDebugOption that causes the state machine to log each stage as it is executed at Info level. Useful for debugging.
+// LogStages is a RequestOption that causes the state machine to log each stage as it is executed at Info level. Useful for debugging.
 // Note that with an active OTEL span, more information will be available, but if you do not have OTEL enabled, this will
 // provide some insight into what stages are being executed and where errors or timeouts are. If this has a
 // ID() string method on .Data, the ID will be recorded.
