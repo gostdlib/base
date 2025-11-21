@@ -366,34 +366,54 @@ func (r Request[T]) otelEnd() {
 	r.span.End()
 }
 
-// Option is an option for the Run() function.
-// This is currently unused, but exists for future expansion.
-type Option[T any] func(Request[T]) (Request[T], error)
+type allOptions struct {
+	requestModifiers []any // []RequestOption
+}
 
-// WithCyclicCheck is an option that causes the state machine to error if a state is called more than once.
+// Option is an option for the Run() function.
+type Option func(o allOptions) (allOptions, error)
+
+// RequestOption is an option that modifies the Request, usually for debug purposes.
+type RequestOption[T any] func(req Request[T]) (Request[T], error)
+
+// WithRequestOption adds a RequestOption to the Run() function options. Use this to pass CyclicCheck or LogStages.
+// We do not support custom options, so do that at your own risk.
+func WithRequestOptions[T any](ros ...RequestOption[T]) Option {
+	return func(o allOptions) (allOptions, error) {
+		for _, ro := range ros {
+			o.requestModifiers = append(o.requestModifiers, ro)
+		}
+		return o, nil
+	}
+}
+
+// CyclicCheck is a RequestDebugOption that causes the state machine to error if a state is called more than once.
 // This effectively turns the state machine into a directed acyclic graph.
-func WithCyclicCheck[T any](req Request[T]) (Request[T], error) {
+func CyclicCheck[T any](req Request[T]) (Request[T], error) {
 	req.seenStages = seenStagesPool.Get(req.Ctx)
 	return req, nil
 }
 
-// WithLogStages is an option that causes the state machine to log each stage as it is executed at Info level. Useful for debugging.
+// LogStages is a RequestDebugOption that causes the state machine to log each stage as it is executed at Info level. Useful for debugging.
 // Note that with an active OTEL span, more information will be available, but if you do not have OTEL enabled, this will
-// provide some insight into what stages are being executed and where errors or timeouts are. The id is a unique identifier
-// for this Request and is used to correlate log messages. If id is empty, an error is returned.
-func WithLogStages[T any](id string, req Request[T]) (Request[T], error) {
-	if id == "" {
-		return req, fmt.Errorf("WithLogStages: id cannot be empty")
+// provide some insight into what stages are being executed and where errors or timeouts are. If this has a
+// ID() string method on .Data, the ID will be recorded.
+func LogStages[T any](req Request[T]) (Request[T], error) {
+	type ider interface {
+		ID() string
 	}
+
 	req.logStages = true
-	req.reqID = id
+	if idObj, ok := any(req.Data).(ider); ok {
+		req.reqID = idObj.ID()
+	}
 	return req, nil
 }
 
 // Run runs the state machine with the given a Request. name is the name of the statemachine for the
 // purpose of OTEL tracing. An error is returned if the state machine fails, name
 // is empty, the Request Ctx/Next is nil or the Err field is not nil.
-func Run[T any](name string, req Request[T], options ...Option[T]) (Request[T], error) {
+func Run[T any](name string, req Request[T], options ...Option) (Request[T], error) {
 	defer func() {
 		if req.seenStages != nil {
 			seenStagesPool.Put(req.Ctx, req.seenStages)
@@ -417,9 +437,23 @@ func Run[T any](name string, req Request[T], options ...Option[T]) (Request[T], 
 		return req, reqErrNotNil
 	}
 
+	opts := allOptions{}
 	for _, o := range options {
 		var err error
-		req, err = o(req)
+		opts, err = o(opts)
+		if err != nil {
+			req.Next = nil
+			return req, err
+		}
+	}
+
+	for _, o := range opts.requestModifiers {
+		var err error
+		if o == nil {
+			continue
+		}
+		ro := o.(RequestOption[T])
+		req, err = ro(req)
 		if err != nil {
 			return req, err
 		}
