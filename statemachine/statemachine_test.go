@@ -86,6 +86,191 @@ func (c *cyclicCheck) stage2(req Request[data]) Request[data] {
 	return req
 }
 
+func TestStateString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		state State[data]
+		want  string
+	}{
+		{
+			name:  "Success: steer function returns correct name",
+			state: steer,
+			want:  "github.com/gostdlib/base/statemachine.steer",
+		},
+		{
+			name:  "Success: addTen function returns correct name",
+			state: addTen,
+			want:  "github.com/gostdlib/base/statemachine.addTen",
+		},
+		{
+			name:  "Success: addErr function returns correct name",
+			state: addErr,
+			want:  "github.com/gostdlib/base/statemachine.addErr",
+		},
+		{
+			name:  "Success: addDefer function returns correct name",
+			state: addDefer,
+			want:  "github.com/gostdlib/base/statemachine.addDefer",
+		},
+		{
+			name:  "Success: addDefer2 function returns correct name",
+			state: addDefer2,
+			want:  "github.com/gostdlib/base/statemachine.addDefer2",
+		},
+	}
+
+	for _, test := range tests {
+		got := test.state.String()
+		if got != test.want {
+			t.Errorf("TestStateString(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestPreWrapAndPostWrap(t *testing.T) {
+	t.Parallel()
+
+	parentCtx := context.Background()
+
+	preWrapAddFive := func(req Request[data], state State[data]) (Request[data], error) {
+		req.Data.Num += 5
+		return req, nil
+	}
+
+	preWrapAddTwo := func(req Request[data], state State[data]) (Request[data], error) {
+		req.Data.Num += 2
+		return req, nil
+	}
+
+	preWrapError := func(req Request[data], state State[data]) (Request[data], error) {
+		return req, fmt.Errorf("preWrap error")
+	}
+
+	postWrapMultiplyTwo := func(req Request[data], state State[data]) (Request[data], error) {
+		req.Data.Num = req.Data.Num * 2
+		return req, nil
+	}
+
+	postWrapAddThree := func(req Request[data], state State[data]) (Request[data], error) {
+		req.Data.Num += 3
+		return req, nil
+	}
+
+	postWrapError := func(req Request[data], state State[data]) (Request[data], error) {
+		return req, fmt.Errorf("postWrap error")
+	}
+
+	tests := []struct {
+		name     string
+		req      Request[data]
+		options  []Option
+		wantData data
+		wantErr  bool
+	}{
+		{
+			name: "Success: preWrap modifies data before state execution",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 0},
+			},
+			options:  []Option{WithPreWrap(preWrapAddFive)},
+			wantData: data{Num: 15},
+		},
+		{
+			name: "Success: postWrap modifies data after state execution",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 0},
+			},
+			options:  []Option{WithPostWrap(postWrapMultiplyTwo)},
+			wantData: data{Num: 20},
+		},
+		{
+			name: "Success: multiple preWrap functions execute in order",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 0},
+			},
+			options:  []Option{WithPreWrap(preWrapAddFive, preWrapAddTwo)},
+			wantData: data{Num: 17},
+		},
+		{
+			name: "Success: multiple postWrap functions execute in order",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 10},
+			},
+			options:  []Option{WithPostWrap(postWrapMultiplyTwo, postWrapAddThree)},
+			wantData: data{Num: 43},
+		},
+		{
+			name: "Success: both preWrap and postWrap modify data",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 0},
+			},
+			options:  []Option{WithPreWrap(preWrapAddFive), WithPostWrap(postWrapMultiplyTwo)},
+			wantData: data{Num: 30},
+		},
+		{
+			name: "Error: preWrap returns error stops execution",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 0},
+			},
+			options:  []Option{WithPreWrap(preWrapError)},
+			wantData: data{Num: 0},
+			wantErr:  true,
+		},
+		{
+			name: "Error: postWrap returns error stops execution",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: addTen,
+				Data: data{Num: 0},
+			},
+			options:  []Option{WithPostWrap(postWrapError)},
+			wantData: data{Num: 10},
+			wantErr:  true,
+		},
+		{
+			name: "Success: preWrap and postWrap work with multiple state transitions",
+			req: Request[data]{
+				Ctx:  parentCtx,
+				Next: steer,
+				Data: data{Num: 5},
+			},
+			options:  []Option{WithPreWrap(preWrapAddTwo), WithPostWrap(postWrapAddThree)},
+			wantData: data{Num: 25},
+		},
+	}
+
+	for _, test := range tests {
+		gotReq, err := Run("test", test.req, test.options...)
+		switch {
+		case err == nil && test.wantErr:
+			t.Errorf("TestPreWrapAndPostWrap(%s): got err == nil, want err != nil", test.name)
+			continue
+		case err != nil && !test.wantErr:
+			t.Errorf("TestPreWrapAndPostWrap(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case err != nil:
+			continue
+		}
+		if diff := pretty.Compare(test.wantData, gotReq.Data); diff != "" {
+			t.Errorf("TestPreWrapAndPostWrap(%s): Data: -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
 func TestRun(t *testing.T) {
 	t.Parallel()
 

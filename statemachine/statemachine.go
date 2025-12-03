@@ -14,6 +14,9 @@ https://medium.com/@johnsiilver/go-state-machine-patterns-3b667f345b5e
 This package is has OTEL support built in. If the Context passed to the state machine has a span, the state machine
 will create a child span for each state. If the state machine returns an error, the span will be marked as an error.
 
+There are advanced logging per request options, cyclic state detection, and pre/post state wrapping options to allow
+common logic to be executed before or after each state.
+
 Example:
 
 		package main
@@ -223,6 +226,11 @@ func (c ErrCyclic) Attrs() []slog.Attr {
 // next, the state machine continues with the next state.
 type State[T any] func(req Request[T]) Request[T]
 
+// String implements fmt.Stringer interface, returning the name of the state function.
+func (s State[T]) String() string {
+	return MethodName(s)
+}
+
 // seenStagesPool is a pool of seenStages objects to reduce allocations.
 var seenStagesPool = sync.NewPool(
 	context.Background(),
@@ -307,6 +315,9 @@ type Request[T any] struct {
 	logStages bool
 	// reqID is a unique identifier for this Request. This is used for logging purposes.
 	reqID string
+	// preWrap are functions that are called before each state is executed.
+	// postWrap are functions that are called after each state is executed.
+	preWrap, postWrap []Wrap[T]
 }
 
 func (r Request[T]) otelStart() Request[T] {
@@ -368,10 +379,48 @@ func (r Request[T]) otelEnd() {
 
 type allOptions struct {
 	requestModifiers []any // []RequestOption
+	preState         []any // []func(req Request[T], state State[T]) error
+	postState        []any // []func(req Request[T], state State[T]) error
 }
 
 // Option is an option for the Run() function.
 type Option func(o allOptions) (allOptions, error)
+
+// PrePostWrap is a function that wraps a state function. It is called before or after the state function is executed. Changing
+// the Request.Next will not modify the state machine flow. Modifying the Request.Err has undefined behavior. If you wish to
+// stop the state machine, return an error. This allows you to add common logic before or after each state is executed.
+// Used by WithPreWrap and WithPostWrap.
+type Wrap[T any] func(req Request[T], state State[T]) (Request[T], error)
+
+// WithPreWrap adds functions that are called before each state is executed. If the function
+// returns an error, the state machine stops and returns the error. Use this to simply the
+// state machine by handling common logic in one place. You can use this to add multiple pre-state
+func WithPreWrap[T any](w ...Wrap[T]) Option {
+	return func(o allOptions) (allOptions, error) {
+		for _, f := range w {
+			if f == nil {
+				return o, fmt.Errorf("WithPreState: function cannot be nil")
+			}
+			o.preState = append(o.preState, f)
+		}
+		return o, nil
+	}
+}
+
+// WithPostWrap adds functions that are called after each state is executed. If the function
+// returns an error, the state machine stops and returns the error. Use this to simply the
+// state machine by handling common logic in one place.
+func WithPostWrap[T any](w ...Wrap[T]) Option {
+	return func(o allOptions) (allOptions, error) {
+		for _, f := range w {
+			if f == nil {
+				return o, fmt.Errorf("WithPostState: function cannot be nil")
+			}
+			o.postState = append(o.postState, f)
+		}
+		return o, nil
+	}
+}
 
 // RequestOption is an option that modifies the Request, usually for debug purposes.
 type RequestOption[T any] func(req Request[T]) (Request[T], error)
@@ -459,6 +508,15 @@ func Run[T any](name string, req Request[T], options ...Option) (Request[T], err
 		}
 	}
 
+	req.preWrap = make([]Wrap[T], 0, len(opts.preState))
+	req.postWrap = make([]Wrap[T], 0, len(opts.postState))
+	for _, o := range opts.preState {
+		req.preWrap = append(req.preWrap, o.(Wrap[T]))
+	}
+	for _, o := range opts.postState {
+		req.postWrap = append(req.postWrap, o.(Wrap[T]))
+	}
+
 	if req.span.Span != nil && req.span.Span.IsRecording() {
 		req.Ctx, req.span = span.New(req.Ctx, span.WithName(fmt.Sprintf("statemachine(%s)", name)))
 		req.otelStart()
@@ -474,17 +532,17 @@ func Run[T any](name string, req Request[T], options ...Option) (Request[T], err
 			}
 		}
 		if req.logStages {
-			context.Log(req.Ctx).Info("statemachine executing state", slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+			context.Log(req.Ctx).Info("statemachine executing state: "+stateName, slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
 		}
 		req = execState(req, stateName)
 
 		if req.logStages {
-			context.Log(req.Ctx).Info("statemachine finished state", slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+			context.Log(req.Ctx).Info("statemachine finished state: "+stateName, slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
 		}
 		if req.Err != nil {
 			req = execDefer(req)
 			if req.logStages {
-				context.Log(req.Ctx).Info("statemachine error", slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+				context.Log(req.Ctx).Info(fmt.Sprintf("statemachine state(%s) error: %s", stateName, req.Err), slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
 			}
 			req.span.Status(codes.Error, fmt.Sprintf("error in State(%s): %s", stateName, req.Err.Error()))
 			return req, req.Err
@@ -538,7 +596,29 @@ func execState[T any](req Request[T], stateName string) Request[T] {
 	}
 
 	req.Next = nil
-	return state(req)
+
+	var err error
+	for _, pre := range req.preWrap {
+		req, err = pre(req, state)
+		if err != nil {
+			req.Next = nil
+			req.Err = err
+			return req
+		}
+	}
+	req = state(req)
+	for _, post := range req.postWrap {
+		req, err = post(req, state)
+		if err != nil {
+			req.Next = nil
+			if req.Err == nil {
+				req.Err = err
+			} else {
+				req.Err = fmt.Errorf("multiple errors in postWrap: %v; %v", req.Err, err)
+			}
+		}
+	}
+	return req
 }
 
 // methodName takes a function or a method and returns its name.
