@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/gostdlib/base/telemetry/log"
@@ -108,7 +110,7 @@ func Init(meta *resource.Resource, port uint16) error {
 	return initer(meta, port)
 }
 
-var app *fiber.App
+var app atomic.Pointer[fiber.App]
 
 // Close closes the metric provider and the http server.
 func Close() {
@@ -126,11 +128,13 @@ func Close() {
 		}
 	}
 
-	if app != nil {
+	a := app.Load()
+	if a != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			app.Shutdown()
+			a.Shutdown()
+			app.CompareAndSwap(a, nil)
 		}()
 	}
 
@@ -153,10 +157,15 @@ func serveMetrics(port uint16) error {
 	}
 
 	// Initialize a new Fiber app
-	app = fiber.New(config)
+	a := fiber.New(config)
+	if !app.CompareAndSwap(nil, a) {
+		if !testing.Testing() {
+			panic("metrics http server already started")
+		}
+	}
 
 	// Define a route for the GET method on the root path '/'
-	app.Get(
+	a.Get(
 		"/metrics",
 		adaptor.HTTPHandler(
 			promhttp.HandlerFor(
@@ -169,5 +178,5 @@ func serveMetrics(port uint16) error {
 	)
 	addr := fmt.Sprintf(":%d", port)
 	log.Default().Info(fmt.Sprintf("serving metrics at %s/metrics", addr))
-	return app.Listen(addr)
+	return a.Listen(addr)
 }

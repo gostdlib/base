@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,7 +29,6 @@ func TestLimited(t *testing.T) {
 	}
 
 	l := p.Limited(4)
-
 	l.Submit(ctx, f)
 	l.Submit(ctx, f)
 	l.Submit(ctx, f)
@@ -36,6 +36,7 @@ func TestLimited(t *testing.T) {
 
 	// Wait for each of these to start running.
 	startedWG.Wait()
+	log.Println("wait done")
 
 	blockedHappened := make(chan struct{})
 	go func() {

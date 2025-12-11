@@ -52,10 +52,7 @@ func TestGroupBasic(t *testing.T) {
 		// spin off numGoroutines go routines
 		for i := 0; i < numGoroutines; i++ {
 			count.Add(1)
-			err := wg.Go(context.Background(), f)
-			if err != nil {
-				panic(err)
-			}
+			wg.Go(context.Background(), f)
 		}
 
 		start := time.Now()

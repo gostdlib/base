@@ -83,13 +83,13 @@ type Queue struct {
 	size        chan struct{}
 	mu          sync.Mutex
 	next        chan QJob
-	pool        *Limited
+	pool        *Pool
 
 	queue *queue
 }
 
 // newQueue returns a new priority queue. This is called from Limited.PriorityQueue().
-func newQueue(maxSize int, l *Limited) *Queue {
+func newQueue(maxSize int, p *Pool) *Queue {
 	if maxSize < 1 {
 		panic("maxSize must be greater than 0")
 	}
@@ -98,7 +98,7 @@ func newQueue(maxSize int, l *Limited) *Queue {
 		done:  make(chan struct{}),
 		size:  make(chan struct{}, maxSize),
 		next:  make(chan QJob, 1),
-		pool:  l,
+		pool:  p,
 	}
 
 	Default().Submit(
@@ -208,8 +208,6 @@ func (d *Queue) doWork() {
 			d.processWait.Done()
 		}
 
-		if err := d.pool.Submit(context.Background(), f); err != nil {
-			log.Printf("error submitting job to pool: %v", err)
-		}
+		d.pool.Submit(context.Background(), f)
 	}
 }

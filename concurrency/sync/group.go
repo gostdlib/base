@@ -18,7 +18,7 @@ import (
 type WorkerPool interface {
 	// Submit submits a function to the pool for execution. The context is for the
 	// pool use, not the function itself.
-	Submit(ctx context.Context, f func()) error
+	Submit(ctx context.Context, f func())
 }
 
 // IndexErr is an error that includes the index of the error. This will
@@ -178,11 +178,7 @@ func WithBackoff(b *exponential.Backoff) GoOption {
 // This is done once per Group until the Group is reset. The passed context is then passed to the function f, which
 // must deal with individual context cancellation and recording any span information. The returned error
 // only occurrs the function "f" is not run. This happens when the Context is cancelled.
-func (w *Group) Go(ctx context.Context, f func(ctx context.Context) error, options ...GoOption) error {
-	if ctx.Err() != nil {
-		return context.Cause(ctx)
-	}
-
+func (w *Group) Go(ctx context.Context, f func(ctx context.Context) error, options ...GoOption) {
 	opts := goOpts{index: -1}
 	for _, o := range options {
 		opts = o(opts)
@@ -206,17 +202,14 @@ func (w *Group) Go(ctx context.Context, f func(ctx context.Context) error, optio
 		}
 	}
 
-	if err := w.execute(ctx, f, opts); err != nil {
-		return err
-	}
-	return nil
+	w.execute(ctx, f, opts)
 }
 
 // execute is a helper function that executes the function f and handles the
 // incrementing of the WaitGroup, count and total counters. Decrementing is handled in executeFn.
 // This determines if the Group has a backoff set and calls the appropriate function
 // that handles execution.
-func (w *Group) execute(ctx context.Context, f func(ctx context.Context) error, opts goOpts) error {
+func (w *Group) execute(ctx context.Context, f func(ctx context.Context) error, opts goOpts) {
 	w.wg.Add(1)
 	w.count.Add(1)
 	w.total.Add(1)
@@ -226,26 +219,27 @@ func (w *Group) execute(ctx context.Context, f func(ctx context.Context) error, 
 	}
 
 	if opts.backoff == nil {
-		return w.noBackoff(ctx, f, opts)
+		w.noBackoff(ctx, f, opts)
+		return
 	}
-	return w.withBackoff(ctx, f, opts)
+	w.withBackoff(ctx, f, opts)
 }
 
 // noBackoff is a helper function that executes the function f and handles the
 // case where we don't have a backoff set. This will determine if we are using a pool or not
 // and either spins off a goroutine or submits the work to the pool.
-func (w *Group) noBackoff(ctx context.Context, f func(ctx context.Context) error, opts goOpts) error {
+func (w *Group) noBackoff(ctx context.Context, f func(ctx context.Context) error, opts goOpts) {
 	if w.Pool == nil {
 		go w.executeFn(ctx, f, opts)
-		return nil
+		return
 	}
-	return w.Pool.Submit(ctx, func() { w.executeFn(ctx, f, opts) })
+	w.Pool.Submit(ctx, func() { w.executeFn(ctx, f, opts) })
 }
 
 // withBackoff is a helper function that executes the function f and handles the
 // case where we have a backoff set. This will determine if we are using a pool or not
 // and either spins off a goroutine or submits the work to the pool.
-func (w *Group) withBackoff(ctx context.Context, f func(ctx context.Context) error, opts goOpts) error {
+func (w *Group) withBackoff(ctx context.Context, f func(ctx context.Context) error, opts goOpts) {
 	if w.Pool == nil {
 		go func() {
 			opts.backoff.Retry(
@@ -255,10 +249,10 @@ func (w *Group) withBackoff(ctx context.Context, f func(ctx context.Context) err
 				},
 			)
 		}()
-		return nil
+		return
 	}
 
-	return w.Pool.Submit(
+	w.Pool.Submit(
 		ctx,
 		func() {
 			opts.backoff.Retry(

@@ -134,6 +134,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -164,6 +165,7 @@ type Pool struct {
 	running    atomic.Int64
 	goRoutines *atomic.Int64
 	metrics    *poolMetrics
+	limit      chan struct{}
 
 	// child indicates this pool is not a root pool but one that is created with .Sub().
 	child bool
@@ -331,13 +333,49 @@ func (p *Pool) StaticPool() int {
 // Submit submits the function to be executed. If the context is canceled before the
 // function is executed, the function will not be executed. Once the function is executed,
 // it is the responsibility of the function to check the context and return if it is canceled.
-func (p *Pool) Submit(ctx context.Context, f func()) error {
+func (p *Pool) Submit(ctx context.Context, f func()) {
+	log.Println("Submit called")
+	if p.limit != nil {
+		p.limitedSubmit(ctx, f)
+		log.Println("did limited")
+		return
+	}
+	log.Println("here")
+	p.submit(ctx, f)
+}
+
+// Submit submits function f to be run. Context can be cancelled before submit, however if the function is
+// already submitted it is the responsibility of the function to honor/not honor cancellation.
+func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
+	spanner := span.Get(ctx)
+
+	t := time.Now()
+	select {
+	case <-ctx.Done():
+		return
+	case p.limit <- struct{}{}:
+	}
+
+	spanner.Event(
+		"worker.Pool:Limited.Submit()",
+		attribute.Int64("block_duration_ns", int64(time.Since(t))),
+	)
+
+	wrap := func() {
+		f()
+		<-p.limit
+	}
+	p.submit(ctx, wrap)
+}
+
+// submit submits the function to be executed. If the context is canceled before the
+// function is executed, the function will not be executed. Once the function is executed,
+// it is the responsibility of the function to check the context and return if it is canceled.
+func (p *Pool) submit(ctx context.Context, f func()) {
 	spanner := span.Get(ctx)
 
 	if f == nil {
-		err := fmt.Errorf("worker.Pool: cannot submit a runner that is nil")
-		spanner.Span.RecordError(err)
-		return err
+		return
 	}
 
 	now := time.Now()
@@ -349,7 +387,7 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 	// User cancelled before we could submit.
 	case <-ctx.Done():
 		args.done() // This will decrement the waitgroup.
-		return context.Cause(ctx)
+		return
 	// Try to submit the job.
 	case p.queue <- args:
 	// We couldn't submit the job because the queue is full. We will create a new goroutine
@@ -363,7 +401,7 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 		select {
 		case <-ctx.Done():
 			args.done() // This will decrement the waitgroup.
-			return context.Cause(ctx)
+			return
 		case p.queue <- args:
 		// default can happen if the queue fills again with another job before we can submit. In those cases,
 		// we will try again to create a new goroutine and submit the job. This is a rare case, but can happen
@@ -373,13 +411,45 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 		}
 	}
 	p.submitEvent(spanner, now)
-	return nil
+}
+
+var numCPU int
+
+func init() {
+	currentMaxProcs := runtime.GOMAXPROCS(-1)
+	if currentMaxProcs > 0 && currentMaxProcs < runtime.NumCPU() {
+		numCPU = currentMaxProcs
+		return
+	}
+	numCPU = runtime.NumCPU()
+}
+
+// Limited creates a Limited pool from the Pool. "size" is the number of goroutines that can execute concurrently.
+// If the size is less than 1, it will be set to GOMAXPROCS if that value is less than NumCPU. Otherwise
+// NumCPU will be used.
+func (p *Pool) Limited(size int) *Pool {
+	if size < 1 {
+		size = numCPU
+	}
+	s := p.Sub(context.Background(), "limitedPool")
+	s.limit = make(chan struct{}, size)
+	return s
 }
 
 // Group returns a sync.Group that can be used to spin off goroutines and then wait for them to finish.
 // This will use the Pool. Safer than a sync.Group.
 func (p *Pool) Group() bSync.Group {
 	return bSync.Group{Pool: p}
+}
+
+// PriorityQueue provides a strict priority queue that can be used to submit jobs to the pool.
+// You SHOULD use a Limited() pool to control the number of concurrent jobs. maxSize
+// is the maximum size of the queue. A size < 1 will panic.
+// Note: In a PriorityQueue, jobs are processed in order of priority, with higher priority jobs being
+// processed first. This means that low priority jobs can stay in the queue forever as long as
+// higher priority jobs continue to enter the queue.
+func (p *Pool) PriorityQueue(maxSize int) *Queue {
+	return newQueue(maxSize, p)
 }
 
 // Sub is used to create a new Pool that is backed by the current pool. This allows having
