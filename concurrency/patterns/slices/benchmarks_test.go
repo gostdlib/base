@@ -13,7 +13,7 @@ func addOne(ctx context.Context, i int, v int) (int, error) {
 
 func BenchmarkTransform(b *testing.B) {
 	ctx := context.Background()
-	p := context.Pool(ctx).Limited(-1)
+	p := context.Pool(ctx).Limited(b.Context(), "", -1)
 
 	bench := []struct {
 		num int

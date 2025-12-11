@@ -42,7 +42,7 @@ Example of creating and using a Pool:
 	// If the context is canceled before the job is run, the job will not be run.
 	// If the context is canceled after the job is run, it is the responsibility of the job to check the context
 	// and return if it is canceled.
-	err = pool.Submit(
+	pool.Submit(
 		ctx,
 		func() { fmt.Println("Hello, world!") },
 	})
@@ -56,7 +56,7 @@ Example of using the pool for a WaitGroup effect:
 	g := pool.Group()
 
 	// Spin off a goroutine that will run a job.
-	_ := g.Go(
+	g.Go(
 		ctx,
 		func(ctx context.Context) error {
 			fmt.Println("Hello, world!")
@@ -70,8 +70,6 @@ Example of using the pool for a WaitGroup effect:
 		// Do something
 	}
 
-The above ignores the error in g.Go(), which you only need to look at if supporting Context cancellation.
-
 If you need to limit the number of concurrent goroutines that can run for something, you can create a Limited
 pool from the Pool.
 
@@ -79,7 +77,7 @@ Example of creating and using a Limited pool:
 
 	// Create a Limited pool from the Pool.
 	// This will limit the number of concurrent goroutines to 10.
-	l, err := p.Limited(10)
+	l, err := p.Limited(ctx, "poolName", 10)
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +91,7 @@ Example of creating and using a Limited pool:
 
 You can also use the Limited pool with a WaitGroup effect:
 
-	g := l.WaitGroup()
+	g := l.Group()
 
 	g.Go(
 		ctx,
@@ -107,25 +105,27 @@ You can also use the Limited pool with a WaitGroup effect:
 		// Do something
 	}
 
-We also provide a PriorityQueue for running jobs from Limited pools.
+We also provide a PriorityQueue for running jobs from pools. It is recommended to use a Limited pool.
 
 	for i, work := range []func() {
 		job := QJob{Priority: i, Work: work}
 		limitedPool.Submit(ctx, job)
 	}
 
-This package also offers a Promise object for submitting a job and getting the result back. This is useful for
-when you want to run a job, do some other work, and then get the result back.
+There is package, base/values/generics/promises, that offers a Promise object for submitting a job and getting the
+result back. This is useful for when you want to run a job, do some other work, and then get the result back.
 
 	p := NewPromise[string]()
 
-	_ := g.Go(
+	_ := g.Submit(
 		ctx,
-		func() error {
+		func(ctx) error {
 			p.Set(ctx, "Hello, world!", nil)
 			return nil
 		},
 	)
+
+	// Do other work...
 
 	fmt.Println(p.Get().V)
 */
@@ -164,6 +164,7 @@ type Pool struct {
 	running    atomic.Int64
 	goRoutines *atomic.Int64
 	metrics    *poolMetrics
+	limit      chan struct{}
 
 	// child indicates this pool is not a root pool but one that is created with .Sub().
 	child bool
@@ -235,9 +236,14 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	// bug that is impossible to track down.
 	queue := make(chan runArgs) // If you put a buffer here, I'll be the girl with the hair in The Ring and you have 7 days before I get you
 
-	mp := internalCtx.MeterProvider(ctx)
-	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
-	pm := newPoolMetrics(meter)
+	var mp metric.MeterProvider
+	var meter metric.Meter
+	var pm *poolMetrics
+	if name != "" {
+		mp = internalCtx.MeterProvider(ctx)
+		meter = mp.Meter(metrics.MeterName(2) + "/" + name)
+		pm = newPoolMetrics(meter)
+	}
 
 	p := &Pool{
 		queue:      queue,
@@ -331,13 +337,46 @@ func (p *Pool) StaticPool() int {
 // Submit submits the function to be executed. If the context is canceled before the
 // function is executed, the function will not be executed. Once the function is executed,
 // it is the responsibility of the function to check the context and return if it is canceled.
-func (p *Pool) Submit(ctx context.Context, f func()) error {
+func (p *Pool) Submit(ctx context.Context, f func()) {
+	if p.limit != nil {
+		p.limitedSubmit(ctx, f)
+		return
+	}
+	p.submit(ctx, f)
+}
+
+// Submit submits function f to be run. Context can be cancelled before submit, however if the function is
+// already submitted it is the responsibility of the function to honor/not honor cancellation.
+func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
+	spanner := span.Get(ctx)
+
+	t := time.Now()
+	select {
+	case <-ctx.Done():
+		return
+	case p.limit <- struct{}{}:
+	}
+
+	spanner.Event(
+		"worker.Pool:Limited.Submit()",
+		attribute.Int64("block_duration_ns", int64(time.Since(t))),
+	)
+
+	wrap := func() {
+		f()
+		<-p.limit
+	}
+	p.submit(ctx, wrap)
+}
+
+// submit submits the function to be executed. If the context is canceled before the
+// function is executed, the function will not be executed. Once the function is executed,
+// it is the responsibility of the function to check the context and return if it is canceled.
+func (p *Pool) submit(ctx context.Context, f func()) {
 	spanner := span.Get(ctx)
 
 	if f == nil {
-		err := fmt.Errorf("worker.Pool: cannot submit a runner that is nil")
-		spanner.Span.RecordError(err)
-		return err
+		return
 	}
 
 	now := time.Now()
@@ -349,7 +388,7 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 	// User cancelled before we could submit.
 	case <-ctx.Done():
 		args.done() // This will decrement the waitgroup.
-		return context.Cause(ctx)
+		return
 	// Try to submit the job.
 	case p.queue <- args:
 	// We couldn't submit the job because the queue is full. We will create a new goroutine
@@ -363,7 +402,7 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 		select {
 		case <-ctx.Done():
 			args.done() // This will decrement the waitgroup.
-			return context.Cause(ctx)
+			return
 		case p.queue <- args:
 		// default can happen if the queue fills again with another job before we can submit. In those cases,
 		// we will try again to create a new goroutine and submit the job. This is a rare case, but can happen
@@ -373,7 +412,31 @@ func (p *Pool) Submit(ctx context.Context, f func()) error {
 		}
 	}
 	p.submitEvent(spanner, now)
-	return nil
+}
+
+var numCPU int
+
+func init() {
+	currentMaxProcs := runtime.GOMAXPROCS(-1)
+	if currentMaxProcs > 0 && currentMaxProcs < runtime.NumCPU() {
+		numCPU = currentMaxProcs
+		return
+	}
+	numCPU = runtime.NumCPU()
+}
+
+// Limited creates a Limited pool from the Pool. "size" is the number of goroutines that can execute concurrently.
+// If the size is less than 1, it will be set to GOMAXPROCS if that value is less than NumCPU. Otherwise
+// NumCPU will be used. If name is not empty, it will be used for its own metrics. The Limited pool will share
+// the same underlying queue and goroutines as the parent Pool, but will limit the number of concurrent
+// goroutines that can execute at the same time.
+func (p *Pool) Limited(ctx context.Context, name string, size int) *Pool {
+	if size < 1 {
+		size = numCPU
+	}
+	s := p.Sub(ctx, name)
+	s.limit = make(chan struct{}, size)
+	return s
 }
 
 // Group returns a sync.Group that can be used to spin off goroutines and then wait for them to finish.
@@ -382,19 +445,35 @@ func (p *Pool) Group() bSync.Group {
 	return bSync.Group{Pool: p}
 }
 
-// Sub is used to create a new Pool that is backed by the current pool. This allows having
-// shared pools that record different metrics.
-func (p *Pool) Sub(ctx context.Context, name string) *Pool {
-	mp := internalCtx.MeterProvider(ctx)
-	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
-	pm := newPoolMetrics(meter)
+// PriorityQueue provides a strict priority queue that can be used to submit jobs to the pool.
+// You SHOULD use a Limited() pool to control the number of concurrent jobs. maxSize
+// is the maximum size of the queue. A size < 1 will panic.
+// Note: In a PriorityQueue, jobs are processed in order of priority, with higher priority jobs being
+// processed first. This means that low priority jobs can stay in the queue forever as long as
+// higher priority jobs continue to enter the queue.
+func (p *Pool) PriorityQueue(maxSize int) *Queue {
+	return newQueue(maxSize, p)
+}
 
-	// Even though we are backed by a pool that might have more goroutines, this has its own size.
+// Sub is used to create a new Pool that is backed by the current pool. This allows having
+// shared pools that record different metrics. A sub pool cannot use more goroutines than
+// the parent pool.
+func (p *Pool) Sub(ctx context.Context, name string) *Pool {
+	var mp metric.MeterProvider
+	var meter metric.Meter
+	var pm *poolMetrics
+	if name != "" {
+		mp = internalCtx.MeterProvider(ctx)
+		meter = mp.Meter(metrics.MeterName(2) + "/" + name)
+		pm = newPoolMetrics(meter)
+	}
+
+	// TODO: I'm not sure we need this. This will always be limited by the parent pool.
 	var goRoutines int64
 	if p.opts.size > 0 {
 		goRoutines = int64(p.opts.size)
 	} else {
-		goRoutines = int64(runtime.NumCPU())
+		goRoutines = int64(numCPU)
 	}
 
 	pool := &Pool{
@@ -477,12 +556,16 @@ func (r runner) run() {
 	var t *time.Timer
 	if r.timeout > 0 {
 		t = time.NewTimer(r.timeout)
-		r.metrics.StaticExists.Add(context.Background(), 1)
-		defer r.metrics.StaticExists.Add(context.Background(), -1)
+		if r.metrics != nil {
+			r.metrics.StaticExists.Add(context.Background(), 1)
+			defer r.metrics.StaticExists.Add(context.Background(), -1)
+		}
 	} else {
-		r.metrics.DynamicExists.Add(context.Background(), 1)
-		defer r.metrics.DynamicExists.Add(context.Background(), -1)
-		r.metrics.DynamicTotal.Add(context.Background(), 1)
+		if r.metrics != nil {
+			r.metrics.DynamicExists.Add(context.Background(), 1)
+			defer r.metrics.DynamicExists.Add(context.Background(), -1)
+			r.metrics.DynamicTotal.Add(context.Background(), 1)
+		}
 	}
 	r.goRoutines.Add(1)
 	defer r.goRoutines.Add(-1)
@@ -505,9 +588,13 @@ func (r runner) runAlways() error {
 	if !ok {
 		return fmt.Errorf("runner canceled")
 	}
-	r.metrics.StaticRunning.Add(context.Background(), 1)
+	if r.metrics != nil {
+		r.metrics.StaticRunning.Add(context.Background(), 1)
+	}
 	args.run()
-	r.metrics.StaticRunning.Add(context.Background(), -1)
+	if r.metrics != nil {
+		r.metrics.StaticRunning.Add(context.Background(), -1)
+	}
 	return nil
 }
 
@@ -521,9 +608,13 @@ func (r runner) runTimer(t *time.Timer) error {
 		if !ok {
 			return fmt.Errorf("runner canceled")
 		}
-		r.metrics.DynamicRunning.Add(context.Background(), 1)
+		if r.metrics != nil {
+			r.metrics.DynamicRunning.Add(context.Background(), 1)
+		}
 		args.run()
-		r.metrics.DynamicRunning.Add(context.Background(), -1)
+		if r.metrics != nil {
+			r.metrics.DynamicRunning.Add(context.Background(), -1)
+		}
 		return nil
 	case <-t.C:
 		return fmt.Errorf("runner timed out")

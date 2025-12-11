@@ -210,7 +210,7 @@ func New[K comparable, V any](ctx context.Context, name string, options ...Optio
 	if o.ttl > 0 {
 		c.ttl = o.ttl
 		c.interval = o.interval
-		_ = context.Pool(ctx).Submit(
+		context.Pool(ctx).Submit(
 			ctx,
 			func() {
 				c.ttlExpire(ctx)

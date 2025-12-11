@@ -103,7 +103,7 @@ func TestQueueLen(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	queue := Default().Limited(2).PriorityQueue(5)
+	queue := Default().Limited(ctx, "", 2).PriorityQueue(5)
 	defer queue.Close()
 
 	beDone := make(chan struct{})
@@ -151,7 +151,7 @@ func TestQueueClose(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	pool := Default().Limited(2)
+	pool := Default().Limited(ctx, "named", 2)
 	queue := pool.PriorityQueue(5)
 
 	err := queue.Submit(

@@ -88,7 +88,7 @@ func WithStopOnErr() TransformOption {
 // Errors returned here will be the sync.Errors type with IndexErr provided. This will not
 // stop the run from completing unless WithStopOnErr() option was provided.
 // This is a lock free implementation.
-func Transform[T any](ctx context.Context, p *worker.Limited, d Transformer[T], s []T, options ...TransformOption) error {
+func Transform[T any](ctx context.Context, p *worker.Pool, d Transformer[T], s []T, options ...TransformOption) error {
 	if len(s) == 0 {
 		return nil
 	}

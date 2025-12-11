@@ -45,7 +45,7 @@ func TestSliceMut(t *testing.T) {
 	for _, test := range tests {
 		err := Transform(
 			ctx,
-			context.Pool(ctx).Limited(-1),
+			context.Pool(ctx).Limited(ctx, "", -1),
 			test.a,
 			test.s,
 		)
@@ -81,7 +81,7 @@ func TestResultSlice(t *testing.T) {
 		return v, nil
 	}
 
-	err := Transform[int](ctx, context.Pool(ctx).Limited(-1), a, s)
+	err := Transform[int](ctx, context.Pool(ctx).Limited(ctx, "", -1), a, s)
 	if err != nil {
 		t.Errorf("TestResultSlice: got err == %s, want err == nil", err)
 		return
