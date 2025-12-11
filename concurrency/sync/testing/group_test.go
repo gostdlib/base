@@ -18,13 +18,13 @@ func TestGroupBasic(t *testing.T) {
 
 	numGoroutines := 20
 
-	pool, err := worker.New(context.Background(), "test")
+	pool, err := worker.New(t.Context(), "test")
 	if err != nil {
 		panic(err)
 	}
-	defer pool.Close(context.Background())
+	defer pool.Close(t.Context())
 
-	limit := pool.Limited(numGoroutines)
+	limit := pool.Limited(t.Context(), "", numGoroutines)
 
 	tests := []struct {
 		desc string

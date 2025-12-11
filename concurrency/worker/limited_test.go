@@ -28,7 +28,7 @@ func TestLimited(t *testing.T) {
 		panic(err)
 	}
 
-	l := p.Limited(4)
+	l := p.Limited(t.Context(), "", 4)
 	l.Submit(ctx, f)
 	l.Submit(ctx, f)
 	l.Submit(ctx, f)

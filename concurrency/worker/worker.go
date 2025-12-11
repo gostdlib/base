@@ -42,7 +42,7 @@ Example of creating and using a Pool:
 	// If the context is canceled before the job is run, the job will not be run.
 	// If the context is canceled after the job is run, it is the responsibility of the job to check the context
 	// and return if it is canceled.
-	err = pool.Submit(
+	pool.Submit(
 		ctx,
 		func() { fmt.Println("Hello, world!") },
 	})
@@ -56,7 +56,7 @@ Example of using the pool for a WaitGroup effect:
 	g := pool.Group()
 
 	// Spin off a goroutine that will run a job.
-	_ := g.Go(
+	g.Go(
 		ctx,
 		func(ctx context.Context) error {
 			fmt.Println("Hello, world!")
@@ -70,8 +70,6 @@ Example of using the pool for a WaitGroup effect:
 		// Do something
 	}
 
-The above ignores the error in g.Go(), which you only need to look at if supporting Context cancellation.
-
 If you need to limit the number of concurrent goroutines that can run for something, you can create a Limited
 pool from the Pool.
 
@@ -79,7 +77,7 @@ Example of creating and using a Limited pool:
 
 	// Create a Limited pool from the Pool.
 	// This will limit the number of concurrent goroutines to 10.
-	l, err := p.Limited(10)
+	l, err := p.Limited(ctx, "poolName", 10)
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +91,7 @@ Example of creating and using a Limited pool:
 
 You can also use the Limited pool with a WaitGroup effect:
 
-	g := l.WaitGroup()
+	g := l.Group()
 
 	g.Go(
 		ctx,
@@ -107,25 +105,27 @@ You can also use the Limited pool with a WaitGroup effect:
 		// Do something
 	}
 
-We also provide a PriorityQueue for running jobs from Limited pools.
+We also provide a PriorityQueue for running jobs from pools. It is recommended to use a Limited pool.
 
 	for i, work := range []func() {
 		job := QJob{Priority: i, Work: work}
 		limitedPool.Submit(ctx, job)
 	}
 
-This package also offers a Promise object for submitting a job and getting the result back. This is useful for
-when you want to run a job, do some other work, and then get the result back.
+There is package, base/values/generics/promises, that offers a Promise object for submitting a job and getting the
+result back. This is useful for when you want to run a job, do some other work, and then get the result back.
 
 	p := NewPromise[string]()
 
-	_ := g.Go(
+	_ := g.Submit(
 		ctx,
-		func() error {
+		func(ctx) error {
 			p.Set(ctx, "Hello, world!", nil)
 			return nil
 		},
 	)
+
+	// Do other work...
 
 	fmt.Println(p.Get().V)
 */
@@ -156,8 +156,6 @@ import (
 // finish. Generally you only need to use a single Pool for an entire application. If using the
 // base/context package, there is a Pool tied to the context that can be used.
 type Pool struct {
-	// name is the name of the pool.
-	name string
 	// queue is the channel that contains the functions to be run, populated by Submit().
 	queue chan runArgs
 	opts  poolOpts
@@ -248,7 +246,6 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	}
 
 	p := &Pool{
-		name:       name,
 		queue:      queue,
 		opts:       opts,
 		metrics:    pm,
@@ -430,12 +427,14 @@ func init() {
 
 // Limited creates a Limited pool from the Pool. "size" is the number of goroutines that can execute concurrently.
 // If the size is less than 1, it will be set to GOMAXPROCS if that value is less than NumCPU. Otherwise
-// NumCPU will be used.
-func (p *Pool) Limited(size int) *Pool {
+// NumCPU will be used. If name is not empty, it will be used for its own metrics. The Limited pool will share
+// the same underlying queue and goroutines as the parent Pool, but will limit the number of concurrent
+// goroutines that can execute at the same time.
+func (p *Pool) Limited(ctx context.Context, name string, size int) *Pool {
 	if size < 1 {
 		size = numCPU
 	}
-	s := p.Sub(context.Background(), "limitedPool")
+	s := p.Sub(ctx, name)
 	s.limit = make(chan struct{}, size)
 	return s
 }
@@ -456,16 +455,9 @@ func (p *Pool) PriorityQueue(maxSize int) *Queue {
 	return newQueue(maxSize, p)
 }
 
-// SetName sets the name of the pool. This is used for logging and metrics. It returns the same pool
-// for chaining.
-func (p *Pool) SetName(n string) *Pool {
-	p.name = n
-	return p
-
-}
-
 // Sub is used to create a new Pool that is backed by the current pool. This allows having
-// shared pools that record different metrics.
+// shared pools that record different metrics. A sub pool cannot use more goroutines than
+// the parent pool.
 func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 	var mp metric.MeterProvider
 	var meter metric.Meter
@@ -476,12 +468,12 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 		pm = newPoolMetrics(meter)
 	}
 
-	// Even though we are backed by a pool that might have more goroutines, this has its own size.
+	// TODO: I'm not sure we need this. This will always be limited by the parent pool.
 	var goRoutines int64
 	if p.opts.size > 0 {
 		goRoutines = int64(p.opts.size)
 	} else {
-		goRoutines = int64(runtime.NumCPU())
+		goRoutines = int64(numCPU)
 	}
 
 	pool := &Pool{
