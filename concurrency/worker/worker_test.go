@@ -11,6 +11,20 @@ import (
 func TestPool(t *testing.T) {
 	t.Parallel()
 
+	namedPool, err := New(t.Context(), "myPool")
+	if err != nil {
+		panic(err)
+	}
+	runPool(namedPool, t)
+
+	anonPool, err := New(t.Context(), "")
+	if err != nil {
+		panic(err)
+	}
+	runPool(anonPool, t)
+}
+
+func runPool(p *Pool, t *testing.T) {
 	ctx := context.Background()
 	p, err := New(ctx, "myPool")
 	if err != nil {

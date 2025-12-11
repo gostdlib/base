@@ -134,7 +134,6 @@ package worker
 import (
 	"context"
 	"fmt"
-	"log"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -157,6 +156,8 @@ import (
 // finish. Generally you only need to use a single Pool for an entire application. If using the
 // base/context package, there is a Pool tied to the context that can be used.
 type Pool struct {
+	// name is the name of the pool.
+	name string
 	// queue is the channel that contains the functions to be run, populated by Submit().
 	queue chan runArgs
 	opts  poolOpts
@@ -237,11 +238,17 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	// bug that is impossible to track down.
 	queue := make(chan runArgs) // If you put a buffer here, I'll be the girl with the hair in The Ring and you have 7 days before I get you
 
-	mp := internalCtx.MeterProvider(ctx)
-	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
-	pm := newPoolMetrics(meter)
+	var mp metric.MeterProvider
+	var meter metric.Meter
+	var pm *poolMetrics
+	if name != "" {
+		mp = internalCtx.MeterProvider(ctx)
+		meter = mp.Meter(metrics.MeterName(2) + "/" + name)
+		pm = newPoolMetrics(meter)
+	}
 
 	p := &Pool{
+		name:       name,
 		queue:      queue,
 		opts:       opts,
 		metrics:    pm,
@@ -334,13 +341,10 @@ func (p *Pool) StaticPool() int {
 // function is executed, the function will not be executed. Once the function is executed,
 // it is the responsibility of the function to check the context and return if it is canceled.
 func (p *Pool) Submit(ctx context.Context, f func()) {
-	log.Println("Submit called")
 	if p.limit != nil {
 		p.limitedSubmit(ctx, f)
-		log.Println("did limited")
 		return
 	}
-	log.Println("here")
 	p.submit(ctx, f)
 }
 
@@ -452,12 +456,25 @@ func (p *Pool) PriorityQueue(maxSize int) *Queue {
 	return newQueue(maxSize, p)
 }
 
+// SetName sets the name of the pool. This is used for logging and metrics. It returns the same pool
+// for chaining.
+func (p *Pool) SetName(n string) *Pool {
+	p.name = n
+	return p
+
+}
+
 // Sub is used to create a new Pool that is backed by the current pool. This allows having
 // shared pools that record different metrics.
 func (p *Pool) Sub(ctx context.Context, name string) *Pool {
-	mp := internalCtx.MeterProvider(ctx)
-	meter := mp.Meter(metrics.MeterName(2) + "/" + name)
-	pm := newPoolMetrics(meter)
+	var mp metric.MeterProvider
+	var meter metric.Meter
+	var pm *poolMetrics
+	if name != "" {
+		mp = internalCtx.MeterProvider(ctx)
+		meter = mp.Meter(metrics.MeterName(2) + "/" + name)
+		pm = newPoolMetrics(meter)
+	}
 
 	// Even though we are backed by a pool that might have more goroutines, this has its own size.
 	var goRoutines int64
@@ -547,12 +564,16 @@ func (r runner) run() {
 	var t *time.Timer
 	if r.timeout > 0 {
 		t = time.NewTimer(r.timeout)
-		r.metrics.StaticExists.Add(context.Background(), 1)
-		defer r.metrics.StaticExists.Add(context.Background(), -1)
+		if r.metrics != nil {
+			r.metrics.StaticExists.Add(context.Background(), 1)
+			defer r.metrics.StaticExists.Add(context.Background(), -1)
+		}
 	} else {
-		r.metrics.DynamicExists.Add(context.Background(), 1)
-		defer r.metrics.DynamicExists.Add(context.Background(), -1)
-		r.metrics.DynamicTotal.Add(context.Background(), 1)
+		if r.metrics != nil {
+			r.metrics.DynamicExists.Add(context.Background(), 1)
+			defer r.metrics.DynamicExists.Add(context.Background(), -1)
+			r.metrics.DynamicTotal.Add(context.Background(), 1)
+		}
 	}
 	r.goRoutines.Add(1)
 	defer r.goRoutines.Add(-1)
@@ -575,9 +596,13 @@ func (r runner) runAlways() error {
 	if !ok {
 		return fmt.Errorf("runner canceled")
 	}
-	r.metrics.StaticRunning.Add(context.Background(), 1)
+	if r.metrics != nil {
+		r.metrics.StaticRunning.Add(context.Background(), 1)
+	}
 	args.run()
-	r.metrics.StaticRunning.Add(context.Background(), -1)
+	if r.metrics != nil {
+		r.metrics.StaticRunning.Add(context.Background(), -1)
+	}
 	return nil
 }
 
@@ -591,9 +616,13 @@ func (r runner) runTimer(t *time.Timer) error {
 		if !ok {
 			return fmt.Errorf("runner canceled")
 		}
-		r.metrics.DynamicRunning.Add(context.Background(), 1)
+		if r.metrics != nil {
+			r.metrics.DynamicRunning.Add(context.Background(), 1)
+		}
 		args.run()
-		r.metrics.DynamicRunning.Add(context.Background(), -1)
+		if r.metrics != nil {
+			r.metrics.DynamicRunning.Add(context.Background(), -1)
+		}
 		return nil
 	case <-t.C:
 		return fmt.Errorf("runner timed out")
