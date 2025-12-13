@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"log"
 	"sync"
 	"sync/atomic"
 	"testing"
