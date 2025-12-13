@@ -36,7 +36,6 @@ func TestLimited(t *testing.T) {
 
 	// Wait for each of these to start running.
 	startedWG.Wait()
-	log.Println("wait done")
 
 	blockedHappened := make(chan struct{})
 	go func() {
