@@ -292,7 +292,12 @@ func (w *Group) Running() int {
 	return int(w.count.Load())
 }
 
-// Wait blocks until all goroutines are finshed. The passed Context cannot be cancelled.
+// Wait blocks until all goroutines are finshed. The passed Context cannot be cancelled. However,
+// once the go routines are finished, if the Context was cancelled and there are no other errors,
+// the context error will be returned. This allows a loop to break out of launching goroutines
+// if the context is cancelled, which can result in 0 goroutines being launched. In that case,
+// the context error will be returned and not checking ctx.Error() if the Go() and Wait() share
+// the same Context.
 func (w *Group) Wait(ctx context.Context) error {
 	defer w.reset()
 
@@ -309,8 +314,12 @@ func (w *Group) Wait(ctx context.Context) error {
 	}
 
 	if w.errors.Errors() == nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return nil
 	}
+
 	return &w.errors
 }
 
