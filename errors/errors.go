@@ -303,6 +303,15 @@ func WithStackTrace() EOption {
 	}
 }
 
+// WithAttrs adds the given attributes to the error. These attributes will be included
+// in logging output. This is in addition to any attributes that are in the Context.
+func WithAttrs(attrs ...slog.Attr) EOption {
+	return func(e ierr.EOpts) ierr.EOpts {
+		e.Attrs = append(e.Attrs, attrs...)
+		return e
+	}
+}
+
 var now = time.Now
 
 // E creates a new Error with the given parameters. If the message is already an Error, it will be returned instead.
@@ -337,6 +346,10 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 		st = bytesToStr(debug.Stack())
 	}
 
+	attrs := make([]slog.Attr, 0, len(opts.Attrs)+len(goctx.Attrs(ctx)))
+	attrs = append(attrs, opts.Attrs...)
+	attrs = append(attrs, goctx.Attrs(ctx)...)
+
 	e := Error{
 		Category:   c,
 		Type:       t,
@@ -346,7 +359,7 @@ func E(ctx context.Context, c Category, t Type, msg error, options ...EOption) E
 		ErrTime:    now().UTC(),
 		StackTrace: st,
 
-		attrs: goctx.Attrs(ctx),
+		attrs: attrs,
 	}
 
 	e.trace(ctx, opts.SuppressTraceErr)

@@ -503,6 +503,29 @@ func TestLog(t *testing.T) {
 				"contextKey2": 42,
 			},
 		},
+		{
+			name: "Success: Error created with WithAttrs",
+			e: E(
+				context.Background(),
+				CatReq,
+				TypeBadRequest,
+				fmt.Errorf("something went wrong"),
+				WithAttrs(slog.String("customAttrKey", "customAttrValue"), slog.Int("customAttrNum", 99)),
+			),
+			want: map[string]any{
+				"Category":       "Request",
+				"CustomerID":     "customerID",
+				"ErrSrc":         "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
+				"ErrLine":        508,
+				"CallID":         "callID",
+				"ErrTime":        ti.UTC(),
+				"Type":           "BadRequest",
+				"level":          "ERROR",
+				"msg":            "something went wrong",
+				"customAttrKey":  "customAttrValue",
+				"customAttrNum":  99,
+			},
+		},
 	}
 
 	for _, test := range tests {

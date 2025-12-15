@@ -1,6 +1,8 @@
 // Package errors exists to avoid some import cycles.
 package errors
 
+import "log/slog"
+
 // EOpts is the options for E(). Defaults are set by errors.E().
 type EOpts struct {
 	// SuppressTraceErr is an option to suppress the trace error.
@@ -10,6 +12,8 @@ type EOpts struct {
 	CallNum int
 	// StackTrace is an option to include the stack trace.
 	StackTrace bool
+	// Attrs are additional attributes to include in the error.
+	Attrs []slog.Attr
 }
 
 // EOption is an optional argument for E().
