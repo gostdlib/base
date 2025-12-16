@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"path"
@@ -15,10 +16,12 @@ import (
 
 	goctx "github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/telemetry/log"
+	"github.com/gostdlib/base/telemetry/otel/trace/span"
 
 	"github.com/go-json-experiment/json"
 	"github.com/kylelemons/godebug/pretty"
 
+	"go.opentelemetry.io/otel/attribute"
 	otelTrace "go.opentelemetry.io/otel/trace"
 
 	pb "github.com/gostdlib/base/errors/example/proto"
@@ -493,7 +496,7 @@ func TestLog(t *testing.T) {
 				"Category":    "Request",
 				"CustomerID":  "customerID",
 				"ErrSrc":      "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
-				"ErrLine":     486,
+				"ErrLine":     489,
 				"CallID":      "callID",
 				"ErrTime":     ti.UTC(),
 				"Type":        "BadRequest",
@@ -501,6 +504,29 @@ func TestLog(t *testing.T) {
 				"msg":         "something went wrong",
 				"contextKey1": "contextValue1",
 				"contextKey2": 42,
+			},
+		},
+		{
+			name: "Success: Error created with WithAttrs",
+			e: E(
+				context.Background(),
+				CatReq,
+				TypeBadRequest,
+				fmt.Errorf("something went wrong"),
+				WithAttrs(slog.String("customAttrKey", "customAttrValue"), slog.Int("customAttrNum", 99)),
+			),
+			want: map[string]any{
+				"Category":       "Request",
+				"CustomerID":     "customerID",
+				"ErrSrc":         "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
+				"ErrLine":        511,
+				"CallID":         "callID",
+				"ErrTime":        ti.UTC(),
+				"Type":           "BadRequest",
+				"level":          "ERROR",
+				"msg":            "something went wrong",
+				"customAttrKey":  "customAttrValue",
+				"customAttrNum":  99,
 			},
 		},
 	}
@@ -548,4 +574,270 @@ func urlMustParse(s string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+func TestTraceAttrs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		err     Error
+		prepend string
+		attrs   span.Attributes
+		want    []attribute.KeyValue
+	}{
+		{
+			name: "Success: Error with valid Category and Type",
+			err: Error{
+				Category: CatReq,
+				Type:     TypeBadRequest,
+				File:     "test.go",
+				Line:     42,
+			},
+			want: []attribute.KeyValue{
+				attribute.String("Category", "Request"),
+				attribute.String("Type", "BadRequest"),
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 42),
+			},
+		},
+		{
+			name: "Success: Error with Unknown Category",
+			err: Error{
+				Category: UnknownCat,
+				Type:     TypeBadRequest,
+				File:     "test.go",
+				Line:     10,
+			},
+			want: []attribute.KeyValue{
+				attribute.String("Category", "Unknown"),
+				attribute.String("Type", "BadRequest"),
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 10),
+			},
+		},
+		{
+			name: "Success: Error with Unknown Type",
+			err: Error{
+				Category: CatReq,
+				Type:     UnknownType,
+				File:     "test.go",
+				Line:     10,
+			},
+			want: []attribute.KeyValue{
+				attribute.String("Category", "Request"),
+				attribute.String("Type", "Unknown"),
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 10),
+			},
+		},
+		{
+			name: "Success: Error with slog attrs",
+			err: Error{
+				Category: CatReq,
+				Type:     TypeBadRequest,
+				File:     "test.go",
+				Line:     1,
+				attrs:    []slog.Attr{slog.String("customKey", "customValue")},
+			},
+			want: []attribute.KeyValue{
+				attribute.String("Category", "Request"),
+				attribute.String("Type", "BadRequest"),
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 1),
+				attribute.String(".customKey", "customValue"),
+			},
+		},
+		{
+			name: "Success: Error with prepend namespace",
+			err: Error{
+				Category: CatReq,
+				Type:     TypeBadRequest,
+				File:     "test.go",
+				Line:     1,
+				attrs:    []slog.Attr{slog.String("key", "value")},
+			},
+			prepend: "mypackage",
+			want: []attribute.KeyValue{
+				attribute.String("Category", "Request"),
+				attribute.String("Type", "BadRequest"),
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 1),
+				attribute.String("mypackage.key", "value"),
+			},
+		},
+		{
+			name: "Success: Error with existing attrs in span.Attributes",
+			err: Error{
+				Category: CatReq,
+				Type:     TypeBadRequest,
+				File:     "test.go",
+				Line:     1,
+			},
+			attrs: span.Attributes{
+				Attrs: []attribute.KeyValue{attribute.String("existing", "attr")},
+			},
+			want: []attribute.KeyValue{
+				attribute.String("existing", "attr"),
+				attribute.String("Category", "Request"),
+				attribute.String("Type", "BadRequest"),
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 1),
+			},
+		},
+		{
+			name: "Success: attrs.Err() returns early",
+			err: Error{
+				Category: CatReq,
+				Type:     TypeBadRequest,
+				File:     "test.go",
+				Line:     1,
+			},
+			attrs: func() span.Attributes {
+				a := span.Attributes{}
+				a.Add(attribute.KeyValue{Key: "", Value: attribute.StringValue("bad")})
+				return a
+			}(),
+			want: nil,
+		},
+	}
+
+	for _, test := range tests {
+		got := test.err.TraceAttrs(context.Background(), test.prepend, test.attrs)
+		if diff := pretty.Compare(test.want, got.Attrs); diff != "" {
+			t.Errorf("TestTraceAttrs(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
+func TestSlogAttrsToOtelAttrs(t *testing.T) {
+	t.Parallel()
+
+	testTime := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		namespace []string
+		attrs     []slog.Attr
+		want      []attribute.KeyValue
+	}{
+		{
+			name:      "Success: Bool conversion",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Bool("enabled", true)},
+			want:      []attribute.KeyValue{attribute.Bool("ns.enabled", true)},
+		},
+		{
+			name:      "Success: Int64 conversion",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Int64("count", 42)},
+			want:      []attribute.KeyValue{attribute.Int64("ns.count", 42)},
+		},
+		{
+			name:      "Success: Uint64 within int64 range",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Uint64("count", 100)},
+			want:      []attribute.KeyValue{attribute.Int64("ns.count", 100)},
+		},
+		{
+			name:      "Success: Uint64 exceeding int64 range returns nothing",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Uint64("big", math.MaxUint64)},
+			want:      []attribute.KeyValue{},
+		},
+		{
+			name:      "Success: Float64 conversion",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Float64("rate", 3.14)},
+			want:      []attribute.KeyValue{attribute.Float64("ns.rate", 3.14)},
+		},
+		{
+			name:      "Success: String conversion",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.String("name", "test")},
+			want:      []attribute.KeyValue{attribute.String("ns.name", "test")},
+		},
+		{
+			name:      "Success: Duration conversion adds _ns suffix",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Duration("elapsed", 5*time.Second)},
+			want: []attribute.KeyValue{
+				{Key: "ns.elapsed_ns", Value: attribute.Int64Value(int64(5 * time.Second))},
+			},
+		},
+		{
+			name:      "Success: Duration key already has ns suffix",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Duration("elapsed_ns", 5*time.Second)},
+			want: []attribute.KeyValue{
+				{Key: "ns.elapsed_ns", Value: attribute.Int64Value(int64(5 * time.Second))},
+			},
+		},
+		{
+			name:      "Success: Time conversion adds _unix_ns suffix",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Time("created", testTime)},
+			want: []attribute.KeyValue{
+				{Key: "ns.created_unix_ns", Value: attribute.Int64Value(testTime.UnixNano())},
+			},
+		},
+		{
+			name:      "Success: Time key already has unix_ns suffix",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Time("created_unix_ns", testTime)},
+			want: []attribute.KeyValue{
+				{Key: "ns.created_unix_ns", Value: attribute.Int64Value(testTime.UnixNano())},
+			},
+		},
+		{
+			name:      "Success: Group with nested attributes",
+			namespace: []string{"ns"},
+			attrs: []slog.Attr{
+				slog.Group("user", slog.String("name", "john"), slog.Int64("age", 30)),
+			},
+			want: []attribute.KeyValue{
+				attribute.String("ns.user.name", "john"),
+				attribute.Int64("ns.user.age", 30),
+			},
+		},
+		{
+			name:      "Success: KindAny returns nil",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{slog.Any("data", struct{ X int }{X: 1})},
+			want:      []attribute.KeyValue{},
+		},
+		{
+			name:      "Success: Multiple attrs in single call",
+			namespace: []string{"ns"},
+			attrs: []slog.Attr{
+				slog.String("a", "1"),
+				slog.Int64("b", 2),
+				slog.Bool("c", true),
+			},
+			want: []attribute.KeyValue{
+				attribute.String("ns.a", "1"),
+				attribute.Int64("ns.b", 2),
+				attribute.Bool("ns.c", true),
+			},
+		},
+		{
+			name:      "Success: Empty attrs slice",
+			namespace: []string{"ns"},
+			attrs:     []slog.Attr{},
+			want:      []attribute.KeyValue{},
+		},
+		{
+			name:      "Success: Empty namespace",
+			namespace: []string{},
+			attrs:     []slog.Attr{slog.String("key", "value")},
+			want:      []attribute.KeyValue{attribute.String("key", "value")},
+		},
+	}
+
+	for _, test := range tests {
+		got := slogAttrsToOtelAttrs(test.namespace, test.attrs)
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestSlogAttrsToOtelAttrs(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
 }
