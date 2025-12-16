@@ -85,6 +85,15 @@ func WithStackTrace() EOption {
 	return errors.WithStackTrace()
 }
 
+// WithAttrs adds the given attributes to the error. These attributes will be included
+// in logging output. This is in addition to any attributes that are in the Context.
+func WithAttrs(attrs ...slog.Attr) EOption {
+	return func(e ierr.EOpts) ierr.EOpts {
+		e.Attrs = append(e.Attrs, attrs...)
+		return e
+	}
+}
+
 // E creates a new Error with the given parameters.
 /* YOU CAN REPLACE this with your own base error constructor. See github.com/gostdlib/base/errors for more info. */
 func E(ctx context.Context, c errors.Category, t errors.Type, msg error, options ...errors.EOption) Error {
