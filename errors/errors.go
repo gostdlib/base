@@ -179,10 +179,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -446,21 +448,27 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 
 // TraceAttrs converts the error to a list of trace attributes consumable
 // by the OpenTelemetry trace package. This does not include attributes on the .Msg field.
+// However, it will look at the slog.Attr fields on the error and in the Context and convert
+// them to trace attributes. Specifically, we support the following slog.Value kinds:
+// - Bool
+// - Int64
+// - Uint64
+// - Float64
+// - String
+// - Duration - adds _ns to the key and records as int64 nanoseconds
+// - Time     - adds _unix_ns to the key and records as int64 unix nanoseconds
+// - Group    - Supports a group of any of the above types, the key for the group becomes a namespace prefix
+//
+// Not supported:
+// - Any       - I'm not sure what to do with this
+// - LogValuer - and not sure with this either
 // These are added to the attrs passed in and returned.
+//
+// Prepend is a string that is prepended to all attribute keys. This is should be a namespace, which should
+// use the namespace method with "." in the prepend.
 func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attributes) span.Attributes {
 	if attrs.Err() != nil {
 		return attrs
-	}
-
-	var (
-		cat = "Unknown"
-		typ = "Unknown"
-	)
-	if e.Category != nil {
-		cat = e.Category.Category()
-	}
-	if e.Type != nil {
-		typ = e.Type.Type()
 	}
 
 	if attrs.Attrs == nil {
@@ -469,16 +477,76 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 
 	// Unlike logging, we don't add time, as that gets recorded on the span.
 	// No need for TraceID as it's already on the span.
-	if cat != "" {
-		attrs.Add(attribute.String("Category", cat))
+	if e.Category.Category() != "" {
+		attrs.Add(attribute.String("Category", e.Category.Category()))
 	}
-	if typ != "" {
-		attrs.Add(attribute.String("Type", typ))
+	if e.Type.Type() != "" {
+		attrs.Add(attribute.String("Type", e.Type.Type()))
 	}
 	attrs.Add(attribute.String("ErrSrc", e.File))
 	attrs.Add(attribute.Int("ErrLine", e.Line))
+	for _, akv := range slogAttrsToOtelAttrs([]string{prepend}, e.attrs) {
+		attrs.Add(akv)
+	}
 
 	return attrs
+}
+
+// slogAttrsToOtelAttrs converts a list of slog.Attr to a list of OpenTelemetry attribute.KeyValue.
+func slogAttrsToOtelAttrs(namespace []string, attrs []slog.Attr) []attribute.KeyValue {
+	akvs := make([]attribute.KeyValue, 0, len(attrs))
+	for _, skv := range attrs {
+		akvs = append(akvs, slogAttrToOtelAttr(namespace, skv)...)
+	}
+	return akvs
+}
+
+// slogAttrToOtelAttr converts a single slog.Attr to a list of OpenTelemetry attribute.KeyValue.
+func slogAttrToOtelAttr(namespace []string, kv slog.Attr) []attribute.KeyValue {
+	namespace = append(namespace, kv.Key)
+	key := strings.Join(namespace, ".")
+
+	switch kv.Value.Kind() {
+	case slog.KindBool:
+		return []attribute.KeyValue{attribute.Bool(key, kv.Value.Bool())}
+	case slog.KindInt64:
+		return []attribute.KeyValue{attribute.Int64(key, kv.Value.Int64())}
+	case slog.KindUint64:
+		if kv.Value.Uint64() < math.MaxInt64 {
+			return []attribute.KeyValue{attribute.Int64(key, int64(kv.Value.Uint64()))}
+		}
+	case slog.KindFloat64:
+		return []attribute.KeyValue{attribute.Float64(key, kv.Value.Float64())}
+	case slog.KindString:
+		return []attribute.KeyValue{attribute.String(key, kv.Value.String())}
+	case slog.KindDuration:
+		k := key
+		if !strings.HasSuffix(k, "ns") {
+			k = k + "_ns"
+		}
+		return []attribute.KeyValue{
+			{
+				Key:   attribute.Key(k),
+				Value: attribute.Int64Value(int64(kv.Value.Duration())),
+			},
+		}
+	case slog.KindTime:
+		k := key
+		if !strings.HasSuffix(k, "unix_ns") {
+			k = k + "_unix_ns"
+		}
+		return []attribute.KeyValue{
+			{
+				Key:   attribute.Key(k),
+				Value: attribute.Int64Value(int64(kv.Value.Time().UnixNano())),
+			},
+		}
+	case slog.KindGroup:
+		return slogAttrsToOtelAttrs(namespace, kv.Value.Group())
+	case slog.KindAny, slog.KindLogValuer:
+		return nil
+	}
+	return nil
 }
 
 // trace adds the error to the trace span. This is automatically done when the error is created.
