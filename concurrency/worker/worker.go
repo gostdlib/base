@@ -141,6 +141,7 @@ import (
 
 	bSync "github.com/gostdlib/base/concurrency/sync"
 	internalCtx "github.com/gostdlib/base/internal/context"
+	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 	"github.com/gostdlib/base/telemetry/otel/trace/span"
 	"go.opentelemetry.io/otel/attribute"
@@ -156,6 +157,8 @@ import (
 // finish. Generally you only need to use a single Pool for an entire application. If using the
 // base/context package, there is a Pool tied to the context that can be used.
 type Pool struct {
+	// name is the name of the pool used for metrics and logging.
+	name string
 	// queue is the channel that contains the functions to be run, populated by Submit().
 	queue chan runArgs
 	opts  poolOpts
@@ -176,6 +179,8 @@ type poolOpts struct {
 	// timeout is the time to wait for a job before timing out. If a timeout occurs the goroutine will be
 	// collected.
 	timeout time.Duration
+	// disableLimitedWarn disables warnings when waiting for a limited pool slot.
+	disableLimitedWarn bool
 }
 
 func (p poolOpts) defaults() poolOpts {
@@ -218,6 +223,18 @@ func WithRunnerTimeout(timeout time.Duration) func(poolOpts) (poolOpts, error) {
 	}
 }
 
+// WithDisableLimitedWarn disables warnings when waiting for a limited pool slot. By default, if a Submit() to a
+// Limited pool waits more than 30 seconds to acquire a slot, a warning will be logged. This option
+// disables that warning for rare instances where a long wait is expected. This warning is useful to
+// catch misconfigurations where you might have child goroutines submitting to the same Limited pool
+// causing a deadlock.
+func WithDisableLimitedWarn(disable bool) func(poolOpts) (poolOpts, error) {
+	return func(opts poolOpts) (poolOpts, error) {
+		opts.disableLimitedWarn = disable
+		return opts, nil
+	}
+}
+
 // New creates a new worker pool. The name is used for logging and metrics. The pool will have an always
 // available number of goroutines equal to the number of CPUs on the machine. Any Submit() calls that exceed
 // this number will cause a new goroutine to be created. The context should
@@ -241,12 +258,14 @@ func New(ctx context.Context, name string, options ...Option) (*Pool, error) {
 	var pm *poolMetrics
 	if name != "" {
 		mp = internalCtx.MeterProvider(ctx)
-		meter = mp.Meter(metrics.MeterName(2) + "/" + name)
+		name = metrics.MeterName(2) + "/" + name
+		meter = mp.Meter(name)
 		pm = newPoolMetrics(meter)
 	}
 
 	p := &Pool{
 		queue:      queue,
+		name:       name,
 		opts:       opts,
 		metrics:    pm,
 		goRoutines: &atomic.Int64{},
@@ -345,16 +364,38 @@ func (p *Pool) Submit(ctx context.Context, f func()) {
 	p.submit(ctx, f)
 }
 
+var warnTimer = 30 * time.Second
+
 // Submit submits function f to be run. Context can be cancelled before submit, however if the function is
 // already submitted it is the responsibility of the function to honor/not honor cancellation.
 func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 	spanner := span.Get(ctx)
 
 	t := time.Now()
-	select {
-	case <-ctx.Done():
-		return
-	case p.limit <- struct{}{}:
+	if p.opts.disableLimitedWarn {
+		select {
+		case <-ctx.Done():
+			return
+		case p.limit <- struct{}{}:
+		}
+	} else {
+		for {
+			warnTimer := time.NewTimer(warnTimer)
+			select {
+			case <-ctx.Done():
+				return
+			case <-warnTimer.C:
+				name := p.name
+				if name == "" {
+					name = "unnamed"
+				}
+				log.Default().Warn(fmt.Sprintf("worker.Pool(%s): waiting more than 30 seconds to acquire limited pool slot", name))
+				continue
+			case p.limit <- struct{}{}:
+			}
+			warnTimer.Stop()
+			break
+		}
 	}
 
 	spanner.Event(

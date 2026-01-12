@@ -6,12 +6,14 @@
 package context
 
 import (
-	"log"
+	"log/slog"
 	"time"
 
-    "github.com/gostdlib/base/context"
-    "github.com/gostdlib/base/concurrency/background"
+	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
+	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
+	"github.com/gostdlib/base/telemetry/otel/trace/span"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -43,7 +45,7 @@ func Attach(ctx Context) Context {
 }
 
 // Log returns the logger attached to the context. If no logger is attached, it returns log.Default().
-func Log(ctx Context) *log.Logger {
+func Log(ctx Context) *slog.Logger {
     return context.Log(ctx)
 }
 
@@ -122,14 +124,14 @@ func ShouldTrace(ctx context.Context) bool {
 // EOptions returns the error options attached to the context. If no options are attached, it returns nil.
 // This allows for setting per call error options. These will override local options if the same options are set.
 // An example of this is writing a traceback to errors on a specific call or all calls.
-func EOptions(ctx context.Context) []ierr.EOption {
+func EOptions(ctx context.Context) []errors.EOption {
 	return context.EOptions(ctx)
 }
 
 // SetEOptions attaches error options to the context. This allows for setting per call error options.
 // These will override local options if the same options are set. An example of this is writing a traceback
 // to errors on a specific call or all calls.
-func SetEOptions(ctx context.Context, options ...ierr.EOption) context.Context {
+func SetEOptions(ctx context.Context, options ...errors.EOption) context.Context {
 	return context.SetEOptions(ctx, options...)
 }
 

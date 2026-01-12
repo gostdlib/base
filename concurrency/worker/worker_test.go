@@ -1,11 +1,16 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gostdlib/base/telemetry/log"
 )
 
 func TestPool(t *testing.T) {
@@ -160,5 +165,102 @@ func TestSubPool(t *testing.T) {
 	p.Wait()
 	if at.Load() != 2 {
 		t.Fatal("TestSubPool: closing sub2 did something bad")
+	}
+}
+
+func TestLimitedPoolWarning(t *testing.T) {
+	// Save and restore original warnTimer
+	originalWarnTimer := warnTimer
+	defer func() { warnTimer = originalWarnTimer }()
+
+	// Set short timeout for testing
+	warnTimer = 50 * time.Millisecond
+
+	tests := []struct {
+		name        string
+		disableWarn bool
+		wantWarn    bool
+	}{
+		{
+			name:        "Success: warning logged when enabled",
+			disableWarn: false,
+			wantWarn:    true,
+		},
+		{
+			name:        "Success: no warning when disabled",
+			disableWarn: true,
+			wantWarn:    false,
+		},
+	}
+
+	for _, test := range tests {
+		// Capture log output
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+		testLogger := slog.New(handler)
+
+		// Save and restore original logger
+		originalLogger := log.Default()
+		log.Set(testLogger)
+
+		ctx := t.Context()
+
+		var p *Pool
+		var err error
+		if test.disableWarn {
+			p, err = New(ctx, "testPool", WithDisableLimitedWarn(true))
+		} else {
+			p, err = New(ctx, "testPool")
+		}
+		if err != nil {
+			t.Errorf("TestLimitedPoolWarning(%s): got err == %s, want err == nil", test.name, err)
+			log.Set(originalLogger)
+			continue
+		}
+
+		// Create a limited pool with only 1 slot
+		limited := p.Limited(ctx, "limitedPool", 1)
+
+		// Track completion
+		firstDone := make(chan struct{})
+		secondDone := make(chan struct{})
+
+		// Fill the slot with a job that blocks until we release it
+		release := make(chan struct{})
+		limited.Submit(ctx, func() {
+			<-release
+			close(firstDone)
+		})
+
+		// Submit second job that will have to wait
+		go func() {
+			limited.Submit(ctx, func() {
+				close(secondDone)
+			})
+		}()
+
+		// Wait for warning to potentially be logged
+		time.Sleep(100 * time.Millisecond)
+
+		// Release the first job
+		close(release)
+
+		// Wait for both jobs to complete
+		<-firstDone
+		<-secondDone
+
+		// Verify warning was or wasn't logged
+		logOutput := buf.String()
+		hasWarning := strings.Contains(logOutput, "waiting more than 30 seconds")
+
+		switch {
+		case test.wantWarn && !hasWarning:
+			t.Errorf("TestLimitedPoolWarning(%s): expected warning in log but got none. Log: %s", test.name, logOutput)
+		case !test.wantWarn && hasWarning:
+			t.Errorf("TestLimitedPoolWarning(%s): expected no warning but got: %s", test.name, logOutput)
+		}
+
+		p.Close(ctx)
+		log.Set(originalLogger)
 	}
 }
