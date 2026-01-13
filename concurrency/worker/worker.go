@@ -380,11 +380,12 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 		}
 	} else {
 		for {
-			warnTimer := time.NewTimer(warnTimer)
+			timer := time.NewTimer(warnTimer)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-warnTimer.C:
+			case <-timer.C:
 				name := p.name
 				if name == "" {
 					name = "unnamed"
@@ -393,7 +394,7 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 				continue
 			case p.limit <- struct{}{}:
 			}
-			warnTimer.Stop()
+			timer.Stop()
 			break
 		}
 	}
