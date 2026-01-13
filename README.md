@@ -1,233 +1,523 @@
-# Base - Your foundational packages
+<p align="center">
+  <img src="gostdlib-logo-whitebg.svg" alt="gostdlib logo" width="400"/>
+</p>
+
+# Base - Your Foundational Packages
 
 [![GoDoc](https://godoc.org/github.com/gostdlib/base?status.svg)](https://pkg.go.dev/github.com/gostdlib/base)
 [![Go Report Card](https://goreportcard.com/badge/github.com/gostdlib/base)](https://goreportcard.com/report/github.com/gostdlib/base)
 
 Since you've made it this far, why don't you hit that :star: up in the right corner.
 
-Note: These packages are going through there paces, so some changes may occur.
+Note: These packages are going through their paces, so some changes may occur.
 
-# Introduction
+## Introduction
 
-This is a set of base packages for use in Go projects.
+This is a set of foundational packages for building Go services. These packages provide:
 
-These sets of packages provide out of the box errors, logs, metrics, traces, concurrency primitives, AAA, ...
+- **Structured Errors** - Automatic file/line capture, OTEL trace integration, metrics, and smart logging
+- **Unified Context** - Single context carrying logger, metrics, worker pool, and background tasks
+- **Worker Pools** - Goroutine reuse with metrics, limited pools, and safe group primitives
+- **Background Tasks** - Tracked background goroutines with automatic restart and metrics
+- **Telemetry** - Integrated logging, OTEL metrics, and distributed tracing
+- **Concurrency Primitives** - Type-safe `sync.Pool`, sharded maps, fan-out/fan-in patterns
 
-It then ties these all together for use in projects that provide gRPC, REST or HTTP services providing these packages with interceptors that handle much of the work for you.
+The philosophy is simple: **logs are for errors, traces are for debugging, metrics are for counting**.
 
-This helps you use tracing instead of logs, logging only errors at the RPC level (but with all the relevant information), automatic conversion of errors to error types safe for customer consumption, automatic or helpful setup of other requirements, etc...
+## Quick Start
 
-It also includes support for dealing with both prod and non-prod environments without thinking about how you need to change initalization. And allows sane overrides for use cases that want to use this but need different defaults.
+### 1. Install the Project Generator
 
-It provides primatives for concurrency such as worker pools, limited pools, safer group objects instead of WaitGroup, type safe sync.Pool, etc... Sharded maps for speed increases and non-blocking read/write types like WProtect.
-
-Go doesn't have immutable types other than `string`, or does it?  Meet `values/immutable` with a tool for generating immutable types.
-
-Need to write configurations where zero values can't be used to detect if something is set or not? The `isset` package is there for you.
-
-We provide a `retry` package for exponential retries that is integrated into several of the other packages.
-
-On the list goes on.
-
-
-## Why?
-
-Centralization of best practices with a view on integration between packages to reduce work by the developer.
-
-## Getting started
-
-### Generating a company init package
-
-If you are planning to use this inside a company, you will want to make a company specific version of the init package.
-
-First, install our generation tool:
-`go install github.com/gostdlib/base/init/geninit@latest`
-
-Then in whatever repo you want to set this up at, run:
-`geninit -pkg company -init Init > company.go`
-
-This would make a pakcage named `company` that you can use to call `company.Init()`. If you want to name that differently, change the flags.
-
-You can customize this with your own extra inits for your company.
-
-Otherwise you can simply use the `base/init` package we provide. The generated one is a wrapper around that one.
-
-### Initalize your project
-
-We provide an initalizer for your project. This create a custom `context` and `error` package for you. These both wrap the standard library packages so you don't have to import both your custom package and the standard libary one.
-
-To use this, run:
-`go install github.com/gostdlib/base/genproject@latest`
-
-Then simply go to the root of your project and run:
-`genproject`
-
-Now create your `main.go` and call your package init generated in the last step:
-
-```go
-var initArgs = company.InitArgs{
-	Meta: company.Meta{
-		Service: "my-service",
-		Build: "1.0.0",
-	},
-}
-
-func main() {
-	company.Init(initArgs)
-	defer company.Close(initArgs)
-
-	...
-}
+```bash
+go install github.com/gostdlib/base/genproject@latest
 ```
 
-If you did not generate a company init package, you can just use the general one:
+### 2. Initialize Your Project
+
+In the root of your Go project:
+
+```bash
+genproject
+```
+
+This creates:
+- `context/` - Custom context package wrapping `base/context` and stdlib
+- `errors/` - Custom errors package with your own Category and Type enums
+- `main.go` - Scaffolded service initialization
+
+The `context/` and `errors/` packages are type compatible with the standard library and include the standard library calls and types to avoid having to import multiple packages.
+
+### 3. Initialize Your Service
 
 ```go
+package main
+
 import (
-	...
-	goinit "github.com/gostdlib/base/init"
-	...
+    "myservice/context"
+    goinit "github.com/gostdlib/base/init"
 )
-...
 
 func main() {
-	goinit.Service(initArgs)
-	defer goinit.Close(initArgs)
-	...
+    args := goinit.InitArgs{
+        Meta: goinit.Meta{
+            Service: "my-service",
+            Build:   "1.0.0",
+        },
+    }
+    goinit.Service(args)
+    defer goinit.Close(args)
+
+    ctx := context.Background()
+    // Your service code here...
 }
 ```
 
-There are a lot of initialization options here that can be provided in `InitArgs` and various `With*()` option funcs.
+`init.Service()` automatically sets up:
+- Structured logging with `slog`
+- Worker pool for goroutine reuse
+- Background task tracking
+- GOMAXPROCS based on actual CPUs
+- GOMEMLIMIT from container limits (Linux)
 
-`Init` provides smart defaults for prod vs non-prod environments (detected by the `base/env/detect` package).
+Signal handling (SIGTERM, SIGINT), tracing options and other things can be setup through init options.
 
-In this case, a prod environment will get the logging package setup(`base/log/`) using an `*slog.Logger` that includes the line it is logged at, the `serviceName` and `serviceBuild` keys using the meta data. These will not be provided in non-prod, to make errors easier to read.
+## The Power of Unified Context
 
-An `audit.Client` will be setup for use via `base/audit` that will either user a domain socket from one of the default locations or a no-op client in non-prod.
-
-`Close` handles closing the default `audit.Client`, calling other designated close procedures and capturing any `panic` that occurs by sending it out to be logged. This should help prevent lost `panic` messages.
-
-Each of these settings can be overridden.  You can provide your own audit.Client or return an NoOp audit.Client even in production. You can change the `slog.Logger` to use the `zerolog` or `zap` underneath via adapters we provide via log/adapters. There are other overrides that can be provided by using sub-packages.
-
-In other words, this should be reconfigurable to meet your needs within reason. This should drive towards an **easy** to use and common method of doing things.
-
-## How to use these packages to ease burden
-
-### Errors and logging
-
-This is not going to go into how to customize your `errors` package, as that is beyond this guide, see the `errors` package for more information.
-
-However, let's talk about how to make `errors` work for you.
-
-You can continue to use the standard Go `error` type as you see fit. But in your service packages, those errors should be created with `errors.E()` (which you can customize). This will generate an `errors.Error` type that wraps your error and provides additional fields.
-
-That type automatically records the file and line the error occurred on. If you pass an `errors.Error` to `errors.E()`, it just returns the previous `Error` to avoid extra wrapping that isn't needed.
-
-When using with our `grpc` service, when the `Error` reaches the top of the call stack, it is automatically logged to the configured logger. It is also automatically added to an OTEL trace if it exists on the `Context` object.
-
-If using a different framework, you only need to call the `.Log()` method at the top of the call stack. This prevents unnecessary logging either due to transient errors that succeed or duplicate errors from the common:
+After calling `context.Background()`, you have access to a myriad of tools:
 
 ```go
-if err != nil {
-	log.Println(err)
-	return err // And then the next function does the same
+ctx := context.Background()
+
+// Access the logger
+context.Log(ctx).Info("service started")
+
+// Access the worker pool
+context.Pool(ctx).Submit(ctx, func() {
+    // Work done in reused goroutine
+})
+
+// Access metrics
+counter, _ := context.Meter(ctx).Int64Counter("requests_total")
+counter.Add(ctx, 1)
+
+// Access background tasks
+context.Tasks(ctx).Once(ctx, "cleanup", func(ctx context.Context) error {
+    // One-shot background work
+    return nil
+})
+
+// Create a trace span
+ctx, span := context.NewSpan(ctx)
+defer span.End()
+```
+
+Each of these tie together to deliver telemetry via OTEL with package paths and other runtime information.
+
+## Structured Errors That Work For You
+
+The errors package is designed around a simple principle: **errors are only logged at the service boundary**.
+
+While we know this isn't 100% true, in most cases we can simply emit an error once and avoid error wrapping to simply log where the error actually occurred. If we need to know the stack trace we can simply record that via an option. This eliminates a lot of duplicate log messages that just make needle in the haystack problems.
+
+### Defining Your Error Types
+
+In your generated `errors/` package:
+
+```go
+//go:generate stringer -type=Category -linecomment
+
+type Category uint32
+
+const (
+    CatUnknown   Category = 0 // Unknown
+    CatInternal  Category = 1 // Internal
+    CatClient    Category = 2 // Client
+    CatUpstream  Category = 3 // Upstream
+)
+
+//go:generate stringer -type=Type -linecomment
+
+type Type uint16
+
+const (
+    TypeUnknown    Type = 0 // Unknown
+    TypeValidation Type = 1 // Validation
+    TypeNotFound   Type = 2 // NotFound
+    TypeTimeout    Type = 3 // Timeout
+)
+```
+
+If you are not interested in `Category` and `Type` for your projects, you can elimminate them from the `E()` function and pass nil values to the underlying call, which will eliminate them from any log/trace output.
+
+### Creating Errors
+
+```go
+func GetUser(ctx context.Context, id string) (*User, error) {
+    user, err := db.FindUser(ctx, id)
+    if err != nil {
+        // Automatically captures file:line, adds to trace, increments metrics.
+        return nil, errors.E(ctx, errors.CatInternal, errors.TypeNotFound, fmt.Errorf("user %s not found: %w", id, err))
+    }
+    return user, nil
 }
 ```
 
-You can also follow the examples in the `base/errors` to do `error` conversions to errors you want to return to a user, do filtering, etc.  You can still wrap your own custom errors with attributes so that `errors.Is()` and `errors.As()` work as you would expect.
+### What Happens Automatically
 
-You can access logging either through the logging package's `Default()` function or via the `Context` object generated by `context.Background()`. In `grpc` these are automatically attached via an interceptor.
+When you create an error with `errors.E()`:
 
-As we use tracing, there is not much use for logging other than for errors or in background goroutines. If you don't have the ability to capture traces, you can configure tracing to output to stdout or stderr.
+1. **File and line are captured** - Know exactly where the error originated
+2. **Added to OTEL trace** - If a span exists, the error is recorded
+3. **Metrics incremented** - Counter for `Category.Type` is incremented
+4. **No duplicate logging** - Error is only logged when you call `.Log()` at the service boundary
 
-Logging can be accessed via `telemetry/log`.
+```go
+// At your RPC handler or service boundary
+func (s *Server) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, error) {
+    user, err := s.userService.GetUser(ctx, req.Id)
+    if err != nil {
+        // Now log it - with request context, call ID, etc.
+        if e, ok := err.(errors.Error); ok {
+            e.Log(ctx, req.CallId, req.CustomerId, req)
+        }
+        return nil, err
+    }
+    return user, nil
+}
+```
 
-#### Why not log immediately when calling E()
+And there is support for custom error types, runtime options based on the `Context` object and other features to ease your life. And while we use a custom `Error`, code sees it as a standard `error` which is very important.
 
-Because errors might get handled. By using this method, we guarantee that a relevant error will get logged if it is in the RPC path if it bubbles up (which means it was relevant) vs logging errors that don't mean anything because they were transient (like ARM retries).
+## Worker Pools - Goroutine Reuse Done Right
 
-Tracing on the other hand, which happens only at set intervals can still capture that this is occuring for analysis for problems. You can also capture these via metrics to look for statistical changes that are significant for alarms. These are much better diagnostic tools than the red herrings that occuring by looking at log entries that don't matter.
+The worker pool provides goroutine reuse in a **non-blocking** way. It maintains a core pool of goroutines (equal to CPUs) and dynamically creates more when needed. You can create specific named pools from the default pool that records its own metrics and has features such as rate limiting.
 
-Background tasks errors must be manually logged, but this is a tiny fraction of code in comparison.
+### Basic Usage
 
-Without seeing transient errors, how can you know if something is having an overall problem?  The answer to that is `Metrics`.
+```go
+ctx := context.Background()
+pool := context.Pool(ctx)
 
-`Metrics` are for counting. If you need to count errors, count the types of errors with metrics, not log entries.
+// Submit work - uses existing goroutine or creates new one.
+pool.Submit(ctx, func() {
+    // Your work here
+})
+```
 
-The base packages assumes that:
+### Using Groups (Better WaitGroup)
 
-* Logs are for errors or information that cannot be captured in a trace
-* Traces are for debugging information
-* Metrics are for counting and trending
+```go
+g := context.Pool(ctx).Group()
 
-You will be unhappy if you try to use these sets of packages in other ways.
+// Spin off concurrent work
+for _, item := range items {
+    item := item // capture
+    g.Go(ctx, func(ctx context.Context) error {
+        return process(ctx, item)
+    })
+}
+
+// Wait for all to complete, collect errors
+if err := g.Wait(ctx); err != nil {
+    // Handle errors - all errors are collected
+}
+```
+
+### Cancel on First Error
+
+```go
+ctx, cancel := context.WithCancel(ctx)
+g := context.Pool(ctx).Group()
+g.CancelOnErr = cancel // Cancel all when one fails
+
+for _, item := range items {
+    item := item
+    g.Go(ctx, func(ctx context.Context) error {
+        // Check ctx.Done() to honor cancellation
+        return process(ctx, item)
+    })
+}
+
+if err := g.Wait(ctx); err != nil {
+    // First error caused all others to cancel
+}
+```
+
+### Limited Pools - Concurrency Control
+
+```go
+// Only 10 concurrent goroutines.
+limited := context.Pool(ctx).Limited(ctx, "api-calls", 10)
+
+for _, url := range urls {
+    url := url
+    limited.Submit(ctx, func() {
+        // At most 10 of these run concurrently
+        fetch(url)
+    })
+}
+```
+
+### Sub-Pools for Package-Scoped Metrics
+
+```go
+// Create a sub-pool with its own metrics namespace
+subPool := context.Pool(ctx).Sub(ctx, "database-ops")
+
+// All work submitted here has separate metrics
+subPool.Submit(ctx, func() {
+    // Database work
+})
+```
+
+## Background Tasks - Tracked and Restartable
+
+For work that runs outside request/response cycles:
+
+### Long-Running Tasks with Auto-Restart
+
+```go
+ctx := context.Background()
+tasks := context.Tasks(ctx)
+
+// Task restarts with exponential backoff if it returns an error
+backoff := &exponential.Backoff{
+    InitialInterval: time.Second,
+    MaxInterval:     time.Minute,
+}
+
+tasks.Run(ctx, "event-processor", func(ctx context.Context) error {
+    for {
+        select {
+        case <-ctx.Done():
+            return nil
+        case event := <-eventChan:
+            if err := processEvent(ctx, event); err != nil {
+                return err // Will restart with backoff
+            }
+        }
+    }
+}, backoff)
+```
+
+### One-Shot Background Work
+
+```go
+tasks.Once(ctx, "send-welcome-email", func(ctx context.Context) error {
+    return sendEmail(ctx, user.Email, "Welcome!")
+})
+```
+
+## Telemetry Integration
+
+### Logging
+
+```go
+// Via context.
+context.Log(ctx).Info("processing request",
+    slog.String("user_id", userID))
+
+// Via package default.
+log.Default().Warn("deprecated API called")
+
+// Add attributes to context - attached to all logs/traces
+ctx = context.AddAttrs(ctx,
+    slog.String("request_id", reqID),
+    slog.String("tenant", tenantID))
+```
 
 ### Metrics
 
-Metrics can be gotten by either using the "telemetry/metrics.Default()" function or via the `Context` and the accessor `context.Meter()` function.
+```go
+meter := context.Meter(ctx) // Scoped to calling package
 
-The `context.Meter()` will return a meter that is scoped to your package. From there you setup your meter for use. A good example of this is in "base/concurrency/worker/metrics.go".
+counter, _ := meter.Int64Counter("requests_total",
+    metric.WithDescription("Total requests processed"))
 
-There is also `context.MeterProvider` which you can use to have a more manual method that gives more control.
+histogram, _ := meter.Float64Histogram("request_duration_seconds",
+    metric.WithDescription("Request duration in seconds"))
 
-This will be served on port 2223 unless you have overriden the OTEL provider.
-
-Many of the types in this package automatically provide metrics.
+// Use them
+counter.Add(ctx, 1)
+histogram.Record(ctx, time.Since(start).Seconds())
+```
 
 ### Tracing
 
-Tracing objects can be retrieved via a `Context` object using the the `telemetry/otel/trace` set of packages.
-
-The normal way is to use the `span` package to create a trace span in your current function.
-
-Generally you will want to create a Span for each function in a call chain and do any logging you find necessary. Remember that simply creating an `errors.Error` will cause the error to be logged to the span.
-
-Creating a new span is easy:
-
 ```go
-func myFunc(ctx context.Context) error {
-	ctx, spanner := span.New(ctx, opts...)
-	defer spanner.End()
-	...
+func ProcessOrder(ctx context.Context, order *Order) error {
+    ctx, span := context.NewSpan(ctx)
+    defer span.End()
+
+    // Add attributes to the span
+    span.SetAttributes(attribute.String("order_id", order.ID))
+
+    // Child operations get child spans
+    if err := validateOrder(ctx, order); err != nil {
+        return err // Error automatically recorded to span
+    }
+
+    return nil
 }
 ```
 
-This automatically names the span and you can use the `spanner` object to do additional spans.
+This gets scoped to the package with package information including in span's context.
 
-If you want to use an existing parent span instead of a new Span, you can do `span.Get()`.
+## More Concurrency Primitives
 
-If you need to name things yourself or have some other preferred method of dealing with tracing, you can simply use the `trace` package's `Default()` to get a raw `*sdkTrace.TracerProvider`.
+### Type-Safe sync.Pool
 
-## Concurrency
+```go
+// No type assertions needed
+pool := sync.NewPool(
+    func() *bytes.Buffer { return new(bytes.Buffer) },
+)
 
-There are a set of concurrency packages here. There are a few notes on use here, but you should dig into the individual packages.
+buf := pool.Get()
+defer pool.Put(buf)
+buf.WriteString("hello")
+```
 
-The base package of interest is `worker`. This package allows for the creation of worker pools. However, this is not usually necessary as `context.Background()` gives access to a default worker pool via the `context.Pool()` function.
+### Sharded Maps for High Concurrency
 
-This allows goroutine reuse, metrics and provides access to other primatives. There is a `Limited` type that can be made off a `Pool` to allow only X goroutines to run at a time. There is a `Group` type that can give you a `WaitGroup` like type that you can't forget to increment or decrement (similar to the errgroup type in the x packages).
+```go
+// ~5x faster than stdlib map with locks for concurrent access. Also shrinks when keys delete.
+m := sync.NewShardedMap[string, *User](
+    func(key string) uint64 { return hash(key) },
+)
 
-All the other concurrency primatives use the `Pool` type to leverage metrics and reuse capabilities.
+m.Set("user:123", user)
+user, ok := m.Get("user:123")
+```
 
-Want a fanout/fanin that isn't so prone to deadlocks?  Use the `patterns/fan` package.
+### Fan-Out/Fan-In Pattern
 
-There are also supersets of the `sync` package that provide generic typed `sync.Pool` types, `shardedmaps` that scale better and `WProtect` for non-blocking read/write types.
+```go
+fan := patterns.NewFan[Input, Output](ctx, 10, // 10 workers
+    func(ctx context.Context, in Input) (Output, error) {
+        return transform(in)
+    },
+)
 
-Finally there is a `background` package for keeping track of background tasks instead of random goroutines you don't know are even running.
+// Send inputs (thread-safe)
+for _, input := range inputs {
+    fan.Send(input)
+}
+fan.Close()
 
-## Immutable
+// Collect outputs
+for resp := range fan.Output() {
+    if resp.Err != nil {
+        // Handle error
+        continue
+    }
+    results = append(results, resp.V)
+}
+```
 
-Check out the `values/immutable` for an immutable type generator that leverages our immutable Map and Slice types. More in that package.
+## Immutable Types
 
-## Isset
+There are general immutable types around slices and maps:
 
-Don't use `*bool` or other basic types to indicate if something is set or not. This creates a lot of junk that the garbage collector has to deal with. Overuse of pointers is one of the biggest time wasters and causes panics without good reason. Lots of small pointers are just junk that cause long GC pauses in heavily trafficed services.
+```go
 
-Instead, use the `values/isset` package.
+iSlice := immutable.NewSlice(mySlice)
 
-## RPC
+fmt.Println(iSlice.Get(5))
+```
+This allows you to pass data you don't want to change. This of course doesn't apply to pointer values stored in structs.
 
-Checkout the `grpc` package for an RPC experience that automatically ties in your metrics/logging/tracing.
+Maps has similar methods.
 
-## Much, much more...
+Combined with generators, you can make immutable versions of your structs:
 
-Look around and have fun!
+```go
+//go:generate immutable -type=Config
+
+type Config struct {
+    Host string
+    Port int
+    Tags []string
+}
+```
+
+This generates `ImConfig` with:
+- Getters for each field
+- Setters that return new copies (no mutation)
+- `Mutable()` to get a mutable copy
+- Slices wrapped in `immutable.Slice`, maps in `immutable.Map`
+
+## Isset - Avoid Pointer Madness
+
+Don't use `*bool` to check if something was set:
+
+```go
+type Config struct {
+    Enabled  isset.Bool   // Not *bool
+    MaxItems isset.Int    // Not *int
+    Name     isset.String // Not *string
+}
+
+cfg := Config{}
+cfg.Enabled.Set(true)
+
+if cfg.Enabled.IsSet() {
+    fmt.Println("Enabled:", cfg.Enabled.V())
+}
+
+// Zero allocation, JSON serialization works
+```
+
+## Company-Specific Init Package
+
+For organizations, generate a custom init package:
+
+```bash
+go install github.com/gostdlib/base/init/geninit@latest
+geninit -pkg company -init Init > company.go
+```
+
+Then in services:
+
+```go
+func main() {
+    company.Init(args)
+    defer company.Close(args)
+    // ...
+}
+```
+
+## Philosophy
+
+1. **Centralization** - Best practices consolidated in reusable packages
+2. **Integration** - Packages work together seamlessly
+3. **Logging Strategy** - Logs for errors and non-request work only
+4. **Tracing Strategy** - Traces for debugging information
+5. **Metrics Strategy** - Metrics for counting and trending
+6. **Error Handling** - Single logging point at service boundary
+7. **Concurrency** - Goroutine reuse via pools with metrics
+8. **Configuration** - Environment-aware with sensible defaults
+
+## Package Index
+
+| Package | Description |
+|---------|-------------|
+| `context` | Drop-in replacement with attached logger, pool, tasks, metrics |
+| `errors` | Structured errors with file/line, trace integration, metrics |
+| `init` | Service initialization and lifecycle management |
+| `concurrency/worker` | Worker pool with goroutine reuse and metrics |
+| `concurrency/background` | Tracked background tasks with auto-restart |
+| `concurrency/sync` | Group, typed Pool, ShardedMap, WProtect |
+| `concurrency/patterns` | Fan-out/fan-in, concurrent slice ops |
+| `telemetry/log` | Slog-based structured logging |
+| `telemetry/otel/metrics` | OTEL Prometheus metrics |
+| `telemetry/otel/trace` | Distributed tracing with spans |
+| `values/isset` | Zero-allocation "was this set?" types |
+| `values/immutable` | Immutable type generator |
+| `retry/exponential` | Exponential backoff retries |
+| `statemachine` | State machine with OTEL integration |
+| `genproject` | Project scaffolding tool |
+
+## Much More...
+
+Explore the packages and have fun building reliable Go services!
