@@ -3,6 +3,8 @@ package context
 import (
 	"context"
 	"log/slog"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gostdlib/base/concurrency/background"
@@ -307,6 +309,23 @@ func TestLoggerLogContextAttrs(t *testing.T) {
 			}
 		}
 	}
+
+	// Verify caller info is correct when using public API.
+	handler := &fakeHandler{enabled: true}
+	logger := Logger{logger: slog.New(handler)}
+	_, _, wantLine, _ := runtime.Caller(0)
+	logger.Info(context.Background(), "caller test") // wantLine + 1
+	wantLine++
+
+	record := handler.records[0]
+	fs := runtime.CallersFrames([]uintptr{record.PC})
+	frame, _ := fs.Next()
+	if !strings.HasSuffix(frame.File, "context_test.go") {
+		t.Errorf("TestLoggerLogContextAttrs(caller): got file %q, want suffix \"context_test.go\"", frame.File)
+	}
+	if frame.Line != wantLine {
+		t.Errorf("TestLoggerLogContextAttrs(caller): got line %d, want %d", frame.Line, wantLine)
+	}
 }
 
 func TestLoggerLogAttrsContextAttrs(t *testing.T) {
@@ -379,5 +398,22 @@ func TestLoggerLogAttrsContextAttrs(t *testing.T) {
 				t.Errorf("TestLoggerLogAttrsContextAttrs(%s): attr %q = %v, want %v", test.name, attr.Key, attr.Value.Any(), want)
 			}
 		}
+	}
+
+	// Verify caller info is correct when using public API.
+	handler := &fakeHandler{enabled: true}
+	logger := Logger{logger: slog.New(handler)}
+	_, _, wantLine, _ := runtime.Caller(0)
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "caller test") // wantLine + 1
+	wantLine++
+
+	record := handler.records[0]
+	fs := runtime.CallersFrames([]uintptr{record.PC})
+	frame, _ := fs.Next()
+	if !strings.HasSuffix(frame.File, "context_test.go") {
+		t.Errorf("TestLoggerLogAttrsContextAttrs(caller): got file %q, want suffix \"context_test.go\"", frame.File)
+	}
+	if frame.Line != wantLine {
+		t.Errorf("TestLoggerLogAttrsContextAttrs(caller): got line %d, want %d", frame.Line, wantLine)
 	}
 }
