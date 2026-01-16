@@ -385,7 +385,7 @@ func TestRun(t *testing.T) {
 			continue
 		}
 		gotReq.Defers = nil // Reset defers to nil after execution to avoid comparison.
-		// Now one cares about context values.
+		// No one cares about context values.
 		test.wantReq.Ctx = context.Background()
 		gotReq.Ctx = context.Background()
 		if diff := pretty.Compare(test.wantReq, gotReq); diff != "" {
