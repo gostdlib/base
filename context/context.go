@@ -274,7 +274,11 @@ func Tasks(ctx Context) *background.Tasks {
 // AddAttrs adds slog.Attr attributes to the context. These attributes can be used by logging,
 // tracing or errors packages to add additional context to logs, traces or errors. Duplicate attr
 // keys are allowed, but upper layer packages will apply the last value for a given key.
+// If ctx is nil, it will be set to context.Background().
 func AddAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	a := ctx.Value(attrsKey{})
 	if a == nil {
 		ctx = context.WithValue(ctx, attrsKey{}, attrs)
@@ -288,6 +292,9 @@ func AddAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
 
 // Attrs returns the slog.Attr attributes attached to the context. If no attributes are attached, it returns nil.
 func Attrs(ctx context.Context) []slog.Attr {
+	if ctx == nil {
+		return nil
+	}
 	a := ctx.Value(attrsKey{})
 	if a == nil {
 		return nil

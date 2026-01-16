@@ -463,6 +463,9 @@ func LogStages[T any](req Request[T]) (Request[T], error) {
 // purpose of OTEL tracing. An error is returned if the state machine fails, name
 // is empty, the Request Ctx/Next is nil or the Err field is not nil.
 func Run[T any](name string, req Request[T], options ...Option) (Request[T], error) {
+	if req.Ctx == nil {
+		return req, ctxNilErr
+	}
 	req.Ctx = context.AddAttrs(
 		req.Ctx,
 		slog.String("statemachine", name),
