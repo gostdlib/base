@@ -61,22 +61,23 @@ func Attach(ctx Context) Context {
 
 // Logger is a wrapper around an *slog.Logger that prevents loss of Context logging attributes.
 type Logger struct {
+	ctx    context.Context
 	logger *slog.Logger
 }
 
 // Debug logs at [LevelDebug].
-func (l Logger) Debug(ctx context.Context, msg string, args ...any) {
-	l.log(ctx, slog.LevelDebug, msg, args...)
+func (l Logger) Debug(msg string, args ...any) {
+	l.log(slog.LevelDebug, msg, args...)
 }
 
 // Enabled reports whether l emits log records at the given context and level.
-func (l Logger) Enabled(ctx context.Context, level slog.Level) bool {
-	return l.logger.Enabled(ctx, level)
+func (l Logger) Enabled(level slog.Level) bool {
+	return l.logger.Enabled(l.ctx, level)
 }
 
 // Error logs at [LevelError].
-func (l Logger) Error(ctx context.Context, msg string, args ...any) {
-	l.log(ctx, slog.LevelError, msg, args...)
+func (l Logger) Error(msg string, args ...any) {
+	l.log(slog.LevelError, msg, args...)
 }
 
 // Handler returns l's Handler.
@@ -90,8 +91,8 @@ func (l Logger) Logger() *slog.Logger {
 }
 
 // Info logs at [LevelInfo].
-func (l Logger) Info(ctx context.Context, msg string, args ...any) {
-	l.log(ctx, slog.LevelInfo, msg, args...)
+func (l Logger) Info(msg string, args ...any) {
+	l.log(slog.LevelInfo, msg, args...)
 }
 
 // Log emits a log record with the current time and the given level and message.
@@ -104,18 +105,20 @@ func (l Logger) Info(ctx context.Context, msg string, args ...any) {
 //     the following argument is treated as the value and the two are combined
 //     into an Attr.
 //   - Otherwise, the argument is treated as a value with key "!BADKEY".
-func (l Logger) Log(ctx context.Context, level slog.Level, msg string, args ...any) {
-	l.log(ctx, level, msg, args...)
+func (l Logger) Log(level slog.Level, msg string, args ...any) {
+	l.log(level, msg, args...)
 }
 
-// LogAttrs is a more efficient version of [Logger.Log] that accepts only Attrs.
+// LogAttrs is a more efficient version of [Logger.Log] that accepts only Attrs. If the Logger was created with a
+// Context with attributes, both those and the Context passed will be set. If those are in conflict, the one passed
+// here will take precedence.
 func (l Logger) LogAttrs(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
 	l.logAttrs(ctx, level, msg, attrs...)
 }
 
 // Warn logs at [LevelWarn].
-func (l Logger) Warn(ctx context.Context, msg string, args ...any) {
-	l.log(ctx, slog.LevelWarn, msg, args...)
+func (l Logger) Warn(msg string, args ...any) {
+	l.log(slog.LevelWarn, msg, args...)
 }
 
 // With returns a Logger that includes the given attributes
@@ -125,7 +128,7 @@ func (l Logger) With(args ...any) Logger {
 	if len(args) == 0 {
 		return l
 	}
-	return Logger{logger: l.logger.With(args...)}
+	return Logger{ctx: l.ctx, logger: l.logger.With(args...)}
 }
 
 // WithGroup returns a Logger that starts a group, if name is non-empty.
@@ -138,17 +141,17 @@ func (l Logger) WithGroup(name string) Logger {
 	if name == "" {
 		return l
 	}
-	return Logger{logger: l.logger.WithGroup(name)}
+	return Logger{ctx: l.ctx, logger: l.logger.WithGroup(name)}
 }
 
 // log is the low-level logging method for methods that take ...any.
 // It must always be called directly by an exported logging method
 // or function, because it uses a fixed call depth to obtain the pc.
-func (l Logger) log(ctx context.Context, level slog.Level, msg string, args ...any) {
-	if ctx == nil {
-		ctx = context.Background()
+func (l Logger) log(level slog.Level, msg string, args ...any) {
+	if l.ctx == nil {
+		l.ctx = context.Background()
 	}
-	if !l.Enabled(ctx, level) {
+	if !l.Enabled(level) {
 		return
 	}
 
@@ -159,9 +162,9 @@ func (l Logger) log(ctx context.Context, level slog.Level, msg string, args ...a
 	pc = pcs[0]
 
 	r := slog.NewRecord(time.Now(), level, msg, pc)
-	r.AddAttrs(Attrs(ctx)...)
+	r.AddAttrs(Attrs(l.ctx)...)
 	r.Add(args...)
-	_ = l.Handler().Handle(ctx, r)
+	_ = l.Handler().Handle(l.ctx, r)
 }
 
 // logAttrs is like [Logger.log], but for methods that take ...Attr.
@@ -169,7 +172,7 @@ func (l Logger) logAttrs(ctx context.Context, level slog.Level, msg string, attr
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !l.Enabled(ctx, level) {
+	if !l.Enabled(level) {
 		return
 	}
 
@@ -180,6 +183,7 @@ func (l Logger) logAttrs(ctx context.Context, level slog.Level, msg string, attr
 	pc = pcs[0]
 
 	r := slog.NewRecord(time.Now(), level, msg, pc)
+	r.AddAttrs(Attrs(l.ctx)...) // Must be first
 	r.AddAttrs(Attrs(ctx)...)
 	r.AddAttrs(attrs...)
 	_ = l.Handler().Handle(ctx, r)
@@ -190,13 +194,13 @@ func (l Logger) logAttrs(ctx context.Context, level slog.Level, msg string, attr
 func Log(ctx Context) Logger {
 	a := ctx.Value(loggerKey{})
 	if a == nil {
-		return Logger{logger: log.Default()}
+		return Logger{ctx: ctx, logger: log.Default()}
 	}
 	l, ok := a.(*slog.Logger)
 	if !ok {
-		return Logger{logger: log.Default()}
+		return Logger{ctx: ctx, logger: log.Default()}
 	}
-	return Logger{logger: l}
+	return Logger{ctx: ctx, logger: l}
 }
 
 // Meter returns a metric.Meter scoped to the package that calls context.Meter(). If you need to have a

@@ -40,12 +40,12 @@ func TestLog(t *testing.T) {
 				ctx := context.Background()
 				return context.WithValue(ctx, loggerKey{}, defaultLogger)
 			}(),
-			want: Logger{defaultLogger},
+			want: Logger{logger: defaultLogger},
 		},
 		{
 			name: "NoLoggerAttached",
 			ctx:  context.Background(),
-			want: Logger{defaultLogger},
+			want: Logger{logger: defaultLogger},
 		},
 		{
 			name: "InvalidLoggerType",
@@ -53,12 +53,13 @@ func TestLog(t *testing.T) {
 				ctx := context.Background()
 				return context.WithValue(ctx, loggerKey{}, "invalid")
 			}(),
-			want: Logger{defaultLogger},
+			want: Logger{logger: defaultLogger},
 		},
 	}
 
 	for _, test := range tests {
 		got := Log(test.ctx)
+		test.want.ctx = test.ctx
 		if got != test.want {
 			t.Errorf("TestLog() = %v, want %v", got, test.want)
 		}
@@ -238,7 +239,7 @@ func recordAttrs(r slog.Record) []slog.Attr {
 	return attrs
 }
 
-func TestLoggerLogContextAttrs(t *testing.T) {
+func TestInternalLog(t *testing.T) {
 	tests := []struct {
 		name          string
 		ctxAttrs      []slog.Attr
@@ -278,34 +279,35 @@ func TestLoggerLogContextAttrs(t *testing.T) {
 
 	for _, test := range tests {
 		handler := &fakeHandler{enabled: true}
-		logger := Logger{logger: slog.New(handler)}
 
 		ctx := context.Background()
 		if len(test.ctxAttrs) > 0 {
 			ctx = AddAttrs(ctx, test.ctxAttrs...)
 		}
 
-		logger.log(ctx, slog.LevelInfo, "test message", test.logArgs...)
+		logger := Logger{ctx: ctx, logger: slog.New(handler)}
+
+		logger.log(slog.LevelInfo, "test message", test.logArgs...)
 
 		if len(handler.records) != 1 {
-			t.Errorf("TestLoggerLogContextAttrs(%s): got %d records, want 1", test.name, len(handler.records))
+			t.Errorf("TestLog(%s): got %d records, want 1", test.name, len(handler.records))
 			continue
 		}
 
 		attrs := recordAttrs(handler.records[0])
 		if len(attrs) != test.wantAttrCount {
-			t.Errorf("TestLoggerLogContextAttrs(%s): got %d attrs, want %d", test.name, len(attrs), test.wantAttrCount)
+			t.Errorf("TestLog(%s): got %d attrs, want %d", test.name, len(attrs), test.wantAttrCount)
 			continue
 		}
 
 		for _, attr := range attrs {
 			want, ok := test.wantAttrs[attr.Key]
 			if !ok {
-				t.Errorf("TestLoggerLogContextAttrs(%s): unexpected attr key %q", test.name, attr.Key)
+				t.Errorf("TestLog(%s): unexpected attr key %q", test.name, attr.Key)
 				continue
 			}
 			if attr.Value.Any() != want {
-				t.Errorf("TestLoggerLogContextAttrs(%s): attr %q = %v, want %v", test.name, attr.Key, attr.Value.Any(), want)
+				t.Errorf("TestLog(%s): attr %q = %v, want %v", test.name, attr.Key, attr.Value.Any(), want)
 			}
 		}
 	}
@@ -314,7 +316,7 @@ func TestLoggerLogContextAttrs(t *testing.T) {
 	handler := &fakeHandler{enabled: true}
 	logger := Logger{logger: slog.New(handler)}
 	_, _, wantLine, _ := runtime.Caller(0)
-	logger.Info(context.Background(), "caller test") // wantLine + 1
+	logger.Info("caller test") // wantLine + 1
 	wantLine++
 
 	record := handler.records[0]
@@ -328,13 +330,14 @@ func TestLoggerLogContextAttrs(t *testing.T) {
 	}
 }
 
-func TestLoggerLogAttrsContextAttrs(t *testing.T) {
+func TestLogAttrs(t *testing.T) {
 	tests := []struct {
-		name          string
-		ctxAttrs      []slog.Attr
-		logAttrs      []slog.Attr
-		wantAttrCount int
-		wantAttrs     map[string]any
+		name             string
+		ctxAttrs         []slog.Attr
+		logAttrs         []slog.Attr
+		wantAttrCount    int
+		wantAttrs        map[string]any // Used when order doesn't matter
+		wantAttrsOrdered []slog.Attr    // Used to verify exact order of attrs
 	}{
 		{
 			name:          "Success: context attrs are included in logAttrs output",
@@ -364,6 +367,28 @@ func TestLoggerLogAttrsContextAttrs(t *testing.T) {
 			wantAttrCount: 0,
 			wantAttrs:     map[string]any{},
 		},
+		{
+			name:          "Success: same key in context and passed attrs",
+			ctxAttrs:      []slog.Attr{slog.String("key", "ctx_value")},
+			logAttrs:      []slog.Attr{slog.String("key", "passed_value")},
+			wantAttrCount: 2,
+			wantAttrsOrdered: []slog.Attr{
+				slog.String("key", "ctx_value"),    // Context attr comes first
+				slog.String("key", "passed_value"), // Passed attr comes second (wins at render time)
+			},
+		},
+		{
+			name:          "Success: multiple overlapping keys with different values",
+			ctxAttrs:      []slog.Attr{slog.String("id", "ctx_id"), slog.Int("count", 1)},
+			logAttrs:      []slog.Attr{slog.String("id", "passed_id"), slog.Int("count", 99)},
+			wantAttrCount: 4,
+			wantAttrsOrdered: []slog.Attr{
+				slog.String("id", "ctx_id"), // Context attrs first
+				slog.Int("count", 1),
+				slog.String("id", "passed_id"), // Passed attrs second (win at render time)
+				slog.Int("count", 99),
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -378,24 +403,44 @@ func TestLoggerLogAttrsContextAttrs(t *testing.T) {
 		logger.logAttrs(ctx, slog.LevelInfo, "test message", test.logAttrs...)
 
 		if len(handler.records) != 1 {
-			t.Errorf("TestLoggerLogAttrsContextAttrs(%s): got %d records, want 1", test.name, len(handler.records))
+			t.Errorf("TestLogAttrs(%s): got %d records, want 1", test.name, len(handler.records))
 			continue
 		}
 
 		attrs := recordAttrs(handler.records[0])
 		if len(attrs) != test.wantAttrCount {
-			t.Errorf("TestLoggerLogAttrsContextAttrs(%s): got %d attrs, want %d", test.name, len(attrs), test.wantAttrCount)
+			t.Errorf("TestLogAttrs(%s): got %d attrs, want %d", test.name, len(attrs), test.wantAttrCount)
 			continue
 		}
 
+		// Use ordered verification when wantAttrsOrdered is set (for duplicate key tests)
+		if test.wantAttrsOrdered != nil {
+			for i, want := range test.wantAttrsOrdered {
+				if !attrs[i].Equal(want) {
+					t.Errorf("TestLogAttrs(%s): attr[%d] = %v, want %v", test.name, i, attrs[i], want)
+				}
+			}
+			continue
+		}
+
+		// Build a map of last-seen values (naturally deduplicates with last-wins)
+		gotAttrs := make(map[string]any)
 		for _, attr := range attrs {
-			want, ok := test.wantAttrs[attr.Key]
+			gotAttrs[attr.Key] = attr.Value.Any()
+		}
+		for key, want := range test.wantAttrs {
+			got, ok := gotAttrs[key]
 			if !ok {
-				t.Errorf("TestLoggerLogAttrsContextAttrs(%s): unexpected attr key %q", test.name, attr.Key)
+				t.Errorf("TestLogAttrs(%s): missing attr key %q", test.name, key)
 				continue
 			}
-			if attr.Value.Any() != want {
-				t.Errorf("TestLoggerLogAttrsContextAttrs(%s): attr %q = %v, want %v", test.name, attr.Key, attr.Value.Any(), want)
+			if got != want {
+				t.Errorf("TestLogAttrs(%s): attr %q = %v, want %v", test.name, key, got, want)
+			}
+		}
+		for key := range gotAttrs {
+			if _, ok := test.wantAttrs[key]; !ok {
+				t.Errorf("TestLogAttrs(%s): unexpected attr key %q", test.name, key)
 			}
 		}
 	}
