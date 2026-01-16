@@ -8,6 +8,8 @@ package context
 import (
 	"context"
 	"log/slog"
+	"runtime"
+	"time"
 
 	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
@@ -57,17 +59,144 @@ func Attach(ctx Context) Context {
 	return ctx
 }
 
-// Log returns the logger attached to the context. If no logger is attached, it returns log.Default().
-func Log(ctx Context) *slog.Logger {
+// Logger is a wrapper around an *slog.Logger that allo
+type Logger struct {
+	logger *slog.Logger
+}
+
+// Debug logs at [LevelDebug].
+func (l Logger) Debug(ctx context.Context, msg string, args ...any) {
+	l.log(ctx, slog.LevelDebug, msg, args...)
+}
+
+// Enabled reports whether l emits log records at the given context and level.
+func (l Logger) Enabled(ctx context.Context, level slog.Level) bool {
+	return l.logger.Enabled(ctx, level)
+}
+
+// Error logs at [LevelError].
+func (l Logger) Error(ctx context.Context, msg string, args ...any) {
+	l.log(ctx, slog.LevelError, msg, args...)
+}
+
+// Handler returns l's Handler.
+func (l Logger) Handler() slog.Handler {
+	return l.logger.Handler()
+}
+
+// Logger returns the underlying *slog.Logger.
+func (l Logger) Logger() *slog.Logger {
+	return l.logger
+}
+
+// Info logs at [LevelInfo].
+func (l Logger) Info(ctx context.Context, msg string, args ...any) {
+	l.log(ctx, slog.LevelInfo, msg, args...)
+}
+
+// Log emits a log record with the current time and the given level and message.
+// The Record's Attrs consist of the Logger's attributes followed by
+// the Attrs specified by args.
+//
+// The attribute arguments are processed as follows:
+//   - If an argument is an Attr, it is used as is.
+//   - If an argument is a string and this is not the last argument,
+//     the following argument is treated as the value and the two are combined
+//     into an Attr.
+//   - Otherwise, the argument is treated as a value with key "!BADKEY".
+func (l Logger) Log(ctx context.Context, level slog.Level, msg string, args ...any) {
+	l.log(ctx, level, msg, args...)
+}
+
+// LogAttrs is a more efficient version of [Logger.Log] that accepts only Attrs.
+func (l Logger) LogAttrs(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
+	l.logAttrs(ctx, level, msg, attrs...)
+}
+
+// Warn logs at [LevelWarn].
+func (l Logger) Warn(ctx context.Context, msg string, args ...any) {
+	l.log(ctx, slog.LevelWarn, msg, args...)
+}
+
+// With returns a Logger that includes the given attributes
+// in each output operation. Arguments are converted to
+// attributes as if by [Logger.Log].
+func (l Logger) With(args ...any) Logger {
+	if len(args) == 0 {
+		return l
+	}
+	return Logger{logger: l.logger.With(args...)}
+}
+
+// WithGroup returns a Logger that starts a group, if name is non-empty.
+// The keys of all attributes added to the Logger will be qualified by the given
+// name. (How that qualification happens depends on the [Handler.WithGroup]
+// method of the Logger's Handler.)
+//
+// If name is empty, WithGroup returns the receiver.
+func (l Logger) WithGroup(name string) Logger {
+	if name == "" {
+		return l
+	}
+	return Logger{logger: l.logger.WithGroup(name)}
+}
+
+// log is the low-level logging method for methods that take ...any.
+// It must always be called directly by an exported logging method
+// or function, because it uses a fixed call depth to obtain the pc.
+func (l Logger) log(ctx context.Context, level slog.Level, msg string, args ...any) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !l.Enabled(ctx, level) {
+		return
+	}
+
+	var pc uintptr
+	var pcs [1]uintptr
+	// skip [runtime.Callers, this function, this function's caller]
+	runtime.Callers(3, pcs[:])
+	pc = pcs[0]
+
+	r := slog.NewRecord(time.Now(), level, msg, pc)
+	r.AddAttrs(Attrs(ctx)...)
+	r.Add(args...)
+	_ = l.Handler().Handle(ctx, r)
+}
+
+// logAttrs is like [Logger.log], but for methods that take ...Attr.
+func (l Logger) logAttrs(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !l.Enabled(ctx, level) {
+		return
+	}
+
+	var pc uintptr
+	var pcs [1]uintptr
+	// skip [runtime.Callers, this function, this function's caller]
+	runtime.Callers(3, pcs[:])
+	pc = pcs[0]
+
+	r := slog.NewRecord(time.Now(), level, msg, pc)
+	r.AddAttrs(Attrs(ctx)...)
+	r.AddAttrs(attrs...)
+	_ = l.Handler().Handle(ctx, r)
+}
+
+// Log returns a Logger with the *slog.Logger that is attached to the context. If no logger is attached,
+// it returns Logger wrapping log.Default().
+func Log(ctx Context) Logger {
 	a := ctx.Value(loggerKey{})
 	if a == nil {
-		return log.Default()
+		return Logger{logger: log.Default()}
 	}
 	l, ok := a.(*slog.Logger)
 	if !ok {
-		return log.Default()
+		return Logger{logger: log.Default()}
 	}
-	return l
+	return Logger{logger: l}
 }
 
 // Meter returns a metric.Meter scoped to the package that calls context.Meter(). If you need to have a
