@@ -463,6 +463,12 @@ func LogStages[T any](req Request[T]) (Request[T], error) {
 // purpose of OTEL tracing. An error is returned if the state machine fails, name
 // is empty, the Request Ctx/Next is nil or the Err field is not nil.
 func Run[T any](name string, req Request[T], options ...Option) (Request[T], error) {
+	req.Ctx = context.AddAttrs(
+		req.Ctx,
+		slog.String("statemachine", name),
+		slog.String("reqID", req.reqID),
+	)
+
 	defer func() {
 		if req.seenStages != nil {
 			seenStagesPool.Put(req.Ctx, req.seenStages)
@@ -525,6 +531,7 @@ func Run[T any](name string, req Request[T], options ...Option) (Request[T], err
 
 	for req.Next != nil {
 		stateName := methodName(req.Next)
+		ctx := context.AddAttrs(req.Ctx, slog.String("state", stateName))
 		if req.seenStages != nil {
 			if req.seenStages.seen(stateName) {
 				req.Next = nil
@@ -532,17 +539,17 @@ func Run[T any](name string, req Request[T], options ...Option) (Request[T], err
 			}
 		}
 		if req.logStages {
-			context.Log(req.Ctx).Info(req.Ctx, "statemachine executing state: "+stateName, slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+			context.Log(ctx).Info(ctx, "statemachine executing state: "+stateName)
 		}
 		req = execState(req, stateName)
 
 		if req.logStages {
-			context.Log(req.Ctx).Info(req.Ctx, "statemachine finished state: "+stateName, slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+			context.Log(ctx).Info(ctx, "statemachine finished state: "+stateName)
 		}
 		if req.Err != nil {
 			req = execDefer(req)
 			if req.logStages {
-				context.Log(req.Ctx).Info(req.Ctx, fmt.Sprintf("statemachine state(%s) error: %s", stateName, req.Err), slog.String("statemachine", name), slog.String("state", stateName), slog.String("reqID", req.reqID))
+				context.Log(ctx).Info(ctx, fmt.Sprintf("statemachine state(%s) error: %s", stateName, req.Err))
 			}
 			req.span.Status(codes.Error, fmt.Sprintf("error in State(%s): %s", stateName, req.Err.Error()))
 			return req, req.Err
