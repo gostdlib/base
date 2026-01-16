@@ -59,7 +59,7 @@ func Attach(ctx Context) Context {
 	return ctx
 }
 
-// Logger is a wrapper around an *slog.Logger that allo
+// Logger is a wrapper around an *slog.Logger that prevents loss of Context logging attributes.
 type Logger struct {
 	logger *slog.Logger
 }
