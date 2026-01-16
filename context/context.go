@@ -109,7 +109,7 @@ func (l Logger) Log(level slog.Level, msg string, args ...any) {
 	l.log(level, msg, args...)
 }
 
-// LogAttrs is a more efficient version of [Logger.Log] that accepts only Attrs. If the Loger was created with a
+// LogAttrs is a more efficient version of [Logger.Log] that accepts only Attrs. If the Logger was created with a
 // Context with attributes, both those and the Context passed will be set. If those are in conflict, the one passed
 // here will take precedence.
 func (l Logger) LogAttrs(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
