@@ -542,17 +542,17 @@ func Run[T any](name string, req Request[T], options ...Option) (Request[T], err
 			}
 		}
 		if req.logStages {
-			context.Log(ctx).Info(ctx, "statemachine executing state: "+stateName)
+			context.Log(ctx).Info("statemachine executing state: " + stateName)
 		}
 		req = execState(req, stateName)
 
 		if req.logStages {
-			context.Log(ctx).Info(ctx, "statemachine finished state: "+stateName)
+			context.Log(ctx).Info("statemachine finished state: " + stateName)
 		}
 		if req.Err != nil {
 			req = execDefer(req)
 			if req.logStages {
-				context.Log(ctx).Info(ctx, fmt.Sprintf("statemachine state(%s) error: %s", stateName, req.Err))
+				context.Log(ctx).Info(fmt.Sprintf("statemachine state(%s) error: %s", stateName, req.Err))
 			}
 			req.span.Status(codes.Error, fmt.Sprintf("error in State(%s): %s", stateName, req.Err.Error()))
 			return req, req.Err

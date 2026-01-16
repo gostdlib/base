@@ -44,8 +44,12 @@ func Attach(ctx Context) Context {
 	return ctx
 }
 
-// Log returns the logger attached to the context. If no logger is attached, it returns log.Default().
-func Log(ctx Context) *slog.Logger {
+// Logger is a wrapper around an *slog.Logger that prevents loss of Context logging attributes.
+type Logger = context.Logger
+
+// Log returns a Logger with the *slog.Logger that is attached to the context. If no logger is attached,
+// it returns Logger wrapping log.Default().
+func Log(ctx Context) Logger {
     return context.Log(ctx)
 }
 
