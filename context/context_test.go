@@ -3,6 +3,8 @@ package context
 import (
 	"context"
 	"log/slog"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gostdlib/base/concurrency/background"
@@ -30,7 +32,7 @@ func TestLog(t *testing.T) {
 	tests := []struct {
 		name string
 		ctx  context.Context
-		want *slog.Logger
+		want Logger
 	}{
 		{
 			name: "LoggerAttached",
@@ -38,12 +40,12 @@ func TestLog(t *testing.T) {
 				ctx := context.Background()
 				return context.WithValue(ctx, loggerKey{}, defaultLogger)
 			}(),
-			want: defaultLogger,
+			want: Logger{defaultLogger},
 		},
 		{
 			name: "NoLoggerAttached",
 			ctx:  context.Background(),
-			want: defaultLogger,
+			want: Logger{defaultLogger},
 		},
 		{
 			name: "InvalidLoggerType",
@@ -51,7 +53,7 @@ func TestLog(t *testing.T) {
 				ctx := context.Background()
 				return context.WithValue(ctx, loggerKey{}, "invalid")
 			}(),
-			want: defaultLogger,
+			want: Logger{defaultLogger},
 		},
 	}
 
@@ -200,5 +202,218 @@ func TestAttrs(t *testing.T) {
 				t.Errorf("TestAttrs(%s): attr[%d] = %v, want %v", test.name, i, got[i], test.wantAttrs[i])
 			}
 		}
+	}
+}
+
+// fakeHandler is a slog.Handler that captures log records for testing.
+type fakeHandler struct {
+	records []slog.Record
+	enabled bool
+}
+
+func (h *fakeHandler) Enabled(_ context.Context, _ slog.Level) bool {
+	return h.enabled
+}
+
+func (h *fakeHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *fakeHandler) WithAttrs(_ []slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *fakeHandler) WithGroup(_ string) slog.Handler {
+	return h
+}
+
+// recordAttrs extracts all attributes from a slog.Record into a slice.
+func recordAttrs(r slog.Record) []slog.Attr {
+	var attrs []slog.Attr
+	r.Attrs(func(a slog.Attr) bool {
+		attrs = append(attrs, a)
+		return true
+	})
+	return attrs
+}
+
+func TestLoggerLogContextAttrs(t *testing.T) {
+	tests := []struct {
+		name          string
+		ctxAttrs      []slog.Attr
+		logArgs       []any
+		wantAttrCount int
+		wantAttrs     map[string]any
+	}{
+		{
+			name:          "Success: context attrs are included in log output",
+			ctxAttrs:      []slog.Attr{slog.String("request_id", "abc123"), slog.Int("user_id", 42)},
+			logArgs:       []any{},
+			wantAttrCount: 2,
+			wantAttrs:     map[string]any{"request_id": "abc123", "user_id": int64(42)},
+		},
+		{
+			name:          "Success: context attrs combined with log args",
+			ctxAttrs:      []slog.Attr{slog.String("trace_id", "xyz789")},
+			logArgs:       []any{"operation", "test"},
+			wantAttrCount: 2,
+			wantAttrs:     map[string]any{"trace_id": "xyz789", "operation": "test"},
+		},
+		{
+			name:          "Success: no context attrs with log args only",
+			ctxAttrs:      nil,
+			logArgs:       []any{"key", "value"},
+			wantAttrCount: 1,
+			wantAttrs:     map[string]any{"key": "value"},
+		},
+		{
+			name:          "Success: empty context and no log args",
+			ctxAttrs:      nil,
+			logArgs:       []any{},
+			wantAttrCount: 0,
+			wantAttrs:     map[string]any{},
+		},
+	}
+
+	for _, test := range tests {
+		handler := &fakeHandler{enabled: true}
+		logger := Logger{logger: slog.New(handler)}
+
+		ctx := context.Background()
+		if len(test.ctxAttrs) > 0 {
+			ctx = AddAttrs(ctx, test.ctxAttrs...)
+		}
+
+		logger.log(ctx, slog.LevelInfo, "test message", test.logArgs...)
+
+		if len(handler.records) != 1 {
+			t.Errorf("TestLoggerLogContextAttrs(%s): got %d records, want 1", test.name, len(handler.records))
+			continue
+		}
+
+		attrs := recordAttrs(handler.records[0])
+		if len(attrs) != test.wantAttrCount {
+			t.Errorf("TestLoggerLogContextAttrs(%s): got %d attrs, want %d", test.name, len(attrs), test.wantAttrCount)
+			continue
+		}
+
+		for _, attr := range attrs {
+			want, ok := test.wantAttrs[attr.Key]
+			if !ok {
+				t.Errorf("TestLoggerLogContextAttrs(%s): unexpected attr key %q", test.name, attr.Key)
+				continue
+			}
+			if attr.Value.Any() != want {
+				t.Errorf("TestLoggerLogContextAttrs(%s): attr %q = %v, want %v", test.name, attr.Key, attr.Value.Any(), want)
+			}
+		}
+	}
+
+	// Verify caller info is correct when using public API.
+	handler := &fakeHandler{enabled: true}
+	logger := Logger{logger: slog.New(handler)}
+	_, _, wantLine, _ := runtime.Caller(0)
+	logger.Info(context.Background(), "caller test") // wantLine + 1
+	wantLine++
+
+	record := handler.records[0]
+	fs := runtime.CallersFrames([]uintptr{record.PC})
+	frame, _ := fs.Next()
+	if !strings.HasSuffix(frame.File, "context_test.go") {
+		t.Errorf("TestLoggerLogContextAttrs(caller): got file %q, want suffix \"context_test.go\"", frame.File)
+	}
+	if frame.Line != wantLine {
+		t.Errorf("TestLoggerLogContextAttrs(caller): got line %d, want %d", frame.Line, wantLine)
+	}
+}
+
+func TestLoggerLogAttrsContextAttrs(t *testing.T) {
+	tests := []struct {
+		name          string
+		ctxAttrs      []slog.Attr
+		logAttrs      []slog.Attr
+		wantAttrCount int
+		wantAttrs     map[string]any
+	}{
+		{
+			name:          "Success: context attrs are included in logAttrs output",
+			ctxAttrs:      []slog.Attr{slog.String("request_id", "abc123"), slog.Int("user_id", 42)},
+			logAttrs:      []slog.Attr{},
+			wantAttrCount: 2,
+			wantAttrs:     map[string]any{"request_id": "abc123", "user_id": int64(42)},
+		},
+		{
+			name:          "Success: context attrs combined with passed attrs",
+			ctxAttrs:      []slog.Attr{slog.String("trace_id", "xyz789")},
+			logAttrs:      []slog.Attr{slog.String("operation", "test")},
+			wantAttrCount: 2,
+			wantAttrs:     map[string]any{"trace_id": "xyz789", "operation": "test"},
+		},
+		{
+			name:          "Success: no context attrs with passed attrs only",
+			ctxAttrs:      nil,
+			logAttrs:      []slog.Attr{slog.String("key", "value")},
+			wantAttrCount: 1,
+			wantAttrs:     map[string]any{"key": "value"},
+		},
+		{
+			name:          "Success: empty context and no passed attrs",
+			ctxAttrs:      nil,
+			logAttrs:      []slog.Attr{},
+			wantAttrCount: 0,
+			wantAttrs:     map[string]any{},
+		},
+	}
+
+	for _, test := range tests {
+		handler := &fakeHandler{enabled: true}
+		logger := Logger{logger: slog.New(handler)}
+
+		ctx := context.Background()
+		if len(test.ctxAttrs) > 0 {
+			ctx = AddAttrs(ctx, test.ctxAttrs...)
+		}
+
+		logger.logAttrs(ctx, slog.LevelInfo, "test message", test.logAttrs...)
+
+		if len(handler.records) != 1 {
+			t.Errorf("TestLoggerLogAttrsContextAttrs(%s): got %d records, want 1", test.name, len(handler.records))
+			continue
+		}
+
+		attrs := recordAttrs(handler.records[0])
+		if len(attrs) != test.wantAttrCount {
+			t.Errorf("TestLoggerLogAttrsContextAttrs(%s): got %d attrs, want %d", test.name, len(attrs), test.wantAttrCount)
+			continue
+		}
+
+		for _, attr := range attrs {
+			want, ok := test.wantAttrs[attr.Key]
+			if !ok {
+				t.Errorf("TestLoggerLogAttrsContextAttrs(%s): unexpected attr key %q", test.name, attr.Key)
+				continue
+			}
+			if attr.Value.Any() != want {
+				t.Errorf("TestLoggerLogAttrsContextAttrs(%s): attr %q = %v, want %v", test.name, attr.Key, attr.Value.Any(), want)
+			}
+		}
+	}
+
+	// Verify caller info is correct when using public API.
+	handler := &fakeHandler{enabled: true}
+	logger := Logger{logger: slog.New(handler)}
+	_, _, wantLine, _ := runtime.Caller(0)
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "caller test") // wantLine + 1
+	wantLine++
+
+	record := handler.records[0]
+	fs := runtime.CallersFrames([]uintptr{record.PC})
+	frame, _ := fs.Next()
+	if !strings.HasSuffix(frame.File, "context_test.go") {
+		t.Errorf("TestLoggerLogAttrsContextAttrs(caller): got file %q, want suffix \"context_test.go\"", frame.File)
+	}
+	if frame.Line != wantLine {
+		t.Errorf("TestLoggerLogAttrsContextAttrs(caller): got line %d, want %d", frame.Line, wantLine)
 	}
 }
