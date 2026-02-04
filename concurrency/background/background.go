@@ -101,8 +101,11 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 
 	name = fmt.Sprintf("%s.%s", metrics.MeterName(2), name)
 
-	if _, ok := t.tm.BackgroundTasks[name]; !ok {
-		bm := newBackgroundTaskMetrics(t.meter)
+	var bm *backgroundTaskMetrics
+	var ok bool
+	bm, ok = t.tm.BackgroundTasks[name]
+	if !ok {
+		bm = newBackgroundTaskMetrics(t.meter)
 		t.tm.BackgroundTasks[name] = bm
 	}
 
@@ -112,7 +115,7 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 		func() {
 			boff.Retry(
 				ctx,
-				t.taskWrapper(name, t.tm.BackgroundTasks[name], task),
+				t.taskWrapper(name, bm, task),
 			)
 		},
 	)
