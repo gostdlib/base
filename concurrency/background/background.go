@@ -66,7 +66,7 @@ type RunOption func(runOpts) (runOpts, error)
 // meaning the name has to be unique within that function. The Task is the function to run. If
 // task() ends, it will use the Backoff provided to restart the Task. If Context is canceled, this will stop
 // launching the task, however, the task itself has to honor the context passed to it in order for it to be stopped.
-// An error is only returned if an option fails or you have a duplicate name.
+// An error is only returned if an option fails.
 // Do not try to use this for a cron like task. If you need to run background cron like tasks,
 // use the .Once() method wrapped with some timer.
 func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponential.Backoff, options ...RunOption) error {
