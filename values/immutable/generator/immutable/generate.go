@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/printer"
 	"go/token"
 	"log"
@@ -119,6 +120,7 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 	found := false
 
 	var outerErr error
+	var intermediate bytes.Buffer
 
 	ast.Inspect(node, func(n ast.Node) bool {
 		if found {
@@ -229,28 +231,28 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 			}
 
 			// Generate struct
-			err = structTemplate.Execute(builder, data)
+			err = structTemplate.Execute(&intermediate, data)
 			if err != nil {
 				outerErr = fmt.Errorf("failed to execute struct template: %w", err)
 				return false
 			}
 
 			// Generate methods
-			err = methodTemplate.Execute(builder, data)
+			err = methodTemplate.Execute(&intermediate, data)
 			if err != nil {
 				outerErr = fmt.Errorf("failed to execute method template: %w", err)
 				return false
 			}
 
 			// Generate copy function
-			err = copyTemplate.Execute(builder, data)
+			err = copyTemplate.Execute(&intermediate, data)
 			if err != nil {
 				outerErr = fmt.Errorf("failed to execute copy template: %w", err)
 				return false
 			}
 
 			for _, method := range methods {
-				methodCopyTemplate.Execute(builder, method)
+				methodCopyTemplate.Execute(&intermediate, method)
 			}
 
 			found = true
@@ -262,6 +264,14 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 
 	if outerErr != nil {
 		return false, outerErr
+	}
+
+	if found {
+		formatted, err := format.Source(intermediate.Bytes())
+		if err != nil {
+			return false, fmt.Errorf("failed to format generated code: %w", err)
+		}
+		builder.Write(formatted)
 	}
 
 	return found, nil

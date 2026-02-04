@@ -191,7 +191,7 @@ func TestCloseContextExpires(t *testing.T) {
 			name: "Deadline in 5 seconds",
 			ctx: func() context.Context {
 				// ignore the lostcancel note.
-				ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, _ := context.WithTimeout(t.Context(), 5*time.Second)
 				return ctx
 			}(),
 		},

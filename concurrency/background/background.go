@@ -66,7 +66,7 @@ type RunOption func(runOpts) (runOpts, error)
 // meaning the name has to be unique within that function. The Task is the function to run. If
 // task() ends, it will use the Backoff provided to restart the Task. If Context is canceled, this will stop
 // launching the task, however, the task itself has to honor the context passed to it in order for it to be stopped.
-// An error is only returned if an option fails or you have a duplicate name.
+// An error is only returned if an option fails.
 // Do not try to use this for a cron like task. If you need to run background cron like tasks,
 // use the .Once() method wrapped with some timer.
 func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponential.Backoff, options ...RunOption) error {
@@ -99,14 +99,15 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 	ctx, cancel := context.WithCancel(ctx)
 	t.cancels = append(t.cancels, cancel)
 
-	name = fmt.Sprintf("%s.%s", metrics.MeterName(1), name)
+	name = fmt.Sprintf("%s.%s", metrics.MeterName(2), name)
 
-	if _, ok := t.tm.BackgroundTasks[name]; ok {
-		return fmt.Errorf("background/Tasks.Run: task %s already exists", name)
+	var bm *backgroundTaskMetrics
+	var ok bool
+	bm, ok = t.tm.BackgroundTasks[name]
+	if !ok {
+		bm = newBackgroundTaskMetrics(t.meter)
+		t.tm.BackgroundTasks[name] = bm
 	}
-
-	bm := newBackgroundTaskMetrics(t.meter)
-	t.tm.BackgroundTasks[name] = bm
 
 	// Restarts the task if it ends.
 	t.pool.Submit(
@@ -184,7 +185,7 @@ func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...Run
 		}
 	}
 
-	name = fmt.Sprintf("%s.%s", metrics.MeterName(1), name)
+	name = fmt.Sprintf("%s.%s", metrics.MeterName(2), name)
 
 	var otm *onceTaskMetrics
 	if _, ok := t.tm.OnceTasks[name]; ok {

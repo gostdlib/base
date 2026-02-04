@@ -21,8 +21,9 @@ const _Category_name = "UnknownRequestSafetyPermissionResourceExhaustedInternal"
 var _Category_index = [...]uint8{0, 7, 14, 20, 30, 47, 55}
 
 func (i Category) String() string {
-	if i >= Category(len(_Category_index)-1) {
+	idx := int(i) - 0
+	if idx >= len(_Category_index)-1 {
 		return "Category(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _Category_name[_Category_index[i]:_Category_index[i+1]]
+	return _Category_name[_Category_index[idx]:_Category_index[idx+1]]
 }
