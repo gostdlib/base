@@ -99,14 +99,12 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 	ctx, cancel := context.WithCancel(ctx)
 	t.cancels = append(t.cancels, cancel)
 
-	name = fmt.Sprintf("%s.%s", metrics.MeterName(1), name)
+	name = fmt.Sprintf("%s.%s", metrics.MeterName(2), name)
 
-	if _, ok := t.tm.BackgroundTasks[name]; ok {
-		return fmt.Errorf("background/Tasks.Run: task %s already exists", name)
+	if _, ok := t.tm.BackgroundTasks[name]; !ok {
+		bm := newBackgroundTaskMetrics(t.meter)
+		t.tm.BackgroundTasks[name] = bm
 	}
-
-	bm := newBackgroundTaskMetrics(t.meter)
-	t.tm.BackgroundTasks[name] = bm
 
 	// Restarts the task if it ends.
 	t.pool.Submit(
@@ -114,7 +112,7 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 		func() {
 			boff.Retry(
 				ctx,
-				t.taskWrapper(name, bm, task),
+				t.taskWrapper(name, t.tm.BackgroundTasks[name], task),
 			)
 		},
 	)
@@ -184,7 +182,7 @@ func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...Run
 		}
 	}
 
-	name = fmt.Sprintf("%s.%s", metrics.MeterName(1), name)
+	name = fmt.Sprintf("%s.%s", metrics.MeterName(2), name)
 
 	var otm *onceTaskMetrics
 	if _, ok := t.tm.OnceTasks[name]; ok {

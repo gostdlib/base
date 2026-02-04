@@ -63,7 +63,7 @@ func Set(p metric.MeterProvider) {
 // For example:
 // "github.com/user/project/pkgName"
 func MeterName(stackFrame int) string {
-	pc, _, _, ok := runtime.Caller(1)
+	pc, _, _, ok := runtime.Caller(stackFrame)
 	if !ok {
 		return "unknown"
 	}

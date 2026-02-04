@@ -323,3 +323,66 @@ func freePort() (port int, err error) {
 	}
 	return
 }
+
+func TestMeterName(t *testing.T) {
+	tests := []struct {
+		name       string
+		stackFrame int
+		want       string
+	}{
+		{
+			name:       "Success: stackFrame 1 returns direct caller",
+			stackFrame: 1,
+			want:       "github.com/gostdlib/base/telemetry/otel/metrics",
+		},
+		{
+			name:       "Success: stackFrame 2 returns caller's caller",
+			stackFrame: 2,
+			want:       "testing",
+		},
+	}
+
+	for _, test := range tests {
+		got := MeterName(test.stackFrame)
+		if got != test.want {
+			t.Errorf("TestMeterName(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+// meterNameHelper calls MeterName and is used to test that stackFrame correctly
+// skips the right number of frames.
+func meterNameHelper(stackFrame int) string {
+	return MeterName(stackFrame)
+}
+
+func TestMeterNameWithHelper(t *testing.T) {
+	tests := []struct {
+		name       string
+		stackFrame int
+		want       string
+	}{
+		{
+			name:       "Success: stackFrame 1 returns helper function's package",
+			stackFrame: 1,
+			want:       "github.com/gostdlib/base/telemetry/otel/metrics",
+		},
+		{
+			name:       "Success: stackFrame 2 returns test function's package",
+			stackFrame: 2,
+			want:       "github.com/gostdlib/base/telemetry/otel/metrics",
+		},
+		{
+			name:       "Success: stackFrame 3 returns testing package",
+			stackFrame: 3,
+			want:       "testing",
+		},
+	}
+
+	for _, test := range tests {
+		got := meterNameHelper(test.stackFrame)
+		if got != test.want {
+			t.Errorf("TestMeterNameWithHelper(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}

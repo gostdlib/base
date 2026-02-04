@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"log"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -130,6 +131,7 @@ func findStructImports(fileAst *ast.File, structName string) ([]string, error) {
 	for pkg := range usedImports {
 		result = append(result, pkg)
 	}
+	slices.Sort(result)
 	return result, nil
 }
 
