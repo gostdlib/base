@@ -1,8 +1,6 @@
 package background
 
 import (
-	"sync"
-
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -21,8 +19,6 @@ type tasksMetrics struct {
 	BackgroundTasks map[string]*backgroundTaskMetrics
 	// OnceTasks is a map that contains metrics for tasks run via Once().
 	OnceTasks map[string]*onceTaskMetrics
-
-	btMutex sync.Mutex
 }
 
 func newTaskMetrics(m metric.Meter) *tasksMetrics {
