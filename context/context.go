@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/gostdlib/base/concurrency/background"
@@ -32,6 +33,9 @@ type (
 	metricsKey = internalCtx.MetricsKey
 )
 
+var contextOnce sync.Once
+var backgroundContext Context
+
 // Background returns a non-nil, empty [Context]. It is never canceled, and has no deadline.
 // It is typically used by the main function, initialization, and tests, and as the top-level
 // Context for incoming requests. This differs from the Background() function in the context package
@@ -44,8 +48,21 @@ type (
 //
 // These can be accessed using the Audit()/Log()/Metrics functions.
 func Background() Context {
-	ctx := context.Background()
-	return Attach(ctx)
+	contextOnce.Do(
+		func() {
+			ctx := context.Background()
+			backgroundContext = Attach(ctx)
+		},
+	)
+	return backgroundContext
+}
+
+// ResetBackground resets the cached background context, forcing it to be
+// rebuilt with current defaults on the next call to Background().
+// This is called by init.Service() after all defaults have been configured.
+func ResetBackground() {
+	contextOnce = sync.Once{}
+	backgroundContext = nil
 }
 
 // Attach attaches the audit, logger, and metrics clients to the context.

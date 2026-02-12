@@ -139,6 +139,7 @@ import (
 
 	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
+	bctx "github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/env/detect"
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
@@ -572,6 +573,7 @@ func (s setup) log() (stateFn, error) {
 	for _, msg := range s.logMsgs {
 		log.Default().Info(msg)
 	}
+	bctx.ResetBackground()
 	return nil, nil
 }
 
