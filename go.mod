@@ -6,7 +6,7 @@ require (
 	github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d
 	github.com/CAFxX/httpcompression v0.0.9
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2
-	github.com/gofiber/fiber/v2 v2.52.9
+	github.com/gofiber/fiber/v2 v2.52.12
 	github.com/google/uuid v1.6.0
 	github.com/gostdlib/concurrency v0.0.0-20241230205952-55ea9e292314
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
