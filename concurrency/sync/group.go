@@ -59,7 +59,9 @@ func (e *Errors) Add(i int, err error) {
 func (e *Errors) Errors() []error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.errs
+	cp := make([]error, len(e.errs))
+	copy(cp, e.errs)
+	return cp
 }
 
 // Error returns all the errors joined together with errors.Join()
@@ -198,7 +200,7 @@ func (w *Group) Go(ctx context.Context, f func(ctx context.Context) error, optio
 	// Since this wasn't the initial setup, we need to attach the span to the context.
 	if !didOnce {
 		if span.Get(ctx).IsRecording() {
-			otelTrace.ContextWithSpan(ctx, w.span.Span)
+			ctx = otelTrace.ContextWithSpan(ctx, w.span.Span)
 		}
 	}
 

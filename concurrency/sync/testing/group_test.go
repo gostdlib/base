@@ -164,3 +164,32 @@ func TestIndexErrors(t *testing.T) {
 		t.Fatalf("TestIndexErrors: want no missing indexes, got %v", expect)
 	}
 }
+
+// TestErrorsReturnsDefensiveCopy verifies that Errors() returns a copy of the
+// internal slice, not a reference to it. Without a copy, a caller can mutate
+// the internal error list by writing to the returned slice.
+func TestErrorsReturnsDefensiveCopy(t *testing.T) {
+	t.Parallel()
+
+	var errs sync.Errors
+
+	// Add enough errors so that append won't reallocate when we add one more
+	// (we want the snapshot and internal slice to share the same backing array).
+	for i := 0; i < 8; i++ {
+		errs.Add(i, fmt.Errorf("err-%d", i))
+	}
+
+	// Take a snapshot.
+	snapshot := errs.Errors()
+
+	// Mutate the snapshot. If Errors() returned the internal slice directly,
+	// this overwrites the internal state.
+	original := snapshot[0].Error()
+	snapshot[0] = errors.New("MUTATED")
+
+	// Read again from the Errors struct.
+	fresh := errs.Errors()
+	if fresh[0].Error() != original {
+		t.Errorf("TestErrorsReturnsDefensiveCopy: mutating returned slice affected internal state: got %q, want %q", fresh[0].Error(), original)
+	}
+}

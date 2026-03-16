@@ -152,9 +152,8 @@ func TODO() Context {
 // string or any other built-in type to avoid collisions between
 // packages using context. Users of WithValue should define their own
 // types for keys. To avoid allocating when assigning to an
-// interface{}, context keys often have concrete type
-// struct{}. Alternatively, exported context
-func WithValue(parent Context, key, val interface{}) Context {
+// any, context keys often have concrete type struct{}.
+func WithValue(parent Context, key, val any) Context {
 	return context.WithValue(parent, key, val)
 }
 

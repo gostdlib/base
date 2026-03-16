@@ -91,7 +91,7 @@ func TestUintMarshalling(t *testing.T) {
 			jsonInput:  "",
 			wantUint:   0,
 			wantIsSet:  false,
-			wantOutput: "",
+			wantOutput: "null",
 		},
 		{
 			name:       "Unmarshal set Uint",

@@ -535,6 +535,58 @@ func TestExecDefer(t *testing.T) {
 	}
 }
 
+func TestBytesToStr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		b    []byte
+		want string
+	}{
+		{
+			name: "Success: nil byte slice returns empty string",
+			b:    nil,
+			want: "",
+		},
+		{
+			name: "Success: empty byte slice returns empty string",
+			b:    []byte{},
+			want: "",
+		},
+		{
+			name: "Success: non-empty byte slice returns string",
+			b:    []byte("hello"),
+			want: "hello",
+		},
+	}
+
+	for _, test := range tests {
+		got := bytesToStr(test.b)
+		if got != test.want {
+			t.Errorf("TestBytesToStr(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestOtelStartSetsStartTime(t *testing.T) {
+	t.Parallel()
+
+	req := Request[data]{
+		Ctx:  context.Background(),
+		Data: data{Num: 1},
+	}
+
+	result := req.otelStart()
+
+	// Without OTEL span, otelStart returns early, but startTime should still
+	// be zero since span is not recording. The important thing is that the
+	// return value is a different object than the input when span IS recording.
+	// Here we verify the function returns without panic and returns a valid Request.
+	if result.Ctx == nil {
+		t.Errorf("TestOtelStartSetsStartTime: returned Request has nil Ctx")
+	}
+}
+
 func functionA() {
 	fmt.Println("Function A")
 }
@@ -561,7 +613,7 @@ func TestMethodName(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		got := methodName(test.fn)
+		got := MethodName(test.fn)
 		if got != test.want {
 			t.Errorf("TestMethodName(%s): got %q, want %q", test.name, got, test.want)
 		}

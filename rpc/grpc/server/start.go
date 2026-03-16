@@ -171,7 +171,9 @@ func (s *starter) setupGW(ctx context.Context) (fn, error) {
 	}
 
 	if len(s.opts.certs) > 0 {
-		tlsconf := &tls.Config{InsecureSkipVerify: true} // We are dialing ourselves, so it should be fine.
+		// InsecureSkipVerify is safe here: the gateway is dialing the gRPC server
+		// on the same process via loopback. No external network is involved.
+		tlsconf := &tls.Config{InsecureSkipVerify: true}
 		creds := credentials.NewTLS(tlsconf)
 		s.opts.gwDial = append(s.opts.gwDial, grpc.WithTransportCredentials(creds))
 	}
@@ -212,13 +214,13 @@ func (s *starter) listenGRPCOnly(ctx context.Context) (fn, error) {
 
 		s.server.mu.Lock()
 		defer s.server.mu.Unlock()
-		s.server = nil
+		s.server.server = nil
 	}()
 	return nil, nil
 }
 
 func (s *starter) listenWithHTTP(ctx context.Context) (fn, error) {
-	s.server.done = make(chan error)
+	s.server.done = make(chan error, 1)
 
 	mux := s.opts.mux
 	if mux == nil {
@@ -250,7 +252,7 @@ func (s *starter) startTLS(ctx context.Context) error {
 
 		s.server.mu.Lock()
 		defer s.server.mu.Unlock()
-		s.server = nil
+		s.server.server = nil
 	}()
 
 	return nil
@@ -266,7 +268,7 @@ func (s *starter) startNonTLS(ctx context.Context) error {
 
 		s.server.mu.Lock()
 		defer s.server.mu.Unlock()
-		s.server = nil
+		s.server.server = nil
 	}()
 
 	return nil
@@ -304,6 +306,7 @@ func (s *starter) router() http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			if len(s.opts.certs) > 0 && r.TLS == nil {
 				http.Error(w, "TLS required", http.StatusUpgradeRequired)
+				return
 			}
 			if r.ProtoMajor == 2 {
 				switch r.Header.Get("Content-Type") {

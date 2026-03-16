@@ -55,13 +55,16 @@ func (i intType[T]) Unset() intType[T] {
 // MarshalJSON implements the json.Marshaler interface.
 func (i intType[T]) MarshalJSON() ([]byte, error) {
 	if !i.isSet {
-		return []byte{}, nil
+		return []byte("null"), nil
 	}
 	return json.Marshal(i.v)
 }
 
 // MarshalJSONV2 implements the json.MarshalerV2 interface.
 func (i intType[T]) MarshalJSONV2(enc *jsontext.Encoder, opts json.Options) error {
+	if !i.isSet {
+		return enc.WriteToken(jsontext.Null)
+	}
 	return enc.WriteToken(jsontext.Int(int64(i.v)))
 }
 
@@ -100,5 +103,5 @@ func (v *intType[T]) UnmarshalJSONV2(dec *jsontext.Decoder, opts json.Options) e
 		v.v = T(t.Int())
 		return nil
 	}
-	return fmt.Errorf("expected a JSON number, got %T", t.Kind())
+	return fmt.Errorf("expected a JSON number, got %v", t.Kind())
 }

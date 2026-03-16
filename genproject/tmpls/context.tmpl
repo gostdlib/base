@@ -140,7 +140,7 @@ func SetEOptions(ctx context.Context, options ...errors.EOption) context.Context
 }
 
 // Everything below here is a wrapper around the stdlib context package.
-// We do this to prevent having to import the stdlib ctonext package in every file that needs it.
+// We do this to prevent having to import the stdlib context package in every file that needs it.
 
 var (
 	// Canceled is the error returned by [Context.Err] when the context is canceled.
@@ -289,9 +289,8 @@ func TODO() Context {
 // string or any other built-in type to avoid collisions between
 // packages using context. Users of WithValue should define their own
 // types for keys. To avoid allocating when assigning to an
-// interface{}, context keys often have concrete type
-// struct{}. Alternatively, exported context
-func WithValue(parent Context, key, val interface{}) Context {
+// any, context keys often have concrete type struct{}.
+func WithValue(parent Context, key, val any) Context {
 	return context.WithValue(parent, key, val)
 }
 

@@ -83,12 +83,12 @@ func TestMetrics(t *testing.T) {
 			want: defaultProvider,
 		},
 		{
-			name: "NoAuditClientAttached",
+			name: "NoMetricsProviderAttached",
 			ctx:  context.Background(),
 			want: defaultProvider,
 		},
 		{
-			name: "InvalidAuditClientType",
+			name: "InvalidMetricsProviderType",
 			ctx: func() context.Context {
 				ctx := context.Background()
 				return context.WithValue(ctx, metricsKey{}, "invalid")
@@ -122,12 +122,12 @@ func TestTasks(t *testing.T) {
 			want: defaultTasks,
 		},
 		{
-			name: "NoAuditClientAttached",
+			name: "NoTasksAttached",
 			ctx:  context.Background(),
 			want: defaultTasks,
 		},
 		{
-			name: "InvalidAuditClientType",
+			name: "InvalidTasksType",
 			ctx: func() context.Context {
 				ctx := context.Background()
 				return context.WithValue(ctx, tasksKey{}, "invalid")

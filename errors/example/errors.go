@@ -70,7 +70,7 @@ var catToProto = map[Category]pb.ErrorCategory{
 }
 
 func init() {
-	if len(catToProto) != len(pb.ErrorType_name) {
+	if len(catToProto) != len(pb.ErrorCategory_name) {
 		panic("catToProto is not complete")
 	}
 }

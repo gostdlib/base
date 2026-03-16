@@ -58,7 +58,7 @@ func WithErrConvert(errConvert ErrConvert) Options {
 // New creates a new stream server interceptor that wraps the provided interceptors.
 // Our interceptor is always first in the chain.
 func New(ctx context.Context, errConvert ErrConvert, options ...Options) (*Interceptor, error) {
-	i := &Interceptor{}
+	i := &Interceptor{errConvert: errConvert}
 	for _, o := range options {
 		if err := o(i); err != nil {
 			return nil, err
@@ -83,6 +83,7 @@ func (s *Interceptor) Intercept(srv interface{}, ss grpc.ServerStream, info *grp
 		ctx:          context.Attach(ss.Context()),
 		md:           grpcMeta,
 		intercepts:   s.intercepts,
+		errConvert:   s.errConvert,
 		ServerStream: ss,
 	}
 	// Call the handler with the wrapped stream

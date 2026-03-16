@@ -101,7 +101,7 @@ func Panicf(format string, v ...any) {
 // Panicln is equivalent to [Println] followed by a call to panic().
 func Panicln(v ...any) {
 	if detect.Env().Prod() {
-		defaultLog.Load().Debug(fmt.Sprint(v...))
+		panic(fmt.Sprint(v...) + "\n")
 	}
 	log.Panicln(v...)
 }
@@ -115,6 +115,7 @@ func Prefix() string {
 func Print(v ...any) {
 	if detect.Env().Prod() {
 		defaultLog.Load().Debug(fmt.Sprint(v...))
+		return
 	}
 	log.Print(v...)
 }
@@ -123,6 +124,7 @@ func Print(v ...any) {
 func Printf(format string, v ...any) {
 	if detect.Env().Prod() {
 		defaultLog.Load().Debug(fmt.Sprintf(format, v...))
+		return
 	}
 	log.Printf(format, v...)
 }
@@ -131,6 +133,7 @@ func Printf(format string, v ...any) {
 func Println(v ...any) {
 	if detect.Env().Prod() {
 		defaultLog.Load().Debug(fmt.Sprintf("%v\n", v...))
+		return
 	}
 	log.Println(v...)
 }

@@ -1,9 +1,12 @@
-package {.PkgName}}
+package {{.PkgName}}
 
 import (
-	"context"
+	"log/slog"
 
 	goinit "github.com/gostdlib/base/init"
+	"github.com/gostdlib/base/concurrency/worker"
+	"go.opentelemetry.io/otel/metric"
+	sdkTrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 /*
@@ -31,7 +34,7 @@ func WithValue(i InitArgs, key, value any) InitArgs {
 }
 
 // Meta is metadata about the service.
-type Meta = gointt.Meta
+type Meta = goinit.Meta
 
 // InitFunc is a function that is called during {{.Initer}}() in order to setup various needs
 // for the service. These happen in the order they are registered, so if one has a dependency
@@ -133,7 +136,7 @@ func WithPool(p *worker.Pool, noDefault bool) Option {
 // - Integrates various clients and error packages with each other
 // - Run user provided initializers
 func {{.Initer}}(args InitArgs, options ...Option) {
-    return goinit.Service(args, options...)
+    goinit.Service(args, options...)
 }
 
 // Close is used as a defer function in the main function of a service after Init.
@@ -143,5 +146,5 @@ func {{.Initer}}(args InitArgs, options ...Option) {
 // via RegisterClose() will be called in parallel. This will return in 30 seconds no matter
 // if all closers are done or not.
 func Close(args InitArgs) {
-    return goinit.Close(args)
+    goinit.Close(args)
 }

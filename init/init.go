@@ -32,7 +32,7 @@ Example of a basic service setup:
 		Build:   "[your image tag]",
 	}
 
-	var initArgs = int.Args{Meta: serviceMeta}
+	var initArgs = InitArgs{Meta: serviceMeta}
 
 	func main() {
 		init.Service(initArgs)
@@ -68,7 +68,7 @@ Example RegisterInit:
 		var mux *http.ServeMux
 
 		// Extract a mux from the InitArgs. If not provided, return an error.
-		v := i.Opaque("httpMuxer")
+		v := i.Value("httpMuxer")
 		if v == nil {
 			return fmt.Errorf("httpMuxer key not found in InitArgs")
 		}
@@ -101,7 +101,7 @@ Example RegisterClose:
 		// Init is the function that will be called after init.Service() has done all its setups.
 		func Init(init.InitArgs) error {
 			// Extract a mux from the InitArgs. If not provided, return an error.
-			v := i.Opaque("storageDB")
+			v := i.Value("storageDB")
 			if v == nil {
 				return fmt.Errorf("storageDB key not found in InitArgs")
 			}
@@ -118,7 +118,7 @@ Example RegisterClose:
 		}
 
 		func Close(i IntArgs) {
-			v := i.Opaque("storageDB").(*sql.DB)
+			v := i.Value("storageDB").(*sql.DB)
 			if err := db.Close; err != nil {
 				log.Default().Error(fmt.Sprintf("could not close db: %v", err))
 			}
@@ -269,7 +269,8 @@ type initOpts struct {
 	traceProvider  *sdkTrace.TracerProvider
 	sampleRate     float64
 
-	pool *worker.Pool
+	pool      *worker.Pool
+	noDefault bool
 }
 
 // Option is an optional argument to Init.
@@ -281,6 +282,11 @@ func WithExtraFields(fieldPairs []any) Option {
 	return func(opts *initOpts) error {
 		if len(fieldPairs)%2 != 0 {
 			return fmt.Errorf("extra fields must be key-value pairs")
+		}
+		for i := 0; i < len(fieldPairs); i += 2 {
+			if _, ok := fieldPairs[i].(string); !ok {
+				return fmt.Errorf("extra field keys must be strings, got %T at index %d", fieldPairs[i], i)
+			}
 		}
 		opts.extraFields = fieldPairs
 		return nil
@@ -361,6 +367,7 @@ func WithMetricsPort(p uint16) Option {
 func WithPool(p *worker.Pool, noDefault bool) Option {
 	return func(opts *initOpts) error {
 		opts.pool = p
+		opts.noDefault = noDefault
 		return nil
 	}
 }
@@ -536,7 +543,7 @@ func (s setup) loggerSetup() (stateFn, error) {
 // poolInit is responsible for setting up the worker pool. If a pool is provided, it will be set as the default pool.
 // If not provided, it will be set to a pool with runtime.NumCPUs() workers when Default() is called the first time.
 func (s setup) poolInit() (stateFn, error) {
-	if s.opts.pool != nil {
+	if s.opts.pool != nil && !s.opts.noDefault {
 		if p := worker.Default(); p != nil {
 			log.Default().Error("something is setting the default worker pool before init.Service() and also passing WithPool to Service(), shutting down the old pool")
 			p.Close(context.Background())

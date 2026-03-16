@@ -91,7 +91,7 @@ func TestFloat64Marshalling(t *testing.T) {
 			jsonInput:   "",
 			wantFloat64: 0,
 			wantIsSet:   false,
-			wantOutput:  "",
+			wantOutput:  "null",
 		},
 		{
 			name:        "Unmarshal set Float64",

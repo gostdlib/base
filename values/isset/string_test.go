@@ -96,7 +96,7 @@ func TestStringMarshalling(t *testing.T) {
 			jsonInput:  "",
 			wantStr:    "",
 			wantIsSet:  false,
-			wantOutput: "",
+			wantOutput: "null",
 		},
 		{
 			name:       "Unmarshal set String",
