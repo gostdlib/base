@@ -169,6 +169,69 @@ func (t *testIntercept) intercept(ctx context.Context, req any, info *grpc.Unary
 	return handler(ctx, req)
 }
 
+func TestErrLogAndConvertReturnsNilResp(t *testing.T) {
+	t.Parallel()
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345"))
+	info := &grpc.UnaryServerInfo{FullMethod: "/service/method"}
+	req := &pb.HelloReq{Name: "world"}
+
+	tests := []struct {
+		name       string
+		handler    grpc.UnaryHandler
+		errConvert ErrConvert
+	}{
+		{
+			name: "Error: handler returns errors.Error without converter",
+			handler: func(ctx context.Context, req any) (any, error) {
+				return "should-not-be-returned", errors.E(ctx, CatReq, TypeBadRequest, fmt.Errorf("handler error"))
+			},
+			errConvert: nil,
+		},
+		{
+			name: "Error: handler returns errors.Error with converter",
+			handler: func(ctx context.Context, req any) (any, error) {
+				return "should-not-be-returned", errors.E(ctx, CatReq, TypeBadRequest, fmt.Errorf("handler error"))
+			},
+			errConvert: func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+				return status.New(codes.Internal, e.Error()), nil
+			},
+		},
+		{
+			name: "Error: handler returns errors.Error with failing converter",
+			handler: func(ctx context.Context, req any) (any, error) {
+				return "should-not-be-returned", errors.E(ctx, CatReq, TypeBadRequest, fmt.Errorf("handler error"))
+			},
+			errConvert: func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+				return nil, fmt.Errorf("conversion failed")
+			},
+		},
+		{
+			name: "Error: handler returns standard error",
+			handler: func(ctx context.Context, req any) (any, error) {
+				return "should-not-be-returned", fmt.Errorf("standard error")
+			},
+			errConvert: nil,
+		},
+	}
+
+	for _, test := range tests {
+		unary, err := New(ctx, test.errConvert)
+		if err != nil {
+			t.Fatalf("TestErrLogAndConvertReturnsNilResp(%s): got err == %s, want err == nil", test.name, err)
+		}
+
+		resp, err := unary.Intercept(ctx, req, info, test.handler)
+		if err == nil {
+			t.Errorf("TestErrLogAndConvertReturnsNilResp(%s): got err == nil, want err != nil", test.name)
+			continue
+		}
+		if resp != nil {
+			t.Errorf("TestErrLogAndConvertReturnsNilResp(%s): got resp == %v, want nil when error is returned", test.name, resp)
+		}
+	}
+}
+
 func TestWithIntercept(t *testing.T) {
 	t.Parallel()
 

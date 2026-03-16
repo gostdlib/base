@@ -135,9 +135,7 @@ func (m *Maker[I, O]) New(ctx context.Context, in I, options ...Option) Promise[
 // New creates a new Promise.
 func New[I, O any](ctx context.Context, in I, options ...Option) Promise[I, O] {
 	resp := make(chan Response[O], 1)
-
-	promise := Promise[I, O]{In: in, v: resp}
-	return promise
+	return newPromise[I, O](in, resp, options...)
 }
 
 func newPromise[I, O any](in I, resp chan Response[O], options ...Option) Promise[I, O] {
@@ -169,8 +167,8 @@ func (p *Promise[I, O]) Get(ctx context.Context) (Response[O], error) {
 }
 
 // Set sets the value of the promise. If the promise has already had Set() called and the value is not read,
-// this will return an error. However, you should never call Set() more than once on a promise.
-func (p *Promise[I, O]) Set(ctx context.Context, v O, err error) error {
+// this will panic. You should never call Set() more than once on a promise.
+func (p *Promise[I, O]) Set(ctx context.Context, v O, err error) {
 	if p.v == nil {
 		panic("promise was not created with New() or Maker{}.New()")
 	}
@@ -179,5 +177,4 @@ func (p *Promise[I, O]) Set(ctx context.Context, v O, err error) error {
 	default:
 		panic("bug in your program: promise was already resolved with a call to Set()")
 	}
-	return nil
 }

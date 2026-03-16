@@ -686,6 +686,17 @@ func TestTraceAttrs(t *testing.T) {
 			},
 		},
 		{
+			name: "Success: Error with nil Category and nil Type does not panic",
+			err: Error{
+				File: "test.go",
+				Line: 7,
+			},
+			want: []attribute.KeyValue{
+				attribute.String("ErrSrc", "test.go"),
+				attribute.Int("ErrLine", 7),
+			},
+		},
+		{
 			name: "Success: attrs.Err() returns early",
 			err: Error{
 				Category: CatReq,
@@ -740,7 +751,7 @@ func TestSlogAttrsToOtelAttrs(t *testing.T) {
 			want:      []attribute.KeyValue{attribute.Int64("ns.count", 100)},
 		},
 		{
-			name:      "Success: Uint64 exceeding int64 range returns nothing",
+			name:      "Success: Uint64 exceeding int64 range is dropped with warning",
 			namespace: []string{"ns"},
 			attrs:     []slog.Attr{slog.Uint64("big", math.MaxUint64)},
 			want:      []attribute.KeyValue{},

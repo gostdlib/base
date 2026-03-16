@@ -127,9 +127,9 @@ func (m *Map[K, V]) Len() int {
 	m.initDo()
 	var len int
 	for i := 0; i < m.shards; i++ {
-		m.mus[i].Lock()
+		m.mus[i].RLock()
 		len += m.maps[i].Len()
-		m.mus[i].Unlock()
+		m.mus[i].RUnlock()
 	}
 	return len
 }

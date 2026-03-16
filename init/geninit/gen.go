@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"text/template"
+	"unicode"
 
 	_ "embed"
 )
@@ -35,7 +36,7 @@ func main() {
 	if strings.ToLower(*pkgName) != *pkgName {
 		panic("pkg flag must be lowercase")
 	}
-	if strings.Title(*initName) != *initName {
+	if len(*initName) == 0 || !unicode.IsUpper(rune((*initName)[0])) {
 		panic("init flag must be title case")
 	}
 	args := tmplArgs{

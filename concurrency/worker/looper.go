@@ -81,7 +81,7 @@ func Seq[K comparable, V any](ctx context.Context, pool *Pool, seq iter.Seq2[K, 
 // Wait loops over an iter.Seq2 and calls the provided function for each key/value pair. It will automatically
 // wait for all functions to complete before returning. It automatically breaks if the Context is cancelled.
 // It uses the provided Pool to manage concurrency.
-func Wait[K comparable, V any, A any](ctx context.Context, pool *Pool, seq iter.Seq2[K, V], f Func[K, V], options ...LoopOption) error {
+func Wait[K comparable, V any](ctx context.Context, pool *Pool, seq iter.Seq2[K, V], f Func[K, V], options ...LoopOption) error {
 	opts := opts{}
 	for _, o := range options {
 		opts = o(opts)

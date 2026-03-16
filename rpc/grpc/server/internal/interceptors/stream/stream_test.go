@@ -9,7 +9,9 @@ import (
 	pb "github.com/gostdlib/base/errors/example/proto"
 
 	"google.golang.org/grpc"
+	codespkg "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type fakeServerStream struct {
@@ -42,6 +44,25 @@ func (m *testIntercept) Send(ctx context.Context, md grpcContext.Metadata, ss gr
 
 func (m *testIntercept) Recv(ctx context.Context, md grpcContext.Metadata, msg any) error {
 	return m.recvErr
+}
+
+func TestNewAssignsErrConvert(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	convert := func(ctx context.Context, e errors.Error, meta grpcContext.Metadata) (*status.Status, error) {
+		return status.New(codespkg.Internal, e.Error()), nil
+	}
+
+	interceptor, err := New(ctx, convert)
+	if err != nil {
+		t.Fatalf("TestNewAssignsErrConvert: got err == %s, want err == nil", err)
+	}
+
+	if interceptor.errConvert == nil {
+		t.Errorf("TestNewAssignsErrConvert: errConvert is nil, want non-nil (parameter was ignored)")
+	}
 }
 
 func TestStreamInterceptor(t *testing.T) {

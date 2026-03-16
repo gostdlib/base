@@ -91,7 +91,7 @@ func TestBoolMarshalling(t *testing.T) {
 			jsonInput:  "",
 			wantBool:   false,
 			wantIsSet:  false,
-			wantOutput: "",
+			wantOutput: "null",
 		},
 		{
 			name:       "Unmarshal set Bool",

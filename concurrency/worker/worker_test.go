@@ -168,6 +168,83 @@ func TestSubPool(t *testing.T) {
 	}
 }
 
+func TestRunningZeroAfterWait(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	// The bug: done() calls wg.Done() before running.Add(-1). This means
+	// Wait() (which calls wg.Wait()) can return while Running() is still > 0.
+	// We use runtime.Gosched() in the submitted work to increase the chance
+	// of the scheduler switching between wg.Done() and running.Add(-1).
+	failed := false
+	for iter := 0; iter < 5000; iter++ {
+		p, err := New(ctx, "", WithSize(1))
+		if err != nil {
+			t.Fatalf("TestRunningZeroAfterWait: got err == %s, want err == nil", err)
+		}
+
+		p.Submit(ctx, func() {
+			runtime.Gosched()
+		})
+		p.Wait()
+
+		if got := p.Running(); got != 0 {
+			t.Errorf("TestRunningZeroAfterWait(iter %d): got Running() == %d, want 0 after Wait()", iter, got)
+			failed = true
+			p.Close(ctx)
+			break
+		}
+		p.Close(ctx)
+	}
+	if !failed {
+		t.Log("TestRunningZeroAfterWait: race did not trigger in 5000 iterations (may need fix anyway)")
+	}
+}
+
+func TestSubPoolDoesNotInflateGoRoutines(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	size := 4
+	p, err := New(ctx, "inflateTest", WithSize(size))
+	if err != nil {
+		t.Fatalf("TestSubPoolDoesNotInflateGoRoutines: got err == %s, want err == nil", err)
+	}
+	defer p.Close(ctx)
+
+	// After creation, the pool should have exactly `size` goroutines.
+	// Give runners a moment to start.
+	time.Sleep(100 * time.Millisecond)
+	baseline := p.GoRoutines()
+
+	// Create multiple sub pools. Each Sub() call should NOT inflate the counter.
+	sub1 := p.Sub(ctx, "sub1")
+	sub2 := p.Sub(ctx, "sub2")
+	sub3 := p.Sub(ctx, "sub3")
+
+	afterSubs := p.GoRoutines()
+
+	// The bug: each Sub() adds p.opts.size to the shared goRoutines counter,
+	// so after 3 Sub() calls the counter is inflated by 3 * size.
+	// The correct behavior is that Sub() should not change the counter at all
+	// since no new goroutines are created.
+	if afterSubs != baseline {
+		t.Errorf("TestSubPoolDoesNotInflateGoRoutines: GoRoutines() changed after Sub() calls: baseline %d, after 3 Sub() calls %d (inflated by %d)", baseline, afterSubs, afterSubs-baseline)
+	}
+
+	// Verify the subs share the same counter value.
+	if sub1.GoRoutines() != p.GoRoutines() {
+		t.Errorf("TestSubPoolDoesNotInflateGoRoutines: sub1 and parent have different GoRoutines()")
+	}
+	if sub2.GoRoutines() != p.GoRoutines() {
+		t.Errorf("TestSubPoolDoesNotInflateGoRoutines: sub2 and parent have different GoRoutines()")
+	}
+	if sub3.GoRoutines() != p.GoRoutines() {
+		t.Errorf("TestSubPoolDoesNotInflateGoRoutines: sub3 and parent have different GoRoutines()")
+	}
+}
+
 func TestLimitedPoolWarning(t *testing.T) {
 	// Save and restore original warnTimer
 	originalWarnTimer := warnTimer

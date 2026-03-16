@@ -259,7 +259,7 @@ func TestWait(t *testing.T) {
 		}
 
 		seq := SliceSeq2(test.slice)
-		err := Wait[int, int, any](ctx, pool, seq, f)
+		err := Wait[int, int](ctx, pool, seq, f)
 
 		switch {
 		case err == nil && test.wantErr:
@@ -300,7 +300,7 @@ func TestWaitWithCancelOnError(t *testing.T) {
 		return nil
 	}
 
-	err = Wait[int, int, any](ctx, pool, seq, f, WithCancelOnError())
+	err = Wait[int, int](ctx, pool, seq, f, WithCancelOnError())
 	if err == nil {
 		t.Errorf("TestWaitWithCancelOnError: got err == nil, want err != nil")
 	}
@@ -403,7 +403,7 @@ func TestWaitWithMap(t *testing.T) {
 		return nil
 	}
 
-	err = Wait[string, int, any](ctx, pool, seq, f)
+	err = Wait[string, int](ctx, pool, seq, f)
 	if err != nil {
 		t.Errorf("TestWaitWithMap: got err == %s, want err == nil", err)
 	}

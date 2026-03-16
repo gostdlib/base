@@ -477,10 +477,10 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 
 	// Unlike logging, we don't add time, as that gets recorded on the span.
 	// No need for TraceID as it's already on the span.
-	if e.Category.Category() != "" {
+	if e.Category != nil && e.Category.Category() != "" {
 		attrs.Add(attribute.String("Category", e.Category.Category()))
 	}
-	if e.Type.Type() != "" {
+	if e.Type != nil && e.Type.Type() != "" {
 		attrs.Add(attribute.String("Type", e.Type.Type()))
 	}
 	attrs.Add(attribute.String("ErrSrc", e.File))
@@ -515,6 +515,7 @@ func slogAttrToOtelAttr(namespace []string, kv slog.Attr) []attribute.KeyValue {
 		if kv.Value.Uint64() < math.MaxInt64 {
 			return []attribute.KeyValue{attribute.Int64(key, int64(kv.Value.Uint64()))}
 		}
+		log.Default().Warn(fmt.Sprintf("slogAttrToOtelAttr: uint64 value %d for key %q exceeds int64 range, attribute dropped", kv.Value.Uint64(), key))
 	case slog.KindFloat64:
 		return []attribute.KeyValue{attribute.Float64(key, kv.Value.Float64())}
 	case slog.KindString:
@@ -544,6 +545,7 @@ func slogAttrToOtelAttr(namespace []string, kv slog.Attr) []attribute.KeyValue {
 	case slog.KindGroup:
 		return slogAttrsToOtelAttrs(namespace, kv.Value.Group())
 	case slog.KindAny, slog.KindLogValuer:
+		log.Default().Warn(fmt.Sprintf("slogAttrToOtelAttr: unsupported slog.Value kind %v for key %q, attribute dropped", kv.Value.Kind(), key))
 		return nil
 	}
 	return nil

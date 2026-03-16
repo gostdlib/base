@@ -510,14 +510,6 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 		pm = newPoolMetrics(meter)
 	}
 
-	// TODO: I'm not sure we need this. This will always be limited by the parent pool.
-	var goRoutines int64
-	if p.opts.size > 0 {
-		goRoutines = int64(p.opts.size)
-	} else {
-		goRoutines = int64(numCPU)
-	}
-
 	pool := &Pool{
 		queue:      p.queue,
 		opts:       p.opts,
@@ -526,7 +518,6 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 		goRoutines: p.goRoutines,
 		child:      true,
 	}
-	pool.goRoutines.Add(goRoutines)
 
 	return pool
 }
@@ -558,8 +549,8 @@ type runArgs struct {
 func (r runArgs) run() {
 	r.p.running.Add(1)
 	r.f()
-	r.done()
 	r.p.running.Add(-1)
+	r.done()
 }
 
 // done is called when the job is done.
@@ -599,14 +590,14 @@ func (r runner) run() {
 	if r.timeout > 0 {
 		t = time.NewTimer(r.timeout)
 		if r.metrics != nil {
-			r.metrics.StaticExists.Add(context.Background(), 1)
-			defer r.metrics.StaticExists.Add(context.Background(), -1)
-		}
-	} else {
-		if r.metrics != nil {
 			r.metrics.DynamicExists.Add(context.Background(), 1)
 			defer r.metrics.DynamicExists.Add(context.Background(), -1)
 			r.metrics.DynamicTotal.Add(context.Background(), 1)
+		}
+	} else {
+		if r.metrics != nil {
+			r.metrics.StaticExists.Add(context.Background(), 1)
+			defer r.metrics.StaticExists.Add(context.Background(), -1)
 		}
 	}
 	r.goRoutines.Add(1)

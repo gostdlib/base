@@ -78,7 +78,6 @@ type Queue struct {
 	done        chan struct{}
 	running     atomic.Int64
 	queueLen    atomic.Int64
-	queueWait   sync.WaitGroup
 	processWait sync.WaitGroup
 	size        chan struct{}
 	mu          sync.Mutex
@@ -131,7 +130,6 @@ func (d *Queue) Wait(ctx context.Context) error {
 	Default().Submit(
 		ctx,
 		func() {
-			d.queueWait.Wait()
 			d.processWait.Wait()
 			close(done)
 		},

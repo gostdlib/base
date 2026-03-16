@@ -2,7 +2,7 @@
 Package exponential provides an exponential backoff mechanism. Most useful when setting a single policy
 for all retries within a package or set of packages.
 
-THIS IS A TYPE ALIASED VERION OF github.com/Azure/retyr/exponential. IT IS NOT A FORK.
+THIS IS A TYPE ALIASED VERSION OF github.com/Azure/retry/exponential. IT IS NOT A FORK.
 They are type compatible.
 
 This package comes with a default policy, but can be customized for your own needs.
@@ -26,7 +26,7 @@ maximum interval for a policy with the default settings:
 
 	Generating TimeTable for -1 attempts and the following settings:
 	{
-		"InitialInterval":     1000000000, // 100 * time.Millisecond
+		"InitialInterval":     1000000000, // 1 * time.Second
 		"Multiplier":          2,
 		"RandomizationFactor": 0.5,
 		"MaxInterval":         60000000000 // 60 * time.Second,

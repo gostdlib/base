@@ -339,6 +339,9 @@ func (r Request[T]) otelStart() Request[T] {
 }
 
 func bytesToStr(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
 	return unsafe.String(&b[0], len(b))
 }
 
@@ -528,12 +531,12 @@ func Run[T any](name string, req Request[T], options ...Option) (Request[T], err
 
 	if req.span.Span != nil && req.span.Span.IsRecording() {
 		req.Ctx, req.span = span.New(req.Ctx, span.WithName(fmt.Sprintf("statemachine(%s)", name)))
-		req.otelStart()
+		req = req.otelStart()
 		defer req.otelEnd()
 	}
 
 	for req.Next != nil {
-		stateName := methodName(req.Next)
+		stateName := MethodName(req.Next)
 		ctx := context.AddAttrs(req.Ctx, slog.String("state", stateName))
 		if req.seenStages != nil {
 			if req.seenStages.seen(stateName) {
@@ -629,20 +632,6 @@ func execState[T any](req Request[T], stateName string) Request[T] {
 		}
 	}
 	return req
-}
-
-// methodName takes a function or a method and returns its name.
-func methodName(method any) string {
-	if method == nil {
-		return "<nil>"
-	}
-	valueOf := reflect.ValueOf(method)
-	switch valueOf.Kind() {
-	case reflect.Func:
-		return strings.TrimSuffix(strings.TrimSuffix(runtime.FuncForPC(valueOf.Pointer()).Name(), "-fm"), "[...]")
-	default:
-		return "<not a function>"
-	}
 }
 
 // MethodName takes a function or a method and returns its name. This is useful in testing

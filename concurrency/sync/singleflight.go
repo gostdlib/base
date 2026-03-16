@@ -74,7 +74,7 @@ type Flight[K comparable, V any] struct {
 // FlightResult holds the results of Do, so they can be passed
 // on a channel.
 type FlightResult[V any] struct {
-	Val    any
+	Val    V
 	Err    error
 	Shared bool
 }

@@ -117,15 +117,15 @@ func (u *Interceptor) errLogAndConvert(ctx context.Context, req any, info *grpc.
 			if cErr != nil {
 				ce := errors.E(ctx, nil, nil, cErr)
 				ce.Log(ctx, md.CallID, md.CustomerID, req)
-				return resp, e
+				return nil, e
 			}
-			return resp, status.Err()
+			return nil, status.Err()
 		}
-		return resp, e
+		return nil, e
 	}
 	e := errors.E(ctx, nil, nil, err)
 	e.Log(ctx, md.CallID, md.CustomerID, req)
-	return resp, e
+	return nil, e
 }
 
 // mustUUID generates a new UUID v7. If it fails, it panics.

@@ -64,6 +64,7 @@ var TracerNameKey = tracerKeyType(1)
 
 var defaultTP *sdkTrace.TracerProvider
 var once sync.Once
+var connTimeout = 5 * time.Second
 
 // Default returns the default trace provider. Normally not required by an end user.
 // TraceProviders are not normally used, instead spans are done via the .../otel/trace/span package
@@ -175,8 +176,6 @@ func (i *initer) Init() error {
 	return nil
 }
 
-var connTimeout = 5 * time.Second
-
 // If the OpenTelemetry Collector is running on a kubernetes cluster (AKS, GKE, EKS, etc.),
 // it should be accessible through "opentelemetry-collector.<namespace>.svc.cluster.local:<port>".
 func prodProvider(ctx context.Context, endpoint string, sampleRate float64) (*sdkTrace.TracerProvider, error) {
@@ -191,20 +190,22 @@ func prodProvider(ctx context.Context, endpoint string, sampleRate float64) (*sd
 		return nil, fmt.Errorf("failed to create opentelemetry resource: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, connTimeout)
 	defer cancel()
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC connection to OTEL collector: %w", err)
 	}
 
-	// grpc's new API sucks. This is the only way to check if the connection is ready that isn't deprecated.
-	// Because, hey, maybe I want to do something else if the endpoint isn't there.
-	// Now, this simply checks that grpc answers, but not that it is the otel collector.
+	// Wait for the connection to be ready. WaitForStateChange blocks until
+	// the state changes from the given state or the context (with 5s timeout) is cancelled.
 	conn.Connect()
-	start := time.Now()
-	for conn.GetState() != connectivity.Ready {
-		if time.Since(start) > connTimeout {
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			break
+		}
+		if !conn.WaitForStateChange(ctx, state) {
 			break
 		}
 	}

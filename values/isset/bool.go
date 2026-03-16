@@ -40,13 +40,16 @@ func (i Bool) Unset() Bool {
 // MarshalJSON implements the json.Marshaler interface.
 func (i Bool) MarshalJSON() ([]byte, error) {
 	if !i.isSet {
-		return []byte{}, nil
+		return []byte("null"), nil
 	}
 	return json.Marshal(i.v)
 }
 
 // MarshalJSONV2 implements the json.MarshalerV2 interface.
 func (i Bool) MarshalJSONV2(enc *jsontext.Encoder, opts json.Options) error {
+	if !i.isSet {
+		return enc.WriteToken(jsontext.Null)
+	}
 	return enc.WriteToken(jsontext.Bool(bool(i.v)))
 }
 
@@ -84,5 +87,5 @@ func (v *Bool) UnmarshalJSONV2(dec *jsontext.Decoder, opts json.Options) error {
 		v.v = t.Bool()
 		return nil
 	}
-	return fmt.Errorf("expected a JSON bool, got %T", t.Kind())
+	return fmt.Errorf("expected a JSON bool, got %v", t.Kind())
 }
