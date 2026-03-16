@@ -64,6 +64,7 @@ var TracerNameKey = tracerKeyType(1)
 
 var defaultTP *sdkTrace.TracerProvider
 var once sync.Once
+var connTimeout = 5 * time.Second
 
 // Default returns the default trace provider. Normally not required by an end user.
 // TraceProviders are not normally used, instead spans are done via the .../otel/trace/span package
@@ -189,7 +190,7 @@ func prodProvider(ctx context.Context, endpoint string, sampleRate float64) (*sd
 		return nil, fmt.Errorf("failed to create opentelemetry resource: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, connTimeout)
 	defer cancel()
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {

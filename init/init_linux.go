@@ -64,22 +64,27 @@ func parseByteSize(s string) (int64, error) {
 		return v, nil
 	}
 
-	suffixes := map[string]int64{
-		"B":   1,
-		"KiB": 1024,
-		"MiB": 1024 * 1024,
-		"GiB": 1024 * 1024 * 1024,
-		"TiB": 1024 * 1024 * 1024 * 1024,
+	type suffixEntry struct {
+		suffix string
+		mult   int64
+	}
+	// Ordered longest-suffix-first so "KiB" matches before "B", etc.
+	suffixes := []suffixEntry{
+		{"TiB", 1024 * 1024 * 1024 * 1024},
+		{"GiB", 1024 * 1024 * 1024},
+		{"MiB", 1024 * 1024},
+		{"KiB", 1024},
+		{"B", 1},
 	}
 
-	for suffix, mult := range suffixes {
-		if strings.HasSuffix(s, suffix) {
-			numStr := strings.TrimSpace(strings.TrimSuffix(s, suffix))
+	for _, entry := range suffixes {
+		if strings.HasSuffix(s, entry.suffix) {
+			numStr := strings.TrimSpace(strings.TrimSuffix(s, entry.suffix))
 			v, err := strconv.ParseInt(numStr, 10, 64)
 			if err != nil {
 				return 0, fmt.Errorf("invalid byte size %q: %w", s, err)
 			}
-			return v * mult, nil
+			return v * entry.mult, nil
 		}
 	}
 

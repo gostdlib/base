@@ -59,6 +59,9 @@ func (e *Errors) Add(i int, err error) {
 func (e *Errors) Errors() []error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if len(e.errs) == 0 {
+		return nil
+	}
 	cp := make([]error, len(e.errs))
 	copy(cp, e.errs)
 	return cp
