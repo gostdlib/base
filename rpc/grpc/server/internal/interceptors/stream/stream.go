@@ -2,9 +2,12 @@
 package stream
 
 import (
+	"log/slog"
+
 	"github.com/google/uuid"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/errors"
+	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/internal/converters"
 
 	grpcContext "github.com/gostdlib/base/context/grpc"
 	"google.golang.org/grpc"
@@ -69,18 +72,31 @@ func New(ctx context.Context, errConvert ErrConvert, options ...Options) (*Inter
 }
 
 // Intercept is a grpc.StreamServerInterceptor that wraps the provided interceptors.
-func (s *Interceptor) Intercept(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+func (s *Interceptor) Intercept(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	grpcMeta := grpcContext.Metadata{CallID: mustUUID().String(), Op: info.FullMethod}
 	md, ok := metadata.FromIncomingContext(ss.Context())
 	if ok {
-		id := md.Get("customerID")
+		if len(md.Get("CallID")) != 0 {
+			grpcMeta.CustomerID = md.Get("CallID")[0]
+		}
+		id := md.Get("CustomerID")
 		if len(id) == 1 {
 			grpcMeta.CustomerID = id[0]
 		}
 	}
 
+	ctx := ss.Context()
+	ctx = context.AddAttrs(
+		ctx,
+		slog.String("CallID", grpcMeta.CallID),
+		slog.String("Op", grpcMeta.Op),
+	)
+	if grpcMeta.CustomerID != "" {
+		ctx = context.AddAttrs(ctx, slog.String("CustomerID", grpcMeta.CustomerID))
+	}
+
 	wrapped := &streamWrap{
-		ctx:          context.Attach(ss.Context()),
+		ctx:          context.Attach(ctx),
 		md:           grpcMeta,
 		intercepts:   s.intercepts,
 		errConvert:   s.errConvert,
@@ -104,7 +120,7 @@ type streamWrap struct {
 // SendMsg is a wrapper around the SendMsg method of the grpc.ServerStream. It calls all the
 // intercepts in the order they were added. If any of the intercepts return an error, it
 // aborts the call and returns the error.
-func (s *streamWrap) SendMsg(m interface{}) error {
+func (s *streamWrap) SendMsg(m any) error {
 	for _, i := range s.intercepts {
 		if err := i.Send(s.ctx, s.md, s.ServerStream, m); err != nil {
 			return s.errLogAndConvert(s.ctx, nil, err, s.md)
@@ -135,27 +151,21 @@ func (s *streamWrap) RecvMsg(m any) error {
 }
 
 func (s *streamWrap) errLogAndConvert(ctx context.Context, req any, err error, md grpcContext.Metadata) error {
+	ctx = context.AddAttrs(ctx, slog.String("Request", converters.Request(ctx, req)))
+
 	var e errors.Error
-	var ok bool
-	if e, ok = err.(errors.Error); ok {
-		e.Log(ctx, md.CallID, md.CustomerID, req)
-		if s.errConvert != nil {
-			status, err := s.errConvert(ctx, e, md)
-			if err != nil {
-				return err
-			}
-			return status.Err()
-		}
-		return e
-	} else {
+	switch v := err.(type) {
+	case errors.Error:
+		e = v
+	default:
 		e = errors.E(ctx, nil, nil, err)
 	}
 
-	e.Log(ctx, md.CallID, md.CustomerID, req)
+	e.Log(ctx)
 	if s.errConvert != nil {
-		status, err := s.errConvert(ctx, e, md)
-		if err != nil {
-			return err
+		status, cErr := s.errConvert(ctx, e, md)
+		if cErr != nil {
+			return cErr
 		}
 		return status.Err()
 	}

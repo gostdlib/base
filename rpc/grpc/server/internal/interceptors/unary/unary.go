@@ -1,9 +1,12 @@
 package unary
 
 import (
+	"log/slog"
+
 	"github.com/google/uuid"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/errors"
+	"github.com/gostdlib/base/rpc/grpc/server/internal/interceptors/internal/converters"
 	"github.com/gostdlib/base/telemetry/otel/trace/span"
 
 	grpcContext "github.com/gostdlib/base/context/grpc"
@@ -90,12 +93,17 @@ func (u *Interceptor) attachMeta(ctx context.Context, req any, info *grpc.UnaryS
 	grpcMeta := grpcContext.Metadata{CallID: mustUUID().String(), Op: info.FullMethod}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
-		id := md.Get("customerID")
+		if len(md.Get("CallID")) != 0 {
+			grpcMeta.CustomerID = md.Get("CallID")[0]
+		}
+		id := md.Get("CustomerID")
 		if len(id) == 1 {
 			grpcMeta.CustomerID = id[0]
 		}
 	}
-	ctx = context.Attach(grpcContext.SetMetadata(ctx, grpcMeta))
+	ctx = context.Attach(
+		grpcContext.SetMetadata(ctx, grpcMeta),
+	)
 
 	return handler(ctx, req)
 }
@@ -109,14 +117,24 @@ func (u *Interceptor) errLogAndConvert(ctx context.Context, req any, info *grpc.
 	}
 
 	md := grpcContext.GetMetadata(ctx)
+	if md.CallID == "" {
+		ctx = context.AddAttrs(ctx, slog.String("CallID", mustUUID().String()))
+	}
+	if md.CustomerID != "" {
+		ctx = context.AddAttrs(ctx, slog.String("CustomerID", md.CustomerID))
+	}
+	if md.Op != "" {
+		ctx = context.AddAttrs(ctx, slog.String("Op", md.Op))
+	}
+	ctx = context.AddAttrs(ctx, slog.String("Request", converters.Request(ctx, req)))
 
 	if e, ok := err.(errors.Error); ok {
-		e.Log(ctx, md.CallID, md.CustomerID, req)
+		e.Log(ctx)
 		if u.errConvert != nil {
 			status, cErr := u.errConvert(ctx, e, md)
 			if cErr != nil {
 				ce := errors.E(ctx, nil, nil, cErr)
-				ce.Log(ctx, md.CallID, md.CustomerID, req)
+				ce.Log(ctx)
 				return nil, e
 			}
 			return nil, status.Err()
@@ -124,7 +142,7 @@ func (u *Interceptor) errLogAndConvert(ctx context.Context, req any, info *grpc.
 		return nil, e
 	}
 	e := errors.E(ctx, nil, nil, err)
-	e.Log(ctx, md.CallID, md.CustomerID, req)
+	e.Log(ctx)
 	return nil, e
 }
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net/http"
 	"net/url"
 	"path"
 	"runtime"
@@ -23,8 +22,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	otelTrace "go.opentelemetry.io/otel/trace"
-
-	pb "github.com/gostdlib/base/errors/example/proto"
 )
 
 type TestCat uint8
@@ -129,6 +126,7 @@ func TestE(t *testing.T) {
 				Type:     TypeBadRequest,
 				ErrTime:  ti.UTC(),
 				Msg:      errors.New("bug: nil error"),
+				LogLevel: slog.LevelError,
 			},
 		},
 		{
@@ -148,6 +146,7 @@ func TestE(t *testing.T) {
 				Type:     TypeBadRequest,
 				ErrTime:  ti.UTC(),
 				Msg:      errors.New("error"),
+				LogLevel: slog.LevelError,
 			},
 		},
 	}
@@ -231,12 +230,6 @@ func TestIs(t *testing.T) {
 			name:   "Errors cat and type match",
 			err:    Error{Category: CatReq, Type: TypeBadRequest},
 			target: Error{Category: CatReq, Type: TypeBadRequest},
-			want:   true,
-		},
-		{
-			name:   "Empty Error target matches any Error",
-			err:    Error{Category: CatReq, Type: TypeBadRequest},
-			target: Error{},
 			want:   true,
 		},
 		{
@@ -337,81 +330,38 @@ func TestLog(t *testing.T) {
 	ctxWithSpan := otelTrace.ContextWithSpan(context.Background(), span)
 
 	tests := []struct {
-		name       string
-		e          Error
-		callID     string
-		customerID string
-		req        any
-		ctx        context.Context
-		want       map[string]any
+		name string
+		e    Error
+		ctx  context.Context
+		want map[string]any
 	}{
 		{
-			name: "Empty error with no req",
-			want: map[string]any{
-				"Category":   "Unknown",
-				"CustomerID": "customerID",
-				"ErrSrc":     "",
-				"ErrLine":    0,
-				"CallID":     "callID",
-				"Type":       "Unknown",
-				"ErrTime":    time.Time{}.UTC(),
-				"level":      "ERROR",
-				"msg":        "error message not provided",
-			},
+			name: "Empty error",
+			want: nil,
 		},
 		{
-			name: "Error with everything and a proto req",
+			name: "Error with everything",
 			e: Error{
 				Category: CatReq,
 				File:     "f  ilename",
 				Line:     123,
 				Type:     TypeBadRequest,
 				ErrTime:  ti,
+				LogLevel: slog.LevelError,
 				Msg:      fmt.Errorf("something went wrong"),
 			},
-			req: &pb.Error{Id: "2"},
 			want: map[string]any{
-				"Category":   "Request",
-				"CustomerID": "customerID",
-				"ErrSrc":     "f  ilename",
-				"ErrLine":    123,
-				"Request":    "{\"Id\":\"2\"}",
-				"CallID":     "callID",
-				"ErrTime":    ti.UTC(),
-				"Type":       "BadRequest",
-				"level":      "ERROR",
-				"msg":        "something went wrong",
+				"Category": "Request",
+				"ErrSrc":   "f  ilename",
+				"ErrLine":  123,
+				"ErrTime":  ti.UTC(),
+				"Type":     "BadRequest",
+				"level":    "ERROR",
+				"msg":      "something went wrong",
 			},
 		},
 		{
-			name: "Error with everything and a http.Request",
-			e: Error{
-				Category: CatReq,
-				File:     "f  ilename",
-				Line:     123,
-				Type:     TypeBadRequest,
-				ErrTime:  ti,
-				Msg:      fmt.Errorf("something went wrong"),
-			},
-			req: &http.Request{
-				Method: "GET",
-				URL:    urlMustParse("https://www.microsoft.com"),
-			},
-			want: map[string]any{
-				"Category":   "Request",
-				"CustomerID": "customerID",
-				"ErrSrc":     "f  ilename",
-				"ErrLine":    123,
-				"Request":    "{\"method\":\"GET\",\"url\":\"https://www.microsoft.com\",\"header\":{},\"content_length\":0,\"host\":\"\",\"remote_addr\":\"\",\"request_uri\":\"\",\"body\":\"\"}",
-				"CallID":     "callID",
-				"ErrTime":    ti.UTC(),
-				"Type":       "BadRequest",
-				"level":      "ERROR",
-				"msg":        "something went wrong",
-			},
-		},
-		{
-			name: "Error with everything but a request and a stack trace",
+			name: "Error with a stack trace",
 			e: Error{
 				Category:   CatReq,
 				File:       "filename",
@@ -423,14 +373,12 @@ func TestLog(t *testing.T) {
 			},
 			want: map[string]any{
 				"Category":   "Request",
-				"CustomerID": "customerID",
 				"ErrSrc":     "filename",
 				"ErrLine":    123,
-				"CallID":     "callID",
 				"ErrTime":    ti.UTC(),
 				"Type":       "BadRequest",
 				"StackTrace": "stack trace",
-				"level":      "ERROR",
+				"level":      "INFO",
 				"msg":        "something went wrong",
 			},
 		},
@@ -446,16 +394,14 @@ func TestLog(t *testing.T) {
 			},
 			ctx: ctxWithSpan,
 			want: map[string]any{
-				"Category":   "Request",
-				"CustomerID": "customerID",
-				"ErrSrc":     "filename",
-				"ErrLine":    123,
-				"CallID":     "callID",
-				"ErrTime":    ti.UTC(),
-				"Type":       "BadRequest",
-				"level":      "ERROR",
-				"TraceID":    tID.String(),
-				"msg":        "something went wrong",
+				"Category": "Request",
+				"ErrSrc":   "filename",
+				"ErrLine":  123,
+				"ErrTime":  ti.UTC(),
+				"Type":     "BadRequest",
+				"level":    "INFO",
+				"TraceID":  tID.String(),
+				"msg":      "something went wrong",
 				"package/path.SQLQueryErr": map[string]any{
 					"Query": "SELECT * FROM users",
 				},
@@ -472,16 +418,14 @@ func TestLog(t *testing.T) {
 				Msg:      ErrTopAttrs("hello"),
 			},
 			want: map[string]any{
-				"Category":   "Request",
-				"CustomerID": "customerID",
-				"ErrSrc":     "filename",
-				"ErrLine":    123,
-				"CallID":     "callID",
-				"ErrTime":    ti.UTC(),
-				"Type":       "BadRequest",
-				"level":      "ERROR",
-				"msg":        "hello",
-				"key":        "value",
+				"Category": "Request",
+				"ErrSrc":   "filename",
+				"ErrLine":  123,
+				"ErrTime":  ti.UTC(),
+				"Type":     "BadRequest",
+				"level":    "INFO",
+				"msg":      "hello",
+				"key":      "value",
 			},
 		},
 		{
@@ -494,10 +438,8 @@ func TestLog(t *testing.T) {
 			),
 			want: map[string]any{
 				"Category":    "Request",
-				"CustomerID":  "customerID",
 				"ErrSrc":      "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
-				"ErrLine":     489,
-				"CallID":      "callID",
+				"ErrLine":     433,
 				"ErrTime":     ti.UTC(),
 				"Type":        "BadRequest",
 				"level":       "ERROR",
@@ -516,17 +458,15 @@ func TestLog(t *testing.T) {
 				WithAttrs(slog.String("customAttrKey", "customAttrValue"), slog.Int("customAttrNum", 99)),
 			),
 			want: map[string]any{
-				"Category":       "Request",
-				"CustomerID":     "customerID",
-				"ErrSrc":         "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
-				"ErrLine":        511,
-				"CallID":         "callID",
-				"ErrTime":        ti.UTC(),
-				"Type":           "BadRequest",
-				"level":          "ERROR",
-				"msg":            "something went wrong",
-				"customAttrKey":  "customAttrValue",
-				"customAttrNum":  99,
+				"Category":      "Request",
+				"ErrSrc":        "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
+				"ErrLine":       453,
+				"ErrTime":       ti.UTC(),
+				"Type":          "BadRequest",
+				"level":         "ERROR",
+				"msg":           "something went wrong",
+				"customAttrKey": "customAttrValue",
+				"customAttrNum": 99,
 			},
 		},
 	}
@@ -539,8 +479,11 @@ func TestLog(t *testing.T) {
 			test.ctx = context.Background()
 		}
 
-		test.e.Log(test.ctx, "callID", "customerID", test.req)
+		test.e.Log(test.ctx)
 
+		if test.want == nil && buff.Len() == 0 {
+			continue
+		}
 		if err := json.Unmarshal(buff.Bytes(), &got); err != nil {
 			t.Logf("got: %s", buff.Bytes())
 			t.Fatalf("TestLog(%s): got error on json.Unmarshal: %s", test.name, err)

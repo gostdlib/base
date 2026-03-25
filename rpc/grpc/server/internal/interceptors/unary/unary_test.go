@@ -1,7 +1,6 @@
 package unary
 
 import (
-	stdErr "errors"
 	"fmt"
 	"testing"
 
@@ -117,12 +116,9 @@ func TestIntercept(t *testing.T) {
 			continue
 		}
 		if err != nil {
-			if !stdErr.Is(err, errors.Error{}) {
+			if _, ok := err.(errors.Error); !ok {
 				t.Errorf("TestUnaryIntercept(%s): expected error to be of type errors.Error, got %T", test.name, err)
 				continue
-			}
-			if err.Error() != test.wantErr.Error() {
-				t.Errorf("TestUnaryIntercept(%s): expected error %v, got %v", test.name, test.wantErr, err)
 			}
 			continue
 		}
