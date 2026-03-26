@@ -35,6 +35,8 @@ type Pool[T any] struct {
 
 	buffer chan T
 
+	isResetter bool
+
 	getCalls, putCalls, newAllocated, bufferAllocated metric.Int64Counter
 
 	_ sync.Mutex // Unused on purpose, for CopyLocks error
@@ -124,8 +126,16 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		log.Default().Error(fmt.Sprintf("sync.NewPool(%s): %s", name, err))
 	}
 
+	// Probe once whether T implements Resetter so Put() can skip the type assertion
+	// for non-Resetter types.
+	var isResetter bool
+	if _, ok := any(n()).(Resetter); ok {
+		isResetter = true
+	}
+
 	p := Pool[T]{
 		buffer:          c,
+		isResetter:      isResetter,
 		getCalls:        gc,
 		putCalls:        pc,
 		newAllocated:    na,
@@ -167,8 +177,8 @@ func (p *Pool[T]) Put(ctx context.Context, v T) {
 		p.putCalls.Add(ctx, 1)
 	}
 
-	if r, ok := any(v).(Resetter); ok {
-		r.Reset()
+	if p.isResetter {
+		any(v).(Resetter).Reset()
 	}
 
 	select {

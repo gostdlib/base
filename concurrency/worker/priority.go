@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"errors"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,13 +40,6 @@ func (p *queue) Less(i, j int) bool {
 }
 
 func (p *queue) Swap(i, j int) {
-	defer func() {
-		if a := recover(); a != nil {
-			log.Printf("i %d, j %d", i, j)
-			panic(a)
-		}
-	}()
-
 	p.jobs[i], p.jobs[j] = p.jobs[j], p.jobs[i]
 }
 
@@ -167,10 +159,16 @@ func (d *Queue) Submit(ctx context.Context, job QJob) error {
 
 	d.mu.Lock()
 	heap.Push(ctx, d.queue, job)
+	var popped QJob
+	var hasPopped bool
 	if len(d.next) == 0 && d.queue.Len() != 0 {
-		d.next <- heap.Pop(ctx, d.queue)
+		popped = heap.Pop(ctx, d.queue)
+		hasPopped = true
 	}
 	d.mu.Unlock()
+	if hasPopped {
+		d.next <- popped
+	}
 
 	return nil
 }
@@ -187,10 +185,16 @@ func (d *Queue) doWork() {
 		case job = <-d.next:
 			<-d.size
 			d.mu.Lock()
+			var popped QJob
+			var hasPopped bool
 			if len(d.next) == 0 && d.queue.Len() != 0 {
-				d.next <- heap.Pop(ctx, d.queue)
+				popped = heap.Pop(ctx, d.queue)
+				hasPopped = true
 			}
 			d.mu.Unlock()
+			if hasPopped {
+				d.next <- popped
+			}
 		}
 
 		d.queueLen.Add(-1)

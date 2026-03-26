@@ -372,6 +372,15 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 	spanner := span.Get(ctx)
 
 	t := time.Now()
+
+	// Fast path: try non-blocking acquire to avoid timer allocation in the common case.
+	select {
+	case p.limit <- struct{}{}:
+		goto acquired
+	default:
+	}
+
+	// Slow path: slot is contended, need to wait.
 	if p.opts.disableLimitedWarn {
 		select {
 		case <-ctx.Done():
@@ -398,6 +407,8 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 			break
 		}
 	}
+
+acquired:
 
 	spanner.Event(
 		"worker.Pool:Limited.Submit()",
@@ -450,6 +461,7 @@ func (p *Pool) submit(ctx context.Context, f func()) {
 		// we will try again to create a new goroutine and submit the job. This is a rare case, but can happen
 		// if the number of CPUs is very low.
 		default:
+			runtime.Gosched()
 			goto tryAgain
 		}
 	}
