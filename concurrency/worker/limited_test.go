@@ -8,6 +8,41 @@ import (
 	"time"
 )
 
+func TestRegressionLimitedCancelRelease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	p, err := New(ctx, "")
+	if err != nil {
+		panic(err)
+	}
+
+	const limit = 2
+	l := p.Limited(t.Context(), "", limit)
+
+	// Submit with an already-cancelled context. The token must be released
+	// even though the job never runs, otherwise the pool leaks capacity.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	for i := 0; i < limit; i++ {
+		l.Submit(cancelled, func() { t.Errorf("TestRegressionLimitedCancelRelease: job should not run on cancelled context") })
+	}
+
+	// If tokens leaked, this submit on a live context will deadlock.
+	done := make(chan struct{})
+	go func() {
+		l.Submit(ctx, func() {})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("TestRegressionLimitedCancelRelease: submit blocked, token was not released on cancelled context")
+	}
+}
+
 func TestLimited(t *testing.T) {
 	t.Parallel()
 
