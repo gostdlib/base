@@ -14,6 +14,9 @@ type EOpts struct {
 	StackTrace bool
 	// Attrs are additional attributes to include in the error.
 	Attrs []slog.Attr
+	// LogLevel is the log level to use when logging this error. This defaults to slog.LevelError,
+	// but can be overridden with WithLogLevel().
+	LogLevel slog.Level
 }
 
 // EOption is an optional argument for E().
