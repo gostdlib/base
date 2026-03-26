@@ -354,8 +354,9 @@ func (p *Pool) StaticPool() int {
 }
 
 // Submit submits the function to be executed. If the context is canceled before the
-// function is executed, the function will not be executed. Once the function is executed,
-// it is the responsibility of the function to check the context and return if it is canceled.
+// function is enqueued, the function will not be executed. Once enqueued, the function
+// will run regardless of context cancellation; it is the responsibility of the function
+// to check the context and return if it is canceled.
 func (p *Pool) Submit(ctx context.Context, f func()) {
 	if p.limit != nil {
 		p.limitedSubmit(ctx, f)
@@ -427,8 +428,9 @@ acquired:
 }
 
 // submit submits the function to be executed. If the context is canceled before the
-// function is executed, the function will not be executed. Once the function is executed,
-// it is the responsibility of the function to check the context and return if it is canceled.
+// function is enqueued, the function will not be executed. Once enqueued, the function
+// will run regardless of context cancellation; it is the responsibility of the function
+// to check the context and return if it is canceled.
 // Returns true if the job was enqueued, false if ctx was cancelled before enqueue.
 func (p *Pool) submit(ctx context.Context, f func()) bool {
 	spanner := span.Get(ctx)
