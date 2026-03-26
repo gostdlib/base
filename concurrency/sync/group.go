@@ -121,9 +121,10 @@ type Group struct {
 	errors Errors
 	wg     sync.WaitGroup
 
-	start    time.Time
-	otelOnce sync.Once
-	span     span.Span
+	start       time.Time
+	otelOnce    sync.Once
+	span        span.Span
+	isRecording bool
 
 	noCopy noCopy // Flag govet to prevent copying
 
@@ -142,6 +143,7 @@ type Group struct {
 func (w *Group) reset() {
 	w.start = time.Time{}
 	w.otelOnce = sync.Once{}
+	w.isRecording = false
 	w.count.Store(0)
 	w.total.Store(0)
 	w.CancelOnErr = nil
@@ -191,20 +193,19 @@ func (w *Group) Go(ctx context.Context, f func(ctx context.Context) error, optio
 
 	var didOnce bool
 	// This sets up a new child span where all execution will be recorded.
-	// This is done once per Group until the Group is reset.s
+	// This is done once per Group until the Group is reset.
 	w.otelOnce.Do(func() {
 		spanner := span.Get(ctx)
 		if spanner.IsRecording() {
 			w.start = time.Now().UTC()
 			ctx, w.span = span.New(ctx, span.WithName("github.com/gostdlib/base/concurrency/sync.Group"))
+			w.isRecording = true
 		}
 		didOnce = true
 	})
 	// Since this wasn't the initial setup, we need to attach the span to the context.
-	if !didOnce {
-		if span.Get(ctx).IsRecording() {
-			ctx = otelTrace.ContextWithSpan(ctx, w.span.Span)
-		}
+	if !didOnce && w.isRecording {
+		ctx = otelTrace.ContextWithSpan(ctx, w.span.Span)
 	}
 
 	w.execute(ctx, f, opts)

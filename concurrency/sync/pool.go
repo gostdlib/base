@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"runtime"
 	"sync"
 
@@ -34,6 +35,9 @@ type Pool[T any] struct {
 	p sync.Pool
 
 	buffer chan T
+
+	isResetter  bool
+	isInterface bool
 
 	getCalls, putCalls, newAllocated, bufferAllocated metric.Int64Counter
 
@@ -124,8 +128,23 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		log.Default().Error(fmt.Sprintf("sync.NewPool(%s): %s", name, err))
 	}
 
+	// When T is an interface, different concrete values may or may not implement Resetter,
+	// so Put() must use a guarded type assertion instead of an unconditional one.
+	isInterface := reflect.TypeFor[T]().Kind() == reflect.Interface
+
+	// Probe once whether T implements Resetter so Put() can skip the type assertion
+	// for non-Resetter types. Use a zero value to avoid calling n() which could
+	// allocate resources or trigger side effects.
+	var isResetter bool
+	if !isInterface {
+		var zero T
+		_, isResetter = any(zero).(Resetter)
+	}
+
 	p := Pool[T]{
 		buffer:          c,
+		isResetter:      isResetter,
+		isInterface:     isInterface,
 		getCalls:        gc,
 		putCalls:        pc,
 		newAllocated:    na,
@@ -167,8 +186,12 @@ func (p *Pool[T]) Put(ctx context.Context, v T) {
 		p.putCalls.Add(ctx, 1)
 	}
 
-	if r, ok := any(v).(Resetter); ok {
-		r.Reset()
+	if p.isInterface {
+		if r, ok := any(v).(Resetter); ok {
+			r.Reset()
+		}
+	} else if p.isResetter {
+		any(v).(Resetter).Reset()
 	}
 
 	select {

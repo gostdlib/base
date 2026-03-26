@@ -354,8 +354,9 @@ func (p *Pool) StaticPool() int {
 }
 
 // Submit submits the function to be executed. If the context is canceled before the
-// function is executed, the function will not be executed. Once the function is executed,
-// it is the responsibility of the function to check the context and return if it is canceled.
+// function is enqueued, the function will not be executed. Once enqueued, the function
+// will run regardless of context cancellation; it is the responsibility of the function
+// to check the context and return if it is canceled.
 func (p *Pool) Submit(ctx context.Context, f func()) {
 	if p.limit != nil {
 		p.limitedSubmit(ctx, f)
@@ -372,6 +373,17 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 	spanner := span.Get(ctx)
 
 	t := time.Now()
+
+	// Fast path: try non-blocking acquire to avoid timer allocation in the common case.
+	select {
+	case <-ctx.Done():
+		return
+	case p.limit <- struct{}{}:
+		goto acquired
+	default:
+	}
+
+	// Slow path: slot is contended, need to wait.
 	if p.opts.disableLimitedWarn {
 		select {
 		case <-ctx.Done():
@@ -399,6 +411,8 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 		}
 	}
 
+acquired:
+
 	spanner.Event(
 		"worker.Pool:Limited.Submit()",
 		attribute.Int64("block_duration_ns", int64(time.Since(t))),
@@ -408,17 +422,21 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 		f()
 		<-p.limit
 	}
-	p.submit(ctx, wrap)
+	if !p.submit(ctx, wrap) {
+		<-p.limit // Release the token since wrap() will never run.
+	}
 }
 
 // submit submits the function to be executed. If the context is canceled before the
-// function is executed, the function will not be executed. Once the function is executed,
-// it is the responsibility of the function to check the context and return if it is canceled.
-func (p *Pool) submit(ctx context.Context, f func()) {
+// function is enqueued, the function will not be executed. Once enqueued, the function
+// will run regardless of context cancellation; it is the responsibility of the function
+// to check the context and return if it is canceled.
+// Returns true if the job was enqueued, false if ctx was cancelled before enqueue.
+func (p *Pool) submit(ctx context.Context, f func()) bool {
 	spanner := span.Get(ctx)
 
 	if f == nil {
-		return
+		return false
 	}
 
 	now := time.Now()
@@ -430,7 +448,7 @@ func (p *Pool) submit(ctx context.Context, f func()) {
 	// User cancelled before we could submit.
 	case <-ctx.Done():
 		args.done() // This will decrement the waitgroup.
-		return
+		return false
 	// Try to submit the job.
 	case p.queue <- args:
 	// We couldn't submit the job because the queue is full. We will create a new goroutine
@@ -444,16 +462,18 @@ func (p *Pool) submit(ctx context.Context, f func()) {
 		select {
 		case <-ctx.Done():
 			args.done() // This will decrement the waitgroup.
-			return
+			return false
 		case p.queue <- args:
 		// default can happen if the queue fills again with another job before we can submit. In those cases,
 		// we will try again to create a new goroutine and submit the job. This is a rare case, but can happen
 		// if the number of CPUs is very low.
 		default:
+			runtime.Gosched()
 			goto tryAgain
 		}
 	}
 	p.submitEvent(spanner, now)
+	return true
 }
 
 var numCPU int
