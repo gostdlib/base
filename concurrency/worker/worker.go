@@ -375,6 +375,8 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 
 	// Fast path: try non-blocking acquire to avoid timer allocation in the common case.
 	select {
+	case <-ctx.Done():
+		return
 	case p.limit <- struct{}{}:
 		goto acquired
 	default:

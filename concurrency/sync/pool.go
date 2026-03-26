@@ -128,16 +128,18 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		log.Default().Error(fmt.Sprintf("sync.NewPool(%s): %s", name, err))
 	}
 
-	// Probe once whether T implements Resetter so Put() can skip the type assertion
-	// for non-Resetter types.
-	var isResetter bool
-	if _, ok := any(n()).(Resetter); ok {
-		isResetter = true
-	}
-
 	// When T is an interface, different concrete values may or may not implement Resetter,
 	// so Put() must use a guarded type assertion instead of an unconditional one.
 	isInterface := reflect.TypeFor[T]().Kind() == reflect.Interface
+
+	// Probe once whether T implements Resetter so Put() can skip the type assertion
+	// for non-Resetter types. Use a zero value to avoid calling n() which could
+	// allocate resources or trigger side effects.
+	var isResetter bool
+	if !isInterface {
+		var zero T
+		_, isResetter = any(zero).(Resetter)
+	}
 
 	p := Pool[T]{
 		buffer:          c,
