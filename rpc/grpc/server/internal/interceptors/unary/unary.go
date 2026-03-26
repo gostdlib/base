@@ -94,7 +94,7 @@ func (u *Interceptor) attachMeta(ctx context.Context, req any, info *grpc.UnaryS
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		if len(md.Get("CallID")) != 0 {
-			grpcMeta.CustomerID = md.Get("CallID")[0]
+			grpcMeta.CallID = md.Get("CallID")[0]
 		}
 		id := md.Get("CustomerID")
 		if len(id) == 1 {

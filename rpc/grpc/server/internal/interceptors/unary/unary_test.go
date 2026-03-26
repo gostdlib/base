@@ -58,38 +58,57 @@ func TestIntercept(t *testing.T) {
 		name       string
 		ctx        context.Context
 		handler    grpc.UnaryHandler
-		wantErr    error
+		wantErr    bool
 		customerID string
+		wantCallID string
 	}{
 		{
-			name: "Valid metadata and successful handler",
+			name: "Success: valid metadata and successful handler",
 			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
 			handler: func(ctx context.Context, req any) (any, error) {
 				resultCtx = ctx
 				return "response", nil
 			},
-			wantErr:    nil,
 			customerID: "12345",
 		},
 		{
-			name: "No metadata",
+			name: "Success: no metadata",
 			ctx:  context.Background(),
 			handler: func(ctx context.Context, req any) (any, error) {
 				resultCtx = ctx
 				return "response", nil
 			},
-			wantErr:    nil,
 			customerID: "",
 		},
 		{
-			name: "Handler returns error",
+			name: "Error: handler returns error",
 			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs("customerID", "12345")),
 			handler: func(ctx context.Context, req any) (any, error) {
 				resultCtx = ctx
 				return nil, status.Error(13, "handler error")
 			},
-			wantErr:    status.Error(13, "handler error"),
+			wantErr:    true,
 			customerID: "12345",
+		},
+		{
+			name: "Success: CallID does not affect CustomerID",
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs("CallID", "call-1")),
+			handler: func(ctx context.Context, req any) (any, error) {
+				resultCtx = ctx
+				return "response", nil
+			},
+			customerID: "",
+			wantCallID: "call-1",
+		},
+		{
+			name: "Success: CustomerID extracted even when CallID present",
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs("CallID", "call-1", "CustomerID", "cust-99")),
+			handler: func(ctx context.Context, req any) (any, error) {
+				resultCtx = ctx
+				return "response", nil
+			},
+			customerID: "cust-99",
+			wantCallID: "call-1",
 		},
 	}
 
@@ -108,17 +127,15 @@ func TestIntercept(t *testing.T) {
 		_, err = unary.Intercept(test.ctx, req, info, test.handler)
 
 		switch {
-		case err == nil && test.wantErr != nil:
+		case err == nil && test.wantErr:
 			t.Errorf("TestUnaryIntercept(%s): got err == nil, want err != nil", test.name)
 			continue
-		case err != nil && test.wantErr == nil:
-			t.Errorf("TestUnaryIntercept(%s): got err != nil, want err == nil", test.name)
+		case err != nil && !test.wantErr:
+			t.Errorf("TestUnaryIntercept(%s): got err == %s, want err == nil", test.name, err)
 			continue
-		}
-		if err != nil {
+		case err != nil:
 			if _, ok := err.(errors.Error); !ok {
-				t.Errorf("TestUnaryIntercept(%s): expected error to be of type errors.Error, got %T", test.name, err)
-				continue
+				t.Errorf("TestUnaryIntercept(%s): got err type %T, want errors.Error", test.name, err)
 			}
 			continue
 		}
@@ -132,6 +149,9 @@ func TestIntercept(t *testing.T) {
 		}
 		if gMeta.CallID == "" {
 			t.Errorf("TestUnaryIntercept(%s): callID: got empty, want non-empty", test.name)
+		}
+		if test.wantCallID != "" && gMeta.CallID != test.wantCallID {
+			t.Errorf("TestUnaryIntercept(%s): callID: got %q, want %q", test.name, gMeta.CallID, test.wantCallID)
 		}
 	}
 }

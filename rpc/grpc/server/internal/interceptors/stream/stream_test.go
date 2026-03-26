@@ -169,6 +169,7 @@ func TestInterceptMetadata(t *testing.T) {
 		name           string
 		incomingMD     metadata.MD
 		wantCustomerID string
+		wantCallID     string
 	}{
 		{
 			name:           "Success: CustomerID extracted from metadata",
@@ -181,14 +182,16 @@ func TestInterceptMetadata(t *testing.T) {
 			wantCustomerID: "",
 		},
 		{
-			name:           "Success: CallID overridden by CustomerID",
-			incomingMD:     metadata.Pairs("CallID", "call-1", "CustomerID", "cust-99"),
-			wantCustomerID: "cust-99",
+			name:           "Success: CallID does not affect CustomerID",
+			incomingMD:     metadata.Pairs("CallID", "call-1"),
+			wantCustomerID: "",
+			wantCallID:     "call-1",
 		},
 		{
-			name:           "Success: CallID used when no CustomerID",
-			incomingMD:     metadata.Pairs("CallID", "call-1"),
-			wantCustomerID: "call-1",
+			name:           "Success: CustomerID extracted even when CallID present",
+			incomingMD:     metadata.Pairs("CallID", "call-1", "CustomerID", "cust-99"),
+			wantCustomerID: "cust-99",
+			wantCallID:     "call-1",
 		},
 	}
 
@@ -227,6 +230,9 @@ func TestInterceptMetadata(t *testing.T) {
 		}
 		if capturedMD.CallID == "" {
 			t.Errorf("TestInterceptMetadata(%s): CallID: got empty, want non-empty", test.name)
+		}
+		if test.wantCallID != "" && capturedMD.CallID != test.wantCallID {
+			t.Errorf("TestInterceptMetadata(%s): CallID: got %q, want %q", test.name, capturedMD.CallID, test.wantCallID)
 		}
 	}
 }

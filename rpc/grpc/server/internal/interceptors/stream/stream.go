@@ -77,7 +77,7 @@ func (s *Interceptor) Intercept(srv any, ss grpc.ServerStream, info *grpc.Stream
 	md, ok := metadata.FromIncomingContext(ss.Context())
 	if ok {
 		if len(md.Get("CallID")) != 0 {
-			grpcMeta.CustomerID = md.Get("CallID")[0]
+			grpcMeta.CallID = md.Get("CallID")[0]
 		}
 		id := md.Get("CustomerID")
 		if len(id) == 1 {
@@ -165,7 +165,9 @@ func (s *streamWrap) errLogAndConvert(ctx context.Context, req any, err error, m
 	if s.errConvert != nil {
 		status, cErr := s.errConvert(ctx, e, md)
 		if cErr != nil {
-			return cErr
+			ce := errors.E(ctx, nil, nil, cErr)
+			ce.Log(ctx)
+			return e
 		}
 		return status.Err()
 	}
