@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d
 	github.com/CAFxX/httpcompression v0.0.9
+	github.com/beeker1121/goque v2.1.0+incompatible
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2
 	github.com/gofiber/fiber/v2 v2.52.13
 	github.com/google/uuid v1.6.0
@@ -12,6 +13,7 @@ require (
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1
 	github.com/kylelemons/godebug v1.1.0
+	github.com/nsqio/go-diskqueue v1.1.0
 	github.com/orcaman/concurrent-map v1.0.0
 	github.com/prometheus/client_golang v1.22.0
 	github.com/rs/zerolog v1.34.0
@@ -19,8 +21,10 @@ require (
 	github.com/samber/slog-zerolog/v2 v2.7.3
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/tidwall/btree v1.8.1
+	github.com/tidwall/btype v0.2.0
 	github.com/tidwall/lotsa v1.0.3
 	github.com/tidwall/shardmap v0.0.0-20190927132224-c190691bd211
+	go.etcd.io/bbolt v1.4.3
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.62.0
 	go.opentelemetry.io/contrib/instrumentation/host v0.62.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.62.0
@@ -34,6 +38,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0
 	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/zap v1.27.0
+	golang.org/x/exp v0.0.0-20241217172543-b2144cdd0a67
 	golang.org/x/net v0.41.0
 	google.golang.org/genproto v0.0.0-20220204002441-d6cc3cc0770e
 	google.golang.org/grpc v1.73.0
@@ -61,6 +66,7 @@ require (
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang/snappy v0.0.3 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/gopherfs/fs v0.0.0-20220204202500-4538e04c7abb // indirect
 	github.com/gostdlib/internals v0.0.0-20240319155855-57c259c0554f // indirect
@@ -88,6 +94,7 @@ require (
 	github.com/samber/slog-common v0.18.1 // indirect
 	github.com/sanity-io/litter v1.5.8 // indirect
 	github.com/shirou/gopsutil/v4 v4.25.5 // indirect
+	github.com/syndtr/goleveldb v1.0.0 // indirect
 	github.com/tidwall/rhh v1.3.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.15 // indirect
 	github.com/tklauser/numcpus v0.10.0 // indirect

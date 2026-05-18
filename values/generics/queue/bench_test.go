@@ -1,0 +1,119 @@
+package queue
+
+import (
+	"context"
+	"testing"
+)
+
+// benchItems is the working-set size for Del/Exists benchmarks.
+const benchItems = 5000
+
+// benchCase is a named backing factory; the scan case uses the plain B-Tree FIFO and the
+// index case the indexed B-Tree FIFO (WithIndex forces a tree backing).
+type benchCase struct {
+	name    string
+	backing func() (Backing[Number[int]], error)
+}
+
+var benchCases = []benchCase{
+	{"scan", func() (Backing[Number[int]], error) { return NewBTreeFIFO[Number[int]]() }},
+	{"index", func() (Backing[Number[int]], error) { return NewBTreeFIFO[Number[int]](WithIndex()) }},
+}
+
+func fillQueue(b *testing.B, ctx context.Context, q *Queue[Number[int]], n int) {
+	b.Helper()
+	for i := 0; i < n; i++ {
+		if _, err := q.Push(ctx, []Number[int]{fifoItem(i)}); err != nil {
+			b.Fatalf("Push: %v", err)
+		}
+	}
+}
+
+// BenchmarkExists compares Exists with and without WithIndex on an in-memory
+// (btree, since WithIndex forces btree) backing vs the scan-based btree.
+func BenchmarkExists(b *testing.B) {
+	for _, c := range benchCases {
+		b.Run(c.name, func(b *testing.B) {
+			ctx := b.Context()
+			backing, err := c.backing()
+			if err != nil {
+				b.Fatalf("backing: %v", err)
+			}
+			q, err := New[Number[int]](ctx, backing, 0)
+			if err != nil {
+				b.Fatalf("New: %v", err)
+			}
+			fillQueue(b, ctx, q, benchItems)
+			target := queryItem(benchItems - 1) // worst case for scan: last item
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := q.Exists(ctx, target); err != nil {
+					b.Fatalf("Exists: %v", err)
+				}
+			}
+			b.StopTimer()
+			q.Close(ctx)
+		})
+	}
+}
+
+// BenchmarkDel compares Del of a single matching item with and without WithIndex.
+// The queue is refilled each iteration so every Del actually removes something.
+func BenchmarkDel(b *testing.B) {
+	for _, c := range benchCases {
+		b.Run(c.name, func(b *testing.B) {
+			ctx := b.Context()
+			backing, err := c.backing()
+			if err != nil {
+				b.Fatalf("backing: %v", err)
+			}
+			q, err := New[Number[int]](ctx, backing, 0)
+			if err != nil {
+				b.Fatalf("New: %v", err)
+			}
+			fillQueue(b, ctx, q, benchItems)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				v := fifoItem(i % benchItems)
+				if err := q.Del(ctx, []Number[int]{v}); err != nil {
+					b.Fatalf("Del: %v", err)
+				}
+				b.StopTimer()
+				if _, err := q.Push(ctx, []Number[int]{v}); err != nil {
+					b.Fatalf("Push: %v", err)
+				}
+				b.StartTimer()
+			}
+			b.StopTimer()
+			q.Close(ctx)
+		})
+	}
+}
+
+// BenchmarkPushPop measures the index-maintenance overhead on the hot path.
+func BenchmarkPushPop(b *testing.B) {
+	for _, c := range benchCases {
+		b.Run(c.name, func(b *testing.B) {
+			ctx := b.Context()
+			backing, err := c.backing()
+			if err != nil {
+				b.Fatalf("backing: %v", err)
+			}
+			q, err := New[Number[int]](ctx, backing, 0)
+			if err != nil {
+				b.Fatalf("New: %v", err)
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := q.Push(ctx, []Number[int]{fifoItem(i)}); err != nil {
+					b.Fatalf("Push: %v", err)
+				}
+				if _, err := q.PopN(ctx, 1); err != nil {
+					b.Fatalf("PopN: %v", err)
+				}
+			}
+			b.StopTimer()
+			q.Close(ctx)
+		})
+	}
+}
