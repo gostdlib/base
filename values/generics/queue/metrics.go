@@ -15,7 +15,7 @@ import (
 // built once in New and panics on instrument-construction error, matching
 // github.com/gostdlib/base/concurrency/background.
 type queueMetrics struct {
-	// ops is the numbers of operations that have occured, such as Push, Pop, ...
+	// ops is the numbers of operations that have occurred, such as Push, Pop, ...
 	ops metric.Int64Counter
 	// errs are the numbers of errors encountered by ops.
 	errs metric.Int64Counter
