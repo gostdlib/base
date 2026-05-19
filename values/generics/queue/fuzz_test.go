@@ -26,10 +26,7 @@ func (m *fifoModel) pop() int {
 	return v
 }
 func (m *fifoModel) exists(v int) bool {
-	if slices.Contains(m.items, v) {
-		return true
-	}
-	return false
+	return slices.Contains(m.items, v)
 }
 func (m *fifoModel) del(v int) {
 	out := m.items[:0:0]
@@ -175,7 +172,14 @@ func runScript(t *testing.T, ctx context.Context, name string, q *Queue[Number[i
 			}
 			m.del(v)
 		case 6: // batch del with a duplicate element (exercises the dedup path)
-			v2 := int(data[i])
+			// v2 is an independent fuzz byte. Consume an extra byte when available
+			// (advancing i so the next op does not reinterpret it); otherwise fall
+			// back to v (still a valid duplicate-heavy input, never tied to op).
+			v2 := v
+			if i+2 < len(data) {
+				v2 = int(data[i+2])
+				i++
+			}
 			if err := q.Del(ctx, []Number[int]{queryItem(v), queryItem(v), queryItem(v2)}); err != nil {
 				t.Fatalf("Fuzz%s: batch Del(%d,%d) got err == %s, want err == nil", name, v, v2, err)
 			}

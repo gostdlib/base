@@ -3,6 +3,7 @@ package queue
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,20 +17,11 @@ func mustPanic(t *testing.T, name, want string, f func()) {
 			t.Errorf("%s: did not panic, want panic containing %q", name, want)
 			return
 		}
-		if msg, _ := r.(string); msg == "" || !contains(msg, want) {
+		if msg, _ := r.(string); msg == "" || !strings.Contains(msg, want) {
 			t.Errorf("%s: panic = %v, want message containing %q", name, r, want)
 		}
 	}()
 	f()
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 // TestStringItem covers String's Item methods and an end-to-end FIFO queue of String.
