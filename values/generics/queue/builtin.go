@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 
+	json "github.com/go-json-experiment/json"
 	"golang.org/x/exp/constraints"
 )
 
@@ -136,10 +137,12 @@ func (u Bytes) Hash() uint64 {
 // and hash functions. Equaler and Hasher must be non-nil and consistent: if Equaler(a, b)
 // then Hasher(a) == Hasher(b).
 //
-// Because the function fields cannot be serialized, Value is usable only with the
-// in-memory backings (NewFIFO, NewPriority, NewBTreeFIFO, NewBTreePriority). The on-disk
-// bbolt backings JSON-encode items and will fail on a Value; wrap your type in a concrete
-// Item implementation instead for on-disk queues.
+// For the in-memory backings nothing else is required. For the on-disk bbolt backings a
+// codec must be supplied to the constructor with WithCodec, because Value's function
+// fields cannot be serialized: NewBboltFIFO/NewBboltPriority return ErrCodecRequired if a
+// Value queue is built without WithCodec. The package provides JSONEncode/JSONDecode for
+// any JSON-serializable type; for a Value the decode closure should also re-attach
+// Equaler and Hasher (they are not persisted) if Del/Exists/WithIndex are used.
 type Value[T any] struct {
 	// V is the underlying value.
 	V T
@@ -153,6 +156,11 @@ type Value[T any] struct {
 	// Equaler(a, b) then Hasher(a) == Hasher(b). Must be non-nil.
 	Hasher func(T) uint64
 }
+
+// requiresDiskCodec marks Value as needing a WithCodec on the on-disk backings (its
+// function fields are not serializable by the default JSON codec). It is detected by
+// NewBboltFIFO/NewBboltPriority to reject a codec-less Value queue with ErrCodecRequired.
+func (Value[T]) requiresDiskCodec() {}
 
 // Less implements Item.Less by comparing the priorities.
 func (u Value[T]) Less(other Value[T]) bool {
@@ -178,4 +186,16 @@ func (u Value[T]) Hash() uint64 {
 		panic("queue: Value.Hash: Hasher is nil")
 	}
 	return u.Hasher(u.V)
+}
+
+// JSONEncode writes v as JSON into dst using github.com/go-json-experiment/json. Pass it
+// (or a closure wrapping it) to WithCodec as the encoder for an on-disk queue.
+func JSONEncode[T any](dst *bytes.Buffer, v T) error {
+	return json.MarshalWrite(dst, v)
+}
+
+// JSONDecode reads JSON written by JSONEncode into dst (reused across items) using
+// github.com/go-json-experiment/json. Pass it to WithCodec as the decoder.
+func JSONDecode[T any](src []byte, dst *T) error {
+	return json.Unmarshal(src, dst)
 }

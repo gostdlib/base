@@ -22,8 +22,8 @@ var benchSizes = []int{1000, 5000, 10000, 50000, 100000}
 // throughput comparisons.
 var diskBenchSizes = []int{100, 500}
 
-// boundedBenchMax is the bounded maxSize used for the slice/heap factories, which only make
-// sense for a bounded queue; larger working sets use the btree/bbolt factories instead.
+// boundedBenchMax is the bounded maxSize used for the slice/heap variants, which only make
+// sense for a bounded queue; larger working sets use the btree/bbolt variants instead.
 const boundedBenchMax = 10_000
 
 // benchQueue is the minimal surface the comparison benchmarks exercise: fill then drain.
@@ -56,15 +56,15 @@ func (o ourQueue) push(n int) {
 }
 
 func (o ourQueue) pop() {
-	if _, err := o.q.PopN(o.ctx, 1); err != nil {
+	if _, err := o.q.Pop(o.ctx, 1); err != nil {
 		panic(err)
 	}
 }
 
-// drain removes exactly n items using as few PopN calls as possible (one bbolt txn).
+// drain removes exactly n items using as few Pop calls as possible (one bbolt txn).
 func (o ourQueue) drain(n int) {
 	for n > 0 {
-		items, err := o.q.PopN(o.ctx, n)
+		items, err := o.q.Pop(o.ctx, n)
 		if err != nil {
 			panic(err)
 		}
@@ -207,7 +207,7 @@ func (q *goquePrioQueue) drain(n int) {
 }
 func (q *goquePrioQueue) cleanup() { q.pq.Close() }
 
-type benchFactory struct {
+type benchVariant struct {
 	name string
 	disk bool
 	// skip reports sizes this type cannot represent (e.g. the []T slice backing only
@@ -223,7 +223,7 @@ func ourMaker(maxSize int, priority bool, backing func() (Backing[Number[int]], 
 		if err != nil {
 			b.Fatalf("backing: %v", err)
 		}
-		q, err := New[Number[int]](ctx, bk, maxSize)
+		q, err := New[Number[int]](ctx, "test", bk, maxSize)
 		if err != nil {
 			b.Fatalf("New: %v", err)
 		}
@@ -252,7 +252,7 @@ func ourBboltMaker(priority bool) func(*testing.B, int) benchQueue {
 		if err != nil {
 			b.Fatalf("bbolt backing: %v", err)
 		}
-		q, err := New[Number[int]](ctx, bk, 0)
+		q, err := New[Number[int]](ctx, "test", bk, 0)
 		if err != nil {
 			b.Fatalf("New: %v", err)
 		}
@@ -260,9 +260,9 @@ func ourBboltMaker(priority bool) func(*testing.B, int) benchQueue {
 	}
 }
 
-// memoryFactories are the in-memory queue types.
-func memoryFactories() []benchFactory {
-	return []benchFactory{
+// memoryVariants are the in-memory queue types.
+func memoryVariants() []benchVariant {
+	return []benchVariant{
 		{
 			name: "ours-fifo-slice",
 			skip: func(size int) bool { return size >= boundedBenchMax },
@@ -274,7 +274,7 @@ func memoryFactories() []benchFactory {
 		},
 		{
 			name: "ours-fifo-btype",
-			make: ourMaker(0, false, func() (Backing[Number[int]], error) { return NewBtypeFIFO[Number[int]]() }),
+			make: ourMaker(0, false, func() (Backing[Number[int]], error) { return newBtypeFIFO[Number[int]]() }),
 		},
 		{
 			name: "ours-fifo-index",
@@ -302,10 +302,10 @@ func memoryFactories() []benchFactory {
 	}
 }
 
-// diskFactories are the on-disk queue types: ours (bbolt) vs nsqio/go-diskqueue and
+// diskVariants are the on-disk queue types: ours (bbolt) vs nsqio/go-diskqueue and
 // beeker1121/goque.
-func diskFactories() []benchFactory {
-	return []benchFactory{
+func diskVariants() []benchVariant {
+	return []benchVariant{
 		{name: "ours-fifo-bbolt", disk: true, make: ourBboltMaker(false)},
 		{name: "ours-priority-bbolt", disk: true, make: ourBboltMaker(true)},
 		{name: "nsqio-diskqueue-fifo", disk: true, make: func(b *testing.B, size int) benchQueue { return newNSQ(b) }},
@@ -315,7 +315,7 @@ func diskFactories() []benchFactory {
 }
 
 // runFillDrain measures one fill-of-N then drain-of-N cycle per op.
-func runFillDrain(b *testing.B, fs []benchFactory, sizes []int) {
+func runFillDrain(b *testing.B, fs []benchVariant, sizes []int) {
 	for _, f := range fs {
 		for _, size := range sizes {
 			if f.skip != nil && f.skip(size) {
@@ -337,7 +337,7 @@ func runFillDrain(b *testing.B, fs []benchFactory, sizes []int) {
 }
 
 // runConcurrentPush times pushBenchTotal single-item pushes spread across P producers.
-func runConcurrentPush(b *testing.B, fs []benchFactory) {
+func runConcurrentPush(b *testing.B, fs []benchVariant) {
 	for _, f := range fs {
 		if f.name == "tidwall-btype" { // not goroutine-safe
 			continue
@@ -375,18 +375,18 @@ const pushBenchTotal = 2000
 
 // --- Memory comparisons ---
 
-func BenchmarkMemoryFillDrain(b *testing.B)      { runFillDrain(b, memoryFactories(), benchSizes) }
-func BenchmarkMemoryConcurrentPush(b *testing.B) { runConcurrentPush(b, memoryFactories()) }
+func BenchmarkMemoryFillDrain(b *testing.B)      { runFillDrain(b, memoryVariants(), benchSizes) }
+func BenchmarkMemoryConcurrentPush(b *testing.B) { runConcurrentPush(b, memoryVariants()) }
 
 // --- Disk comparisons ---
 
-func BenchmarkDiskFillDrain(b *testing.B)      { runFillDrain(b, diskFactories(), diskBenchSizes) }
-func BenchmarkDiskConcurrentPush(b *testing.B) { runConcurrentPush(b, diskFactories()) }
+func BenchmarkDiskFillDrain(b *testing.B)      { runFillDrain(b, diskVariants(), diskBenchSizes) }
+func BenchmarkDiskConcurrentPush(b *testing.B) { runConcurrentPush(b, diskVariants()) }
 
 // BenchmarkOursBatchFillDrain measures our batched Push path (one txn / fsync for the
 // whole batch) for the *Queue backings only — nsqio/goque have no batch API.
 func BenchmarkOursBatchFillDrain(b *testing.B) {
-	fs := append(memoryFactories(), diskFactories()...)
+	fs := append(memoryVariants(), diskVariants()...)
 	for _, f := range fs {
 		for _, size := range benchSizes {
 			if f.skip != nil && f.skip(size) {

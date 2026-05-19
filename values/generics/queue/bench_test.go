@@ -8,7 +8,7 @@ import (
 // benchItems is the working-set size for Del/Exists benchmarks.
 const benchItems = 5000
 
-// benchCase is a named backing factory; the scan case uses the plain B-Tree FIFO and the
+// benchCase is a named backing constructor; the scan case uses the plain B-Tree FIFO and the
 // index case the indexed B-Tree FIFO (WithIndex forces a tree backing).
 type benchCase struct {
 	name    string
@@ -39,7 +39,7 @@ func BenchmarkExists(b *testing.B) {
 			if err != nil {
 				b.Fatalf("backing: %v", err)
 			}
-			q, err := New[Number[int]](ctx, backing, 0)
+			q, err := New[Number[int]](ctx, "test", backing, 0)
 			if err != nil {
 				b.Fatalf("New: %v", err)
 			}
@@ -67,7 +67,7 @@ func BenchmarkDel(b *testing.B) {
 			if err != nil {
 				b.Fatalf("backing: %v", err)
 			}
-			q, err := New[Number[int]](ctx, backing, 0)
+			q, err := New[Number[int]](ctx, "test", backing, 0)
 			if err != nil {
 				b.Fatalf("New: %v", err)
 			}
@@ -99,7 +99,7 @@ func BenchmarkPushPop(b *testing.B) {
 			if err != nil {
 				b.Fatalf("backing: %v", err)
 			}
-			q, err := New[Number[int]](ctx, backing, 0)
+			q, err := New[Number[int]](ctx, "test", backing, 0)
 			if err != nil {
 				b.Fatalf("New: %v", err)
 			}
@@ -108,8 +108,8 @@ func BenchmarkPushPop(b *testing.B) {
 				if _, err := q.Push(ctx, []Number[int]{fifoItem(i)}); err != nil {
 					b.Fatalf("Push: %v", err)
 				}
-				if _, err := q.PopN(ctx, 1); err != nil {
-					b.Fatalf("PopN: %v", err)
+				if _, err := q.Pop(ctx, 1); err != nil {
+					b.Fatalf("Pop: %v", err)
 				}
 			}
 			b.StopTimer()

@@ -97,7 +97,7 @@ func NewBTreeFIFO[T Item[T]](options ...BackingOption) (Backing[T], error) {
 		return nil, err
 	}
 	if !o.index {
-		return NewBtypeFIFO[T]()
+		return newBtypeFIFO[T]()
 	}
 	return newBTreeBacking[T](o, fifoSeqLess[T], false)
 }
@@ -155,6 +155,7 @@ func (b *btreeBacking[T]) setMaxSize(n int) error {
 	return nil
 }
 
+// Hydrate implements Backing.Hydrate().
 func (b *btreeBacking[T]) Hydrate(ctx context.Context, bu Backup[T]) error {
 	b.lk.lock()
 	defer b.lk.unlock()
@@ -182,6 +183,7 @@ func (b *btreeBacking[T]) Hydrate(ctx context.Context, bu Backup[T]) error {
 	return nil
 }
 
+// Push implements Backing.Push().
 func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(b.priority, vs); err != nil {
 		return err
@@ -229,7 +231,8 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 	}
 }
 
-func (b *btreeBacking[T]) PopN(ctx context.Context, n int) ([]T, error) {
+// Pop implements Backing.Pop().
+func (b *btreeBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 	for {
 		b.lk.lock()
 		if b.tree.Len() > 0 {
@@ -287,6 +290,7 @@ func (b *btreeBacking[T]) PopN(ctx context.Context, n int) ([]T, error) {
 	}
 }
 
+// Peek implements Backing.Peek().
 func (b *btreeBacking[T]) Peek(ctx context.Context) (T, bool, error) {
 	var zero T
 	b.lk.rlock()
@@ -301,6 +305,7 @@ func (b *btreeBacking[T]) Peek(ctx context.Context) (T, bool, error) {
 	return min.item, true, nil
 }
 
+// Exists implements Backing.Exists().
 func (b *btreeBacking[T]) Exists(ctx context.Context, v T) (bool, error) {
 	b.lk.rlock()
 	defer b.lk.runlock()
@@ -326,6 +331,7 @@ func (b *btreeBacking[T]) Exists(ctx context.Context, v T) (bool, error) {
 	return found, nil
 }
 
+// Del implements Backing.Del().
 func (b *btreeBacking[T]) Del(ctx context.Context, v []T) error {
 	b.lk.lock()
 	defer b.lk.unlock()
@@ -387,6 +393,7 @@ func (b *btreeBacking[T]) Del(ctx context.Context, v []T) error {
 	return nil
 }
 
+// NotEmpty implements Backing.NotEmpty().
 func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
 	for {
 		b.lk.rlock()
@@ -408,6 +415,7 @@ func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
 	}
 }
 
+// NotFull implements Backing.NotFull().
 func (b *btreeBacking[T]) NotFull(ctx context.Context) error {
 	for {
 		b.lk.rlock()
@@ -429,12 +437,14 @@ func (b *btreeBacking[T]) NotFull(ctx context.Context) error {
 	}
 }
 
+// Len implements Backing.Len().
 func (b *btreeBacking[T]) Len() int64 {
 	b.lk.rlock()
 	defer b.lk.runlock()
 	return int64(b.tree.Len())
 }
 
+// Close implements Backing.Close().
 func (b *btreeBacking[T]) Close(ctx context.Context) error {
 	b.lk.lock()
 	defer b.lk.unlock()
@@ -451,6 +461,7 @@ func (b *btreeBacking[T]) Close(ctx context.Context) error {
 	return err
 }
 
+// Clear implements Backing.Clear().
 func (b *btreeBacking[T]) Clear(ctx context.Context) error {
 	b.lk.lock()
 	defer b.lk.unlock()
@@ -473,6 +484,7 @@ func (b *btreeBacking[T]) Clear(ctx context.Context) error {
 	return nil
 }
 
+// All implements Backing.All().
 func (b *btreeBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		b.lk.rlock()
@@ -495,6 +507,7 @@ func (b *btreeBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	}
 }
 
+// AllCOW implements Backing.AllCOW().
 func (b *btreeBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T

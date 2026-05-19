@@ -102,7 +102,7 @@ func TestBackupHydrate(t *testing.T) {
 		}
 
 		want := wantOrder(m.priority, vals)
-		got := popN(t, ctx, m.name, q, len(want))
+		got := pop(t, ctx, m.name, q, len(want))
 		if diff := pretty.Compare(want, got); diff != "" {
 			t.Errorf("TestBackupHydrate(%s): drain order -want +got:\n%s", m.name, diff)
 		}
@@ -133,7 +133,7 @@ func restartBbolt(t *testing.T, ctx context.Context, dir string, vals []int) Bac
 	if err != nil {
 		t.Fatalf("restartBbolt: populate backing got err == %s", err)
 	}
-	q, err := New[Number[int]](ctx, b, 0)
+	q, err := New[Number[int]](ctx, "test", b, 0)
 	if err != nil {
 		t.Fatalf("restartBbolt: populate New got err == %s", err)
 	}
@@ -181,7 +181,7 @@ func TestBackupHydrateOnLoad(t *testing.T) {
 		{
 			name: "Error: btype fifo OnLoad failure aborts New",
 			setup: func(t *testing.T, ctx context.Context) (Backing[Number[int]], *fakeBackup) {
-				b, err := NewBtypeFIFO[Number[int]]()
+				b, err := newBtypeFIFO[Number[int]]()
 				if err != nil {
 					t.Fatalf("backing build got err == %s", err)
 				}
@@ -252,7 +252,7 @@ func TestBackupHydrateOnLoad(t *testing.T) {
 	for _, test := range tests {
 		ctx := t.Context()
 		b, fb := test.setup(t, ctx)
-		q, err := New[Number[int]](ctx, b, 0, WithBackup(fb))
+		q, err := New[Number[int]](ctx, "test", b, 0, WithBackup(fb))
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("TestBackupHydrateOnLoad(%s): New got err == nil, want err != nil", test.name)
@@ -319,7 +319,7 @@ func queueVals(t *testing.T, ctx context.Context, name string, q *Queue[Number[i
 }
 
 // TestBackupMirror verifies every mutation mirrors the *exact* items to the backup: after
-// Push/PopN/Del the backup's contents are a true multiset mirror of the queue's live
+// Push/Pop/Del the backup's contents are a true multiset mirror of the queue's live
 // contents (not just equal length) across all backings — including priority, where the
 // popped item is not the backup's insertion-front. Clear empties it and Close closes it.
 func TestBackupMirror(t *testing.T) {
@@ -343,11 +343,11 @@ func TestBackupMirror(t *testing.T) {
 		}
 		checkParity("after pushes")
 
-		popped, err := q.PopN(ctx, 2)
+		popped, err := q.Pop(ctx, 2)
 		if err != nil || len(popped) != 2 {
-			t.Fatalf("TestBackupMirror(%s): PopN got (items=%v err=%v), want 2 items, nil", m.name, popped, err)
+			t.Fatalf("TestBackupMirror(%s): Pop got (items=%v err=%v), want 2 items, nil", m.name, popped, err)
 		}
-		checkParity("after PopN")
+		checkParity("after Pop")
 		for _, it := range popped {
 			for _, b := range fb.items {
 				if b.V == it.V {
@@ -407,7 +407,7 @@ func TestBackupHydrateKindReject(t *testing.T) {
 			t.Fatalf("TestBackupHydrateKindReject(%s): backing got err == %s, want err == nil", test.name, err)
 		}
 		fb := &fakeBackup{items: []Number[int]{test.bad}}
-		_, err = New[Number[int]](ctx, b, 0, WithBackup(fb))
+		_, err = New[Number[int]](ctx, "test", b, 0, WithBackup(fb))
 		if !errors.Is(err, test.wantErr) {
 			t.Errorf("TestBackupHydrateKindReject(%s): New got err == %v, want %v", test.name, err, test.wantErr)
 		}
@@ -424,7 +424,7 @@ func TestBackupPushError(t *testing.T) {
 		t.Fatalf("TestBackupPushError: NewFIFO got err == %s, want err == nil", err)
 	}
 	fb := &fakeBackup{pushErr: sentinel}
-	q, err := New[Number[int]](ctx, b, 0, WithBackup(fb))
+	q, err := New[Number[int]](ctx, "test", b, 0, WithBackup(fb))
 	if err != nil {
 		t.Fatalf("TestBackupPushError: New got err == %s, want err == nil", err)
 	}
@@ -445,14 +445,14 @@ func TestBackupPushError(t *testing.T) {
 }
 
 // TestBackupRestoreOrder verifies Restore re-inserts items at the front in vs order, so a
-// rolled-back head removal (PopN) leaves the backup byte-for-byte as it was.
+// rolled-back head removal (Pop) leaves the backup byte-for-byte as it was.
 func TestBackupRestoreOrder(t *testing.T) {
 	ctx := t.Context()
 	fb := &fakeBackup{}
 	if err := fb.Push(ctx, []Number[int]{{V: 1}, {V: 2}, {V: 3}, {V: 4}}); err != nil {
 		t.Fatalf("TestBackupRestoreOrder: Push got err == %s, want err == nil", err)
 	}
-	// Simulate a failed PopN(2): the head two were Del'd from the backup, then restored.
+	// Simulate a failed Pop(2): the head two were Del'd from the backup, then restored.
 	head := []Number[int]{{V: 1}, {V: 2}}
 	if err := fb.Del(ctx, head); err != nil {
 		t.Fatalf("TestBackupRestoreOrder: Del got err == %s, want err == nil", err)
@@ -481,57 +481,57 @@ func withBboltFault(injected error, f func()) {
 	f()
 }
 
-// TestBackupRestoreOnPopNFailure forces the bbolt delete in PopN to fail after the backup
+// TestBackupRestoreOnPopFailure forces the bbolt delete in Pop to fail after the backup
 // was mirrored and verifies Restore runs: the queue is unchanged and the backup is put
 // back to a true mirror (in order, since these were head items).
-func TestBackupRestoreOnPopNFailure(t *testing.T) {
+func TestBackupRestoreOnPopFailure(t *testing.T) {
 	ctx := t.Context()
 	injected := errors.New("injected bbolt fault")
 
 	bk, err := NewBboltFIFO[Number[int]](ctx, diskRoot(t))
 	if err != nil {
-		t.Fatalf("TestBackupRestoreOnPopNFailure: NewBboltFIFO got err == %s, want nil", err)
+		t.Fatalf("TestBackupRestoreOnPopFailure: NewBboltFIFO got err == %s, want nil", err)
 	}
 	fb := &fakeBackup{}
-	q, err := New[Number[int]](ctx, bk, 0, WithBackup(fb))
+	q, err := New[Number[int]](ctx, "test", bk, 0, WithBackup(fb))
 	if err != nil {
-		t.Fatalf("TestBackupRestoreOnPopNFailure: New got err == %s, want nil", err)
+		t.Fatalf("TestBackupRestoreOnPopFailure: New got err == %s, want nil", err)
 	}
 	for i := 0; i < 5; i++ {
 		if ok, err := q.Push(ctx, []Number[int]{fifoItem(i)}); err != nil || !ok {
-			t.Fatalf("TestBackupRestoreOnPopNFailure: Push(%d) got (ok=%v err=%v)", i, ok, err)
+			t.Fatalf("TestBackupRestoreOnPopFailure: Push(%d) got (ok=%v err=%v)", i, ok, err)
 		}
 	}
 
 	var items []Number[int]
 	var perr error
-	withBboltFault(injected, func() { items, perr = q.PopN(ctx, 2) })
+	withBboltFault(injected, func() { items, perr = q.Pop(ctx, 2) })
 	switch {
 	case !errors.Is(perr, injected):
-		t.Errorf("TestBackupRestoreOnPopNFailure: PopN got err == %v, want injected", perr)
+		t.Errorf("TestBackupRestoreOnPopFailure: Pop got err == %v, want injected", perr)
 	case items != nil:
-		t.Errorf("TestBackupRestoreOnPopNFailure: PopN got items == %v, want nil", items)
+		t.Errorf("TestBackupRestoreOnPopFailure: Pop got items == %v, want nil", items)
 	}
 	if q.Len() != 5 {
-		t.Errorf("TestBackupRestoreOnPopNFailure: queue Len got %d, want 5 (unchanged)", q.Len())
+		t.Errorf("TestBackupRestoreOnPopFailure: queue Len got %d, want 5 (unchanged)", q.Len())
 	}
 	var fbVals []int
 	for _, it := range fb.items {
 		fbVals = append(fbVals, it.V)
 	}
 	if diff := pretty.Compare([]int{0, 1, 2, 3, 4}, fbVals); diff != "" {
-		t.Errorf("TestBackupRestoreOnPopNFailure: backup after Restore -want +got:\n%s", diff)
+		t.Errorf("TestBackupRestoreOnPopFailure: backup after Restore -want +got:\n%s", diff)
 	}
 
-	got := popN(t, ctx, "restore-popn", q, 5)
+	got := pop(t, ctx, "restore-popn", q, 5)
 	if diff := pretty.Compare([]int{0, 1, 2, 3, 4}, got); diff != "" {
-		t.Errorf("TestBackupRestoreOnPopNFailure: drain after recovery -want +got:\n%s", diff)
+		t.Errorf("TestBackupRestoreOnPopFailure: drain after recovery -want +got:\n%s", diff)
 	}
 	if fb.Len() != 0 {
-		t.Errorf("TestBackupRestoreOnPopNFailure: backup Len after drain got %d, want 0", fb.Len())
+		t.Errorf("TestBackupRestoreOnPopFailure: backup Len after drain got %d, want 0", fb.Len())
 	}
 	if err := q.Close(ctx); err != nil {
-		t.Errorf("TestBackupRestoreOnPopNFailure: Close got err == %s, want nil", err)
+		t.Errorf("TestBackupRestoreOnPopFailure: Close got err == %s, want nil", err)
 	}
 }
 
@@ -546,7 +546,7 @@ func TestBackupRestoreOnDelFailure(t *testing.T) {
 		t.Fatalf("TestBackupRestoreOnDelFailure: NewBboltFIFO got err == %s, want nil", err)
 	}
 	fb := &fakeBackup{}
-	q, err := New[Number[int]](ctx, bk, 0, WithBackup(fb))
+	q, err := New[Number[int]](ctx, "test", bk, 0, WithBackup(fb))
 	if err != nil {
 		t.Fatalf("TestBackupRestoreOnDelFailure: New got err == %s, want nil", err)
 	}

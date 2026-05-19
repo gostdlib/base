@@ -16,7 +16,7 @@ func TestRangeAllCOWParity(t *testing.T) {
 		{"in-memory FIFO btree", false, func() (Backing[Number[int]], error) { return NewBTreeFIFO[Number[int]]() }},
 		{"in-memory priority", true, func() (Backing[Number[int]], error) { return NewBTreePriority[Number[int]]() }},
 		{"in-memory FIFO index", false, func() (Backing[Number[int]], error) { return NewBTreeFIFO[Number[int]](WithIndex()) }},
-		{"in-memory FIFO btype", false, func() (Backing[Number[int]], error) { return NewBtypeFIFO[Number[int]]() }},
+		{"in-memory FIFO btype", false, func() (Backing[Number[int]], error) { return newBtypeFIFO[Number[int]]() }},
 	}
 
 	for _, test := range tests {
@@ -25,7 +25,7 @@ func TestRangeAllCOWParity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TestRangeAllCOWParity(%s): backing got err == %s, want nil", test.name, err)
 		}
-		q, err := New[Number[int]](ctx, backing, 0)
+		q, err := New[Number[int]](ctx, "test", backing, 0)
 		if err != nil {
 			t.Fatalf("TestRangeAllCOWParity(%s): New got err == %s, want nil", test.name, err)
 		}
@@ -74,7 +74,7 @@ func TestRangeAllCOWContention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestRangeAllCOWContention: NewBTreeFIFO got err == %s, want nil", err)
 	}
-	q, err := New[Number[int]](ctx, backing, 0)
+	q, err := New[Number[int]](ctx, "test", backing, 0)
 	if err != nil {
 		t.Fatalf("TestRangeAllCOWContention: New got err == %s, want nil", err)
 	}

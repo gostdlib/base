@@ -21,9 +21,10 @@ type btypeFIFO[T Item[T]] struct {
 	backup     Backup[T]
 }
 
-// NewBtypeFIFO returns an in-memory FIFO Backing backed by the positional B-tree. It is an
-// unbounded-friendly alternative to NewBTreeFIFO with cheaper push/pop. Pass the result to New.
-func NewBtypeFIFO[T Item[T]]() (Backing[T], error) {
+// newBtypeFIFO returns an in-memory FIFO Backing backed by the positional B-tree. It is the
+// backing NewBTreeFIFO uses when WithIndex is not set: unbounded-friendly with cheap
+// push/pop and O(n) Exists/Del.
+func newBtypeFIFO[T Item[T]]() (Backing[T], error) {
 	return &btypeFIFO[T]{
 		lk:         &qlock{},
 		notFullCh:  make(chan struct{}),
@@ -50,6 +51,7 @@ func (f *btypeFIFO[T]) setMaxSize(n int) error {
 	return nil
 }
 
+// Hydrate implements Backing.Hydrate().
 func (f *btypeFIFO[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -69,6 +71,7 @@ func (f *btypeFIFO[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	return nil
 }
 
+// Push implements Backing.Push().
 func (f *btypeFIFO[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(false, vs); err != nil {
 		return err
@@ -110,7 +113,8 @@ func (f *btypeFIFO[T]) Push(ctx context.Context, vs []T) error {
 	}
 }
 
-func (f *btypeFIFO[T]) PopN(ctx context.Context, n int) ([]T, error) {
+// Pop implements Backing.Pop().
+func (f *btypeFIFO[T]) Pop(ctx context.Context, n int) ([]T, error) {
 	for {
 		f.lk.lock()
 		if f.t.Len() > 0 {
@@ -162,6 +166,7 @@ func (f *btypeFIFO[T]) PopN(ctx context.Context, n int) ([]T, error) {
 	}
 }
 
+// Peek implements Backing.Peek().
 func (f *btypeFIFO[T]) Peek(ctx context.Context) (T, bool, error) {
 	var zero T
 	f.lk.rlock()
@@ -176,6 +181,7 @@ func (f *btypeFIFO[T]) Peek(ctx context.Context) (T, bool, error) {
 	return v, true, nil
 }
 
+// Exists implements Backing.Exists().
 func (f *btypeFIFO[T]) Exists(ctx context.Context, v T) (bool, error) {
 	f.lk.rlock()
 	defer f.lk.runlock()
@@ -190,6 +196,7 @@ func (f *btypeFIFO[T]) Exists(ctx context.Context, v T) (bool, error) {
 	return false, nil
 }
 
+// Del implements Backing.Del().
 func (f *btypeFIFO[T]) Del(ctx context.Context, v []T) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -225,6 +232,7 @@ func (f *btypeFIFO[T]) Del(ctx context.Context, v []T) error {
 	return nil
 }
 
+// NotEmpty implements Backing.NotEmpty().
 func (f *btypeFIFO[T]) NotEmpty(ctx context.Context) error {
 	for {
 		f.lk.rlock()
@@ -246,6 +254,7 @@ func (f *btypeFIFO[T]) NotEmpty(ctx context.Context) error {
 	}
 }
 
+// NotFull implements Backing.NotFull().
 func (f *btypeFIFO[T]) NotFull(ctx context.Context) error {
 	for {
 		f.lk.rlock()
@@ -267,12 +276,14 @@ func (f *btypeFIFO[T]) NotFull(ctx context.Context) error {
 	}
 }
 
+// Len implements Backing.Len().
 func (f *btypeFIFO[T]) Len() int64 {
 	f.lk.rlock()
 	defer f.lk.runlock()
 	return int64(f.t.Len())
 }
 
+// Close implements Backing.Close().
 func (f *btypeFIFO[T]) Close(ctx context.Context) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -289,6 +300,7 @@ func (f *btypeFIFO[T]) Close(ctx context.Context) error {
 	return err
 }
 
+// Clear implements Backing.Clear().
 func (f *btypeFIFO[T]) Clear(ctx context.Context) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -308,6 +320,7 @@ func (f *btypeFIFO[T]) Clear(ctx context.Context) error {
 	return nil
 }
 
+// All implements Backing.All().
 func (f *btypeFIFO[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		f.lk.rlock()
@@ -332,6 +345,7 @@ func (f *btypeFIFO[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	}
 }
 
+// AllCOW implements Backing.AllCOW().
 func (f *btypeFIFO[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T

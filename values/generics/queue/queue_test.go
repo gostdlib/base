@@ -96,7 +96,7 @@ func backingConfigs() []backingConfig {
 					if err != nil {
 						return nil, err
 					}
-					return New[Number[int]](ctx, backing, maxSize)
+					return New[Number[int]](ctx, "test", backing, maxSize)
 				},
 			})
 		}
@@ -130,15 +130,15 @@ func memPriority(idx bool) (Backing[Number[int]], error) {
 	return NewPriority[Number[int]]()
 }
 
-// popN pops exactly n items. PopN blocks until >=1 and returns up to the requested count,
+// pop pops exactly n items. Pop blocks until >=1 and returns up to the requested count,
 // so loop until n are collected (the caller knows n items will arrive).
-func popN(t *testing.T, ctx context.Context, name string, q *Queue[Number[int]], n int) []int {
+func pop(t *testing.T, ctx context.Context, name string, q *Queue[Number[int]], n int) []int {
 	t.Helper()
 	var got []int
 	for len(got) < n {
-		items, err := q.PopN(ctx, n-len(got))
+		items, err := q.Pop(ctx, n-len(got))
 		if err != nil {
-			t.Fatalf("TestBackingsConformance(%s): PopN got err == %s, want err == nil", name, err)
+			t.Fatalf("TestBackingsConformance(%s): Pop got err == %s, want err == nil", name, err)
 		}
 		for _, v := range items {
 			got = append(got, v.V)
@@ -204,7 +204,7 @@ func TestBackingsConformance(t *testing.T) {
 		}
 
 		want := wantOrder(test.priority, pushed)
-		got := popN(t, ctx, test.name, q, len(want))
+		got := pop(t, ctx, test.name, q, len(want))
 		if diff := pretty.Compare(want, got); diff != "" {
 			t.Errorf("TestBackingsConformance(%s): pop order -want +got:\n%s", test.name, diff)
 		}
@@ -231,7 +231,7 @@ func TestBackingsConformance(t *testing.T) {
 		if ex, err := q.Exists(ctx, queryItem(7)); err != nil || ex {
 			t.Errorf("TestBackingsConformance(%s): Exists(7) after Del got (%v,%v), want (false,nil)", test.name, ex, err)
 		}
-		if rem := popN(t, ctx, test.name, q, 1); len(rem) != 1 || rem[0] != 8 {
+		if rem := pop(t, ctx, test.name, q, 1); len(rem) != 1 || rem[0] != 8 {
 			t.Errorf("TestBackingsConformance(%s): remaining after Del got %v, want [8]", test.name, rem)
 		}
 
@@ -263,7 +263,7 @@ func TestBackingsConformance(t *testing.T) {
 		if n := q.Len(); n != 1 {
 			t.Errorf("TestBackingsConformance(%s): Len after empty Del got %d, want 1", test.name, n)
 		}
-		if rem := popN(t, ctx, test.name, q, 1); len(rem) != 1 || rem[0] != 8 {
+		if rem := pop(t, ctx, test.name, q, 1); len(rem) != 1 || rem[0] != 8 {
 			t.Errorf("TestBackingsConformance(%s): remaining after batch Del got %v, want [8]", test.name, rem)
 		}
 
@@ -340,7 +340,7 @@ func TestKindValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TestKindValidation(%s): backing got err == %s, want err == nil", test.name, err)
 		}
-		q, err := New[Number[int]](ctx, b, 0)
+		q, err := New[Number[int]](ctx, "test", b, 0)
 		if err != nil {
 			t.Fatalf("TestKindValidation(%s): New got err == %s, want err == nil", test.name, err)
 		}

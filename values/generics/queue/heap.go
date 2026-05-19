@@ -141,8 +141,8 @@ func (p *priorityHeap[T]) Push(ctx context.Context, vs []T) error {
 	}
 }
 
-// PopN implements Backing.PopN().
-func (p *priorityHeap[T]) PopN(ctx context.Context, n int) ([]T, error) {
+// Pop implements Backing.Pop().
+func (p *priorityHeap[T]) Pop(ctx context.Context, n int) ([]T, error) {
 	for {
 		p.lk.lock()
 		if p.h.Len() > 0 {
@@ -355,14 +355,14 @@ func (p *priorityHeap[T]) sortedSnapshot() ([]seqItem[T], bool) {
 	return items, true
 }
 
-// All implements Backing.All(). Unlike the other backings it takes the write lock for
-// the whole iteration rather than the read lock: yielding in priority order requires the
-// heap's backing array to be sorted, and sorting it ascending in place leaves a valid
-// min-heap (every descendant index sorts at or after its ancestor), so Push/Pop keep
-// working without a snapshot copy. AllCOW is the read-lock, snapshot variant.
+// All implements Backing.All(). Unlike the other backings it holds the write lock for the
+// whole iteration, not the read lock: yielding in priority order requires sorting, and
+// sorting the heap array ascending in place leaves a valid min-heap (a node's children are
+// always at higher indices), so Push/Pop keep working with no snapshot copy. AllCOW is the
+// read-lock, snapshot variant.
 func (p *priorityHeap[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
-		p.lk.lock() // This must be a lock not a rlock because we have to sort.
+		p.lk.lock()
 		defer p.lk.unlock()
 		var zero T
 		if p.closed {

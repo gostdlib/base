@@ -26,7 +26,7 @@ var (
 	errStopIter = errors.New("stop iteration")
 )
 
-// bboltFaultAfterBackup is a test-only seam. When non-nil it is invoked inside PopN and
+// bboltFaultAfterBackup is a test-only seam. When non-nil it is invoked inside Pop and
 // Del immediately after the backup has been mirrored but before the on-disk delete is
 // applied; a non-nil return aborts the transaction, exercising the Restore compensation
 // path. It is always nil in production.
@@ -46,6 +46,13 @@ func jsonDecode[T any](data []byte) (T, error) {
 		return zero, err
 	}
 	return v, nil
+}
+
+// diskCodecRequirer is implemented by item types whose default JSON encoding cannot
+// round-trip (Value, via its function fields). NewBboltFIFO/NewBboltPriority reject such
+// a type with ErrCodecRequired unless WithCodec supplies a codec.
+type diskCodecRequirer interface {
+	requiresDiskCodec()
 }
 
 // bboltBacking is an on-disk queue backed by go.etcd.io/bbolt, used for both FIFO and
@@ -70,11 +77,16 @@ func jsonDecode[T any](data []byte) (T, error) {
 // injected by New via setQueueLock, setMaxSize and setMaxBatch before any other use; the
 // flush goroutine is started by setQueueLock so it never races the lock injection.
 type bboltBacking[T Item[T]] struct {
-	lk         *qlock
-	db         *bolt.DB
-	keyOf      func(v T, seq uint64) []byte
-	idx        *bboltIndex
-	count      int64
+	lk    *qlock
+	db    *bolt.DB
+	keyOf func(v T, seq uint64) []byte
+	idx   *bboltIndex
+	count int64
+	// pending is the number of items admitted into the staging buffer but not yet
+	// committed (buffered or snapshot-in-flight). Guarded by lk like count. The bounded
+	// maxSize admission gate tests count+pending so concurrent Pushes whose items are
+	// still buffered cannot collectively overshoot maxSize.
+	pending    int64
 	maxSize    int
 	maxBatch   int
 	priority   bool
@@ -93,6 +105,36 @@ type bboltBacking[T Item[T]] struct {
 	flushCtx    context.Context
 	flushCancel context.CancelFunc
 	flushGroup  sync.Group
+
+	// On-disk codec from WithCodec; nil falls back to the default JSON encoding.
+	encode func(dst *bytes.Buffer, v T) error
+	decode func(src []byte, dst *T) error
+}
+
+// encodeItem serializes v for storage using the WithCodec encoder if set, else the
+// default JSON encoding.
+func (p *bboltBacking[T]) encodeItem(v T) ([]byte, error) {
+	if p.encode != nil {
+		var buf bytes.Buffer
+		if err := p.encode(&buf, v); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	}
+	return json.Marshal(v)
+}
+
+// decodeItem is the inverse of encodeItem.
+func (p *bboltBacking[T]) decodeItem(data []byte) (T, error) {
+	if p.decode != nil {
+		var v T
+		if err := p.decode(data, &v); err != nil {
+			var zero T
+			return zero, err
+		}
+		return v, nil
+	}
+	return jsonDecode[T](data)
 }
 
 // bboltIndex maps Item.Hash() to the bbolt storage keys in that bucket, so Exists/Del
@@ -146,7 +188,9 @@ func bboltPriorityKey[T Item[T]](v T, seq uint64) []byte {
 
 // NewBboltFIFO returns an on-disk FIFO Backing backed by go.etcd.io/bbolt, keyed by insert
 // sequence. The database lives in "queue.db" under root and is the source of truth on reopen.
-// It accepts WithIndex. Pass the result to New.
+// It accepts WithIndex(). As a disk based queue, it is imporant to optimize with batch pushes and pulls.
+// If doing Del(), Exists(), this can be extremely slow without WithIndex(). If using a Backup, it can be better
+// to choose a new location for root on restart and using WithNoSync(), WithBoltFreelistMap() and WithNoFreelistSync()
 func NewBboltFIFO[T Item[T]](ctx context.Context, root *os.Root, options ...BackingOption) (Backing[T], error) {
 	o, err := applyBackingOptions(callBboltFIFO, options)
 	if err != nil {
@@ -157,7 +201,9 @@ func NewBboltFIFO[T Item[T]](ctx context.Context, root *os.Root, options ...Back
 
 // NewBboltPriority returns an on-disk priority Backing backed by go.etcd.io/bbolt, keyed by
 // Item.Priority with insert sequence as the tiebreak. The database lives in "queue.db" under
-// root and is the source of truth on reopen. It accepts WithIndex. Pass the result to New.
+// root and is the source of truth on reopen. It accepts WithIndex. // If doing Del(), Exists(), this can be
+// extremely slow without WithIndex(). If using a Backup, it can be better to choose a new location for root on
+// restart and using WithNoSync(), WithBoltFreelistMap() and WithNoFreelistSync().
 func NewBboltPriority[T Item[T]](ctx context.Context, root *os.Root, options ...BackingOption) (Backing[T], error) {
 	o, err := applyBackingOptions(callBboltPriority, options)
 	if err != nil {
@@ -167,6 +213,21 @@ func NewBboltPriority[T Item[T]](ctx context.Context, root *os.Root, options ...
 }
 
 func newBboltBacking[T Item[T]](ctx context.Context, root *os.Root, o backingOpts, keyOf func(v T, seq uint64) []byte, priority bool) (Backing[T], error) {
+	var encode func(*bytes.Buffer, T) error
+	var decode func([]byte, *T) error
+	if o.codecEncode != nil {
+		e, okE := o.codecEncode.(func(*bytes.Buffer, T) error)
+		d, okD := o.codecDecode.(func([]byte, *T) error)
+		if !okE || !okD {
+			return nil, errors.New("queue: WithCodec encoder/decoder do not match the queue item type")
+		}
+		encode, decode = e, d
+	}
+	var zero T
+	if _, needs := any(zero).(diskCodecRequirer); needs && encode == nil {
+		return nil, ErrCodecRequired
+	}
+
 	bopts := &bolt.Options{
 		Timeout:         o.boltTimeout,
 		NoSync:          o.boltNoSync,
@@ -209,6 +270,8 @@ func newBboltBacking[T Item[T]](ctx context.Context, root *os.Root, o backingOpt
 		notEmptyCh: make(chan struct{}),
 		cur:        &flushResult{done: make(chan struct{})},
 		flushReq:   make(chan struct{}, 1),
+		encode:     encode,
+		decode:     decode,
 	}
 	if o.index {
 		p.idx = newBboltIndex()
@@ -302,6 +365,10 @@ func (p *bboltBacking[T]) doFlush(ctx context.Context) {
 func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 	if p.backup != nil {
 		if err := p.backup.Push(ctx, snap); err != nil {
+			p.lk.lock()
+			p.pending -= int64(len(snap))
+			resetSignal(&p.notFullCh)
+			p.lk.unlock()
 			return err
 		}
 	}
@@ -313,7 +380,7 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 	err := p.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bboltItemsBucket)
 		for _, v := range snap {
-			data, err := json.Marshal(v)
+			data, err := p.encodeItem(v)
 			if err != nil {
 				return err
 			}
@@ -332,11 +399,16 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 		return nil
 	})
 	if err != nil {
+		p.lk.lock()
+		p.pending -= int64(len(snap))
+		resetSignal(&p.notFullCh)
+		p.lk.unlock()
 		return err
 	}
 	p.lk.lock()
 	wasEmpty := p.count == 0
 	p.count += int64(len(snap))
+	p.pending -= int64(len(snap))
 	if p.idx != nil {
 		for _, e := range ents {
 			p.idx.add(e.hash, e.sk)
@@ -354,7 +426,7 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 func (p *bboltBacking[T]) rebuildIndex() error {
 	return p.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bboltItemsBucket).ForEach(func(k, data []byte) error {
-			item, err := jsonDecode[T](data)
+			item, err := p.decodeItem(data)
 			if err != nil {
 				return err
 			}
@@ -365,6 +437,7 @@ func (p *bboltBacking[T]) rebuildIndex() error {
 	})
 }
 
+// Hydrate implements Backing.Hydrate().
 func (p *bboltBacking[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	p.lk.lock()
 	defer p.lk.unlock()
@@ -376,7 +449,7 @@ func (p *bboltBacking[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 		if err := p.db.View(func(tx *bolt.Tx) error {
 			c := tx.Bucket(bboltItemsBucket).Cursor()
 			for k, data := c.First(); k != nil; k, data = c.Next() {
-				v, err := jsonDecode[T](data)
+				v, err := p.decodeItem(data)
 				if err != nil {
 					return err
 				}
@@ -438,7 +511,7 @@ func (p *bboltBacking[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 		if err := b.OnLoad(ctx, v); err != nil {
 			return err
 		}
-		data, err := json.Marshal(v)
+		data, err := p.encodeItem(v)
 		if err != nil {
 			return err
 		}
@@ -456,11 +529,13 @@ func (p *bboltBacking[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	return nil
 }
 
-// push stages the batch in the write buffer and blocks until the flusher commits it.
-// A batch larger than the buffer (or, on a bounded queue, larger than maxSize) can never
-// fit and returns ErrBatchTooLarge. While the buffer lacks room the wait is
-// context-cancelable; once the items are buffered the wait for the flush is not (ctx
-// only guards the pre-buffer wait).
+// Push implements Backing.Push(). It stages the batch in the write buffer (capacity
+// maxBatch) and blocks until the flusher commits it. Over-maxBatch batches are rejected by
+// Queue.Push before reaching here, so len(vs) <= maxBatch always holds; on a bounded queue
+// a batch larger than maxSize returns ErrBatchTooLarge. When concurrent pushes have
+// momentarily filled the shared maxBatch buffer this Push flushes and retries (it always
+// fits once drained); that pre-buffer wait is context-cancelable, but once the items are
+// buffered the wait for the flush to commit is not.
 func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(p.priority, vs); err != nil {
 		return err
@@ -475,7 +550,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 			p.lk.unlock()
 			return ErrBatchTooLarge
 		}
-		if p.maxSize > 0 && p.count+int64(len(vs)) > int64(p.maxSize) {
+		if p.maxSize > 0 && p.count+p.pending+int64(len(vs)) > int64(p.maxSize) {
 			wait := p.notFullCh
 			p.lk.unlock()
 			select {
@@ -487,6 +562,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 		}
 		if len(p.buf)+len(vs) <= p.maxBatch {
 			p.buf = append(p.buf, vs...)
+			p.pending += int64(len(vs))
 			r := p.cur
 			p.lk.unlock()
 			// Group commit: signal on every append, not just when full. The flusher
@@ -516,7 +592,8 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 	}
 }
 
-func (p *bboltBacking[T]) PopN(ctx context.Context, n int) ([]T, error) {
+// Pop implements Backing.Pop().
+func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 	for {
 		p.lk.lock()
 		if p.count > 0 {
@@ -541,7 +618,7 @@ func (p *bboltBacking[T]) PopN(ctx context.Context, n int) ([]T, error) {
 					if key == nil {
 						return ErrEmpty
 					}
-					dv, err := jsonDecode[T](data)
+					dv, err := p.decodeItem(data)
 					if err != nil {
 						return err
 					}
@@ -619,6 +696,7 @@ func (p *bboltBacking[T]) PopN(ctx context.Context, n int) ([]T, error) {
 	}
 }
 
+// Peek implements Backing.Peek().
 func (p *bboltBacking[T]) Peek(ctx context.Context) (T, bool, error) {
 	var zero T
 	p.lk.rlock()
@@ -635,7 +713,7 @@ func (p *bboltBacking[T]) Peek(ctx context.Context) (T, bool, error) {
 		if data == nil {
 			return ErrEmpty
 		}
-		dv, err := jsonDecode[T](data)
+		dv, err := p.decodeItem(data)
 		if err != nil {
 			return err
 		}
@@ -648,6 +726,7 @@ func (p *bboltBacking[T]) Peek(ctx context.Context) (T, bool, error) {
 	return v, true, nil
 }
 
+// Exists implements Backing.Exists().
 func (p *bboltBacking[T]) Exists(ctx context.Context, v T) (bool, error) {
 	p.lk.rlock()
 	defer p.lk.runlock()
@@ -663,7 +742,7 @@ func (p *bboltBacking[T]) Exists(ctx context.Context, v T) (bool, error) {
 				if data == nil {
 					continue
 				}
-				item, err := jsonDecode[T](data)
+				item, err := p.decodeItem(data)
 				if err != nil {
 					return err
 				}
@@ -675,7 +754,7 @@ func (p *bboltBacking[T]) Exists(ctx context.Context, v T) (bool, error) {
 			return nil
 		}
 		return b.ForEach(func(_, data []byte) error {
-			item, err := jsonDecode[T](data)
+			item, err := p.decodeItem(data)
 			if err != nil {
 				return err
 			}
@@ -692,6 +771,7 @@ func (p *bboltBacking[T]) Exists(ctx context.Context, v T) (bool, error) {
 	return found, nil
 }
 
+// Del implements Backing.Del().
 func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 	p.lk.lock()
 	defer p.lk.unlock()
@@ -730,7 +810,7 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 					if data == nil {
 						continue
 					}
-					item, err := jsonDecode[T](data)
+					item, err := p.decodeItem(data)
 					if err != nil {
 						return err
 					}
@@ -745,7 +825,7 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 			return nil
 		}
 		return b.ForEach(func(k, data []byte) error {
-			item, err := jsonDecode[T](data)
+			item, err := p.decodeItem(data)
 			if err != nil {
 				return err
 			}
@@ -807,6 +887,7 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 	return nil
 }
 
+// NotEmpty implements Backing.NotEmpty().
 func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 	for {
 		p.lk.rlock()
@@ -828,6 +909,7 @@ func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 	}
 }
 
+// NotFull implements Backing.NotFull().
 func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
 	for {
 		p.lk.rlock()
@@ -849,12 +931,14 @@ func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
 	}
 }
 
+// Len implements Backing.Len().
 func (p *bboltBacking[T]) Len() int64 {
 	p.lk.rlock()
 	defer p.lk.runlock()
 	return p.count
 }
 
+// Close implements Backing.Close().
 func (p *bboltBacking[T]) Close(ctx context.Context) error {
 	p.lk.lock()
 	if p.closed {
@@ -882,6 +966,7 @@ func (p *bboltBacking[T]) Close(ctx context.Context) error {
 	return errors.Join(gErr, bErr, cErr)
 }
 
+// Clear implements Backing.Clear().
 func (p *bboltBacking[T]) Clear(ctx context.Context) error {
 	p.lk.lock()
 	defer p.lk.unlock()
@@ -917,6 +1002,7 @@ func (p *bboltBacking[T]) Clear(ctx context.Context) error {
 	return nil
 }
 
+// All implements Backing.All().
 func (p *bboltBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		p.lk.rlock()
@@ -935,7 +1021,7 @@ func (p *bboltBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 					return errStopIter
 				default:
 				}
-				v, err := jsonDecode[T](data)
+				v, err := p.decodeItem(data)
 				if err != nil {
 					yield(zero, err)
 					return errStopIter
@@ -949,6 +1035,7 @@ func (p *bboltBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	}
 }
 
+// AllCOW implements Backing.AllCOW().
 func (p *bboltBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
@@ -965,7 +1052,7 @@ func (p *bboltBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 		p.db.View(func(tx *bolt.Tx) error {
 			c := tx.Bucket(bboltItemsBucket).Cursor()
 			for k, data := c.First(); k != nil; k, data = c.Next() {
-				v, err := jsonDecode[T](data)
+				v, err := p.decodeItem(data)
 				if err != nil {
 					rerr = err
 					return errStopIter

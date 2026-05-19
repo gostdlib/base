@@ -55,7 +55,7 @@ func TestStringItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestStringItem: NewFIFO got err == %s, want err == nil", err)
 	}
-	q, err := New[String](ctx, bk, 0)
+	q, err := New[String](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestStringItem: New got err == %s, want err == nil", err)
 	}
@@ -68,9 +68,9 @@ func TestStringItem(t *testing.T) {
 		t.Errorf("TestStringItem: Exists(a) got (%v,%v), want (true,nil)", ex, err)
 	}
 	for _, want := range []string{"b", "a", "c"} { // FIFO insertion order
-		items, err := q.PopN(ctx, 1)
+		items, err := q.Pop(ctx, 1)
 		if err != nil || len(items) != 1 || items[0].V != want {
-			t.Fatalf("TestStringItem: PopN got (%v,%v), want %q", items, err, want)
+			t.Fatalf("TestStringItem: Pop got (%v,%v), want %q", items, err, want)
 		}
 	}
 	if err := q.Close(ctx); err != nil {
@@ -100,7 +100,7 @@ func TestBytesItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestBytesItem: NewBTreePriority got err == %s, want err == nil", err)
 	}
-	q, err := New[Bytes](ctx, bk, 0)
+	q, err := New[Bytes](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestBytesItem: New got err == %s, want err == nil", err)
 	}
@@ -112,9 +112,9 @@ func TestBytesItem(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"lo", "mid", "hi"} {
-		items, err := q.PopN(ctx, 1)
+		items, err := q.Pop(ctx, 1)
 		if err != nil || len(items) != 1 || string(items[0].V) != want {
-			t.Fatalf("TestBytesItem: PopN got (%v,%v), want %q", items, err, want)
+			t.Fatalf("TestBytesItem: Pop got (%v,%v), want %q", items, err, want)
 		}
 	}
 	if err := q.Close(ctx); err != nil {
@@ -153,7 +153,7 @@ func TestValueItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestValueItem: NewFIFO got err == %s, want err == nil", err)
 	}
-	q, err := New[Value[int]](ctx, bk, 0)
+	q, err := New[Value[int]](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestValueItem: New got err == %s, want err == nil", err)
 	}
@@ -170,9 +170,9 @@ func TestValueItem(t *testing.T) {
 		t.Errorf("TestValueItem: Exists(20) after Del got (%v,%v), want (false,nil)", ex, err)
 	}
 	for _, want := range []int{10, 30} {
-		items, err := q.PopN(ctx, 1)
+		items, err := q.Pop(ctx, 1)
 		if err != nil || len(items) != 1 || items[0].V != want {
-			t.Fatalf("TestValueItem: PopN got (%v,%v), want %d", items, err, want)
+			t.Fatalf("TestValueItem: Pop got (%v,%v), want %d", items, err, want)
 		}
 	}
 	if err := q.Close(ctx); err != nil {
@@ -251,14 +251,14 @@ func TestBboltMlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestBboltMlock: NewBboltFIFO got err == %s, want err == nil", err)
 	}
-	q, err := New[Number[int]](ctx, bk, 0)
+	q, err := New[Number[int]](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestBboltMlock: New got err == %s, want err == nil", err)
 	}
 	if ok, err := q.Push(ctx, []Number[int]{fifoItem(1)}); err != nil || !ok {
 		t.Fatalf("TestBboltMlock: Push got (ok=%v err=%v)", ok, err)
 	}
-	if rem := popN(t, ctx, "mlock", q, 1); rem[0] != 1 {
+	if rem := pop(t, ctx, "mlock", q, 1); rem[0] != 1 {
 		t.Errorf("TestBboltMlock: pop got %v, want [1]", rem)
 	}
 	if err := q.Close(ctx); err != nil {
@@ -275,7 +275,7 @@ func TestBboltNoSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestBboltNoSync: NewBboltFIFO got err == %s, want err == nil", err)
 	}
-	q, err := New[Number[int]](ctx, bk, 0)
+	q, err := New[Number[int]](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestBboltNoSync: New got err == %s, want err == nil", err)
 	}
@@ -284,7 +284,7 @@ func TestBboltNoSync(t *testing.T) {
 			t.Fatalf("TestBboltNoSync: Push(%d) got (ok=%v err=%v)", i, ok, err)
 		}
 	}
-	got := popN(t, ctx, "nosync", q, 50)
+	got := pop(t, ctx, "nosync", q, 50)
 	for i, v := range got {
 		if v != i {
 			t.Fatalf("TestBboltNoSync: pop[%d] got %d, want %d", i, v, i)
@@ -308,7 +308,7 @@ func TestBboltOpenFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestBboltOpenFile: NewBboltFIFO got err == %s, want err == nil", err)
 	}
-	q, err := New[Number[int]](ctx, bk, 0)
+	q, err := New[Number[int]](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestBboltOpenFile: New got err == %s, want err == nil", err)
 	}
@@ -320,7 +320,7 @@ func TestBboltOpenFile(t *testing.T) {
 			t.Fatalf("TestBboltOpenFile: Push(%d) got (ok=%v err=%v)", i, ok, err)
 		}
 	}
-	if got := popN(t, ctx, "openfile", q, 10); got[0] != 0 || got[9] != 9 {
+	if got := pop(t, ctx, "openfile", q, 10); got[0] != 0 || got[9] != 9 {
 		t.Errorf("TestBboltOpenFile: drained %v, want 0..9", got)
 	}
 	if err := q.Close(ctx); err != nil {
@@ -347,7 +347,7 @@ func TestWithBTreeWidth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestWithBTreeWidth: NewBTreeFIFO(width=8) got err == %s, want err == nil", err)
 	}
-	q, err := New[Number[int]](ctx, bk, 0)
+	q, err := New[Number[int]](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestWithBTreeWidth: New got err == %s, want err == nil", err)
 	}
@@ -356,7 +356,7 @@ func TestWithBTreeWidth(t *testing.T) {
 			t.Fatalf("TestWithBTreeWidth: Push(%d) got (ok=%v err=%v), want (true,nil)", i, ok, err)
 		}
 	}
-	got := popN(t, ctx, "width=8", q, 5)
+	got := pop(t, ctx, "width=8", q, 5)
 	for i, v := range got {
 		if v != i {
 			t.Fatalf("TestWithBTreeWidth: pop[%d] got %d, want %d", i, v, i)
@@ -375,7 +375,7 @@ func TestWithSideEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestWithSideEffect: NewFIFO got err == %s, want err == nil", err)
 	}
-	q, err := New[Number[int]](ctx, bk, 0)
+	q, err := New[Number[int]](ctx, "test", bk, 0)
 	if err != nil {
 		t.Fatalf("TestWithSideEffect: New got err == %s, want err == nil", err)
 	}
@@ -401,16 +401,16 @@ func TestWithSideEffect(t *testing.T) {
 		t.Errorf("TestWithSideEffect: Len got %d, want 2 (both items pushed)", q.Len())
 	}
 
-	// PopN side effect runs and its error is surfaced; the item is still popped.
-	items, err := q.PopN(ctx, 1, WithSideEffect(func() error { return sentinel }))
+	// Pop side effect runs and its error is surfaced; the item is still popped.
+	items, err := q.Pop(ctx, 1, WithSideEffect(func() error { return sentinel }))
 	switch {
 	case !errors.Is(err, sentinel):
-		t.Errorf("TestWithSideEffect: PopN got err == %v, want %v", err, sentinel)
+		t.Errorf("TestWithSideEffect: Pop got err == %v, want %v", err, sentinel)
 	case len(items) != 1 || items[0].V != 1:
-		t.Errorf("TestWithSideEffect: PopN got items == %v, want [1] (item still popped)", items)
+		t.Errorf("TestWithSideEffect: Pop got items == %v, want [1] (item still popped)", items)
 	}
 	if q.Len() != 1 {
-		t.Errorf("TestWithSideEffect: Len after PopN got %d, want 1", q.Len())
+		t.Errorf("TestWithSideEffect: Len after Pop got %d, want 1", q.Len())
 	}
 	if err := q.Close(ctx); err != nil {
 		t.Errorf("TestWithSideEffect: Close got err == %s, want err == nil", err)

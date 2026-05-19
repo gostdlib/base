@@ -15,7 +15,7 @@ func TestBboltBufferedFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestBboltBufferedFlush: NewBboltFIFO got err == %s, want nil", err)
 	}
-	q, err := New[Number[int]](ctx, backing, 0, WithMaxBatch(maxB))
+	q, err := New[Number[int]](ctx, "test", backing, 0, WithMaxBatch(maxB))
 	if err != nil {
 		t.Fatalf("TestBboltBufferedFlush: New got err == %s, want nil", err)
 	}
@@ -37,7 +37,7 @@ func TestBboltBufferedFlush(t *testing.T) {
 	if n := q.Len(); n != int64(maxB) {
 		t.Errorf("TestBboltBufferedFlush: Len after cap push got %d, want %d", n, maxB)
 	}
-	got := popN(t, ctx, "bbolt-buffered", q, maxB)
+	got := pop(t, ctx, "bbolt-buffered", q, maxB)
 	for i, v := range got {
 		if v != i {
 			t.Fatalf("TestBboltBufferedFlush: pop[%d] got %d, want %d", i, v, i)
@@ -51,7 +51,7 @@ func TestBboltBufferedFlush(t *testing.T) {
 	if n := q.Len(); n != 2 {
 		t.Errorf("TestBboltBufferedFlush: Len after small push got %d, want 2", n)
 	}
-	if rem := popN(t, ctx, "bbolt-buffered", q, 2); rem[0] != 42 || rem[1] != 7 {
+	if rem := pop(t, ctx, "bbolt-buffered", q, 2); rem[0] != 42 || rem[1] != 7 {
 		t.Errorf("TestBboltBufferedFlush: drained %v, want [42 7]", rem)
 	}
 

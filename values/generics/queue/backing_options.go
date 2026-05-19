@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"time"
@@ -42,6 +43,12 @@ type backingOpts struct {
 	boltPageSize        int
 	boltTimeout         time.Duration
 	boltOpenFile        func(string, int, os.FileMode) (*os.File, error)
+
+	// codecEncode and codecDecode hold the WithCodec funcs. They are stored as any
+	// because BackingOption is not generic; newBboltBacking type-asserts them back to
+	// the item-typed func signatures.
+	codecEncode any
+	codecDecode any
 }
 
 // bboltOnly returns an error if o.call is not a bbolt constructor; used by the
@@ -52,6 +59,26 @@ func (o backingOpts) bboltOnly(name string) error {
 		return nil
 	default:
 		return fmt.Errorf("%s is only valid for the bbolt backings (NewBboltFIFO/NewBboltPriority)", name)
+	}
+}
+
+// WithCodec sets the on-disk serialization for the bbolt backings. enc writes an item
+// into a reused *bytes.Buffer; dec reads a record back into a reused *T. The package
+// provides JSONEncode/JSONDecode for JSON-serializable types; supply your own for any
+// other format. Items whose default JSON encoding fails (notably Value, which has
+// function fields) require this — NewBboltFIFO/NewBboltPriority return ErrCodecRequired
+// for such an item type when WithCodec is absent. Valid only for the bbolt backings.
+func WithCodec[T Item[T]](enc func(dst *bytes.Buffer, v T) error, dec func(src []byte, dst *T) error) BackingOption {
+	return func(o backingOpts) (backingOpts, error) {
+		if err := o.bboltOnly("WithCodec"); err != nil {
+			return o, err
+		}
+		if enc == nil || dec == nil {
+			return o, fmt.Errorf("WithCodec requires a non-nil encoder and decoder")
+		}
+		o.codecEncode = enc
+		o.codecDecode = dec
+		return o, nil
 	}
 }
 

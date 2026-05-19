@@ -29,7 +29,7 @@ func newQ(t *testing.T, b Backing[Number[int]], err error, ctx context.Context, 
 	if err != nil {
 		t.Fatalf("backing build got err == %s, want err == nil", err)
 	}
-	q, err := New[Number[int]](ctx, b, maxSize, opts...)
+	q, err := New[Number[int]](ctx, "test", b, maxSize, opts...)
 	if err != nil {
 		t.Fatalf("New got err == %s, want err == nil", err)
 	}
@@ -47,7 +47,7 @@ func queueMakers() []qMaker {
 			return newQ(t, b, err, ctx, max, o...)
 		}},
 		{"fifo-btype", false, func(t *testing.T, ctx context.Context, max int, o ...Option) *Queue[Number[int]] {
-			b, err := NewBtypeFIFO[Number[int]]()
+			b, err := newBtypeFIFO[Number[int]]()
 			return newQ(t, b, err, ctx, max, o...)
 		}},
 		{"fifo-btree+index", false, func(t *testing.T, ctx context.Context, max int, o ...Option) *Queue[Number[int]] {
@@ -107,7 +107,7 @@ func TestQueueSequential(t *testing.T) {
 		}
 
 		want := wantOrder(m.priority, pushed)
-		got := popN(t, ctx, m.name, q, len(want))
+		got := pop(t, ctx, m.name, q, len(want))
 		if diff := pretty.Compare(want, got); diff != "" {
 			t.Errorf("TestQueueSequential(%s): drain order -want +got:\n%s", m.name, diff)
 		}
@@ -120,8 +120,8 @@ func TestQueueSequential(t *testing.T) {
 	}
 }
 
-// TestQueueEmpty verifies empty-queue behavior: Peek reports not-found, a blocked PopN /
-// NotEmpty returns an error when its context is canceled, and a PopN blocked on an empty
+// TestQueueEmpty verifies empty-queue behavior: Peek reports not-found, a blocked Pop /
+// NotEmpty returns an error when its context is canceled, and a Pop blocked on an empty
 // queue unblocks when an item is pushed concurrently.
 func TestQueueEmpty(t *testing.T) {
 	for _, m := range queueMakers() {
@@ -134,34 +134,34 @@ func TestQueueEmpty(t *testing.T) {
 
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		if items, err := q.PopN(cctx, 1); err == nil || items != nil {
-			t.Errorf("TestQueueEmpty(%s): PopN on empty+canceled got (items=%v err=%v), want (nil, err)", m.name, items, err)
+		if items, err := q.Pop(cctx, 1); err == nil || items != nil {
+			t.Errorf("TestQueueEmpty(%s): Pop on empty+canceled got (items=%v err=%v), want (nil, err)", m.name, items, err)
 		}
 		if err := q.NotEmpty(cctx); err == nil {
 			t.Errorf("TestQueueEmpty(%s): NotEmpty on empty+canceled got err == nil, want err != nil", m.name)
 		}
 
-		// A PopN blocked on the empty queue must unblock once an item is pushed.
+		// A Pop blocked on the empty queue must unblock once an item is pushed.
 		type result struct {
 			v   int
 			err error
 		}
 		got := make(chan result, 1)
 		go func() {
-			items, err := q.PopN(ctx, 1)
+			items, err := q.Pop(ctx, 1)
 			r := result{err: err}
 			if err == nil && len(items) == 1 {
 				r.v = items[0].V
 			}
 			got <- r
 		}()
-		// PopN on an empty (non-canceled) queue must block, not return: after a grace
+		// Pop on an empty (non-canceled) queue must block, not return: after a grace
 		// period it must still be pending. This deterministically catches a spurious
 		// return on empty even if the goroutine raced ahead of this check.
 		time.Sleep(50 * time.Millisecond)
 		select {
 		case r := <-got:
-			t.Fatalf("TestQueueEmpty(%s): PopN returned (v=%d err=%v) on an empty queue before any Push", m.name, r.v, r.err)
+			t.Fatalf("TestQueueEmpty(%s): Pop returned (v=%d err=%v) on an empty queue before any Push", m.name, r.v, r.err)
 		default:
 		}
 		if ok, err := q.Push(ctx, []Number[int]{m.item(42)}); err != nil || !ok {
@@ -171,12 +171,12 @@ func TestQueueEmpty(t *testing.T) {
 		case r := <-got:
 			switch {
 			case r.err != nil:
-				t.Errorf("TestQueueEmpty(%s): blocked PopN got err == %s, want err == nil", m.name, r.err)
+				t.Errorf("TestQueueEmpty(%s): blocked Pop got err == %s, want err == nil", m.name, r.err)
 			case r.v != 42:
-				t.Errorf("TestQueueEmpty(%s): blocked PopN got %d, want 42", m.name, r.v)
+				t.Errorf("TestQueueEmpty(%s): blocked Pop got %d, want 42", m.name, r.v)
 			}
 		case <-time.After(10 * time.Second):
-			t.Fatalf("TestQueueEmpty(%s): PopN did not unblock after Push", m.name)
+			t.Fatalf("TestQueueEmpty(%s): Pop did not unblock after Push", m.name)
 		}
 
 		if err := q.Close(ctx); err != nil {
@@ -232,11 +232,11 @@ func TestQueueFull(t *testing.T) {
 		}
 
 		// Make room, then a Push succeeds.
-		if _, err := q.PopN(ctx, 1); err != nil {
-			t.Fatalf("TestQueueFull(%s): PopN got err == %s, want err == nil", m.name, err)
+		if _, err := q.Pop(ctx, 1); err != nil {
+			t.Fatalf("TestQueueFull(%s): Pop got err == %s, want err == nil", m.name, err)
 		}
 		if ok, err := q.Push(ctx, []Number[int]{m.item(7)}); err != nil || !ok {
-			t.Errorf("TestQueueFull(%s): Push after PopN got (ok=%v err=%v), want (true,nil)", m.name, ok, err)
+			t.Errorf("TestQueueFull(%s): Push after Pop got (ok=%v err=%v), want (true,nil)", m.name, ok, err)
 		}
 
 		if err := q.Close(ctx); err != nil {
@@ -287,7 +287,7 @@ func TestQueueConcurrent(t *testing.T) {
 				for c := 0; c < consumers; c++ {
 					go func() {
 						for {
-							items, err := q.PopN(cctx, 8)
+							items, err := q.Pop(cctx, 8)
 							if err != nil {
 								return // context canceled: all items already collected
 							}

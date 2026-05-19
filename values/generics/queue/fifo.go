@@ -46,6 +46,7 @@ func (f *fifo[T]) setMaxSize(n int) error {
 	return nil
 }
 
+// Hydrate implements Backing.Hydrate().
 func (f *fifo[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -71,6 +72,7 @@ func resetSignal(ch *chan struct{}) {
 	*ch = make(chan struct{})
 }
 
+// Push implements Backing.Push().
 func (f *fifo[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(false, vs); err != nil {
 		return err
@@ -110,7 +112,8 @@ func (f *fifo[T]) Push(ctx context.Context, vs []T) error {
 	}
 }
 
-func (f *fifo[T]) PopN(ctx context.Context, n int) ([]T, error) {
+// Pop implements Backing.Pop().
+func (f *fifo[T]) Pop(ctx context.Context, n int) ([]T, error) {
 	var zero T
 	for {
 		f.lk.lock()
@@ -154,6 +157,7 @@ func (f *fifo[T]) PopN(ctx context.Context, n int) ([]T, error) {
 	}
 }
 
+// Peek implements Backing.Peek().
 func (f *fifo[T]) Peek(ctx context.Context) (T, bool, error) {
 	var zero T
 	f.lk.rlock()
@@ -167,6 +171,7 @@ func (f *fifo[T]) Peek(ctx context.Context) (T, bool, error) {
 	return f.items[0], true, nil
 }
 
+// Exists implements Backing.Exists().
 func (f *fifo[T]) Exists(ctx context.Context, v T) (bool, error) {
 	f.lk.rlock()
 	defer f.lk.runlock()
@@ -181,6 +186,7 @@ func (f *fifo[T]) Exists(ctx context.Context, v T) (bool, error) {
 	return false, nil
 }
 
+// Del implements Backing.Del().
 func (f *fifo[T]) Del(ctx context.Context, v []T) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -213,6 +219,7 @@ func (f *fifo[T]) Del(ctx context.Context, v []T) error {
 	return nil
 }
 
+// NotEmpty implements Backing.NotEmpty().
 func (f *fifo[T]) NotEmpty(ctx context.Context) error {
 	for {
 		f.lk.rlock()
@@ -234,6 +241,7 @@ func (f *fifo[T]) NotEmpty(ctx context.Context) error {
 	}
 }
 
+// NotFull implements Backing.NotFull().
 func (f *fifo[T]) NotFull(ctx context.Context) error {
 	for {
 		f.lk.rlock()
@@ -255,12 +263,14 @@ func (f *fifo[T]) NotFull(ctx context.Context) error {
 	}
 }
 
+// Len implements Backing.Len().
 func (f *fifo[T]) Len() int64 {
 	f.lk.rlock()
 	defer f.lk.runlock()
 	return int64(len(f.items))
 }
 
+// Close implements Backing.Close().
 func (f *fifo[T]) Close(ctx context.Context) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -277,6 +287,7 @@ func (f *fifo[T]) Close(ctx context.Context) error {
 	return err
 }
 
+// Clear implements Backing.Clear().
 func (f *fifo[T]) Clear(ctx context.Context) error {
 	f.lk.lock()
 	defer f.lk.unlock()
@@ -300,6 +311,7 @@ func (f *fifo[T]) Clear(ctx context.Context) error {
 	return nil
 }
 
+// All implements Backing.All().
 func (f *fifo[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		f.lk.rlock()
@@ -324,6 +336,7 @@ func (f *fifo[T]) All(ctx context.Context) iter.Seq2[T, error] {
 	}
 }
 
+// AllCOW implements Backing.AllCOW().
 func (f *fifo[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T

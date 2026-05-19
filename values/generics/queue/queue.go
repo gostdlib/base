@@ -1,24 +1,14 @@
-// Package queue provides a generic, thread-safe queue implementation with multiple backing options.
-// The queue supports blocking and non-blocking operations. Both on-disk and in-memory queues support a backup interface
-// that can be used for recovery in the event of a crash or other failure.
-//
-// The backing data structure is chosen by the caller and passed to New. Construct one with NewFIFO,
-// NewBTreeFIFO, NewBtypeFIFO, NewPriority, NewBTreePriority, NewBboltFIFO or NewBboltPriority.
-// WithIndex enables an in-memory hash index for O(1) Exists / O(log n) Del; it is honored by the
-// priority B-Tree and the BoltDB backings, and by NewBTreeFIFO (which switches to a keyed B-Tree
-// when indexed — the positional FIFO has no stable locator to index). WithBTreeWidth tunes the
-// keyed B-Tree backings. Priority backings sort items by their Less method instead of insertion
-// order.
 package queue
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"iter"
 	"sync/atomic"
 
 	"github.com/gostdlib/base/concurrency/sync"
+	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/telemetry/otel/metrics"
 )
 
 // qlock is the shared lock for a Queue and its backing. The mutex is only ever held for
@@ -73,6 +63,9 @@ var (
 	ErrPriorityRequired = errors.New("priority queue requires items with Priority() > 0")
 	// ErrPriorityNotAllowed is returned when an item with Priority() > 0 is pushed onto a FIFO queue.
 	ErrPriorityNotAllowed = errors.New("FIFO queue requires items with Priority() == 0")
+	// ErrCodecRequired is returned when a Value without both Encoder and Decoder set is
+	// used with an on-disk (bbolt) backing.
+	ErrCodecRequired = errors.New("on-disk queue requires Value.Encoder and Value.Decoder to be set")
 )
 
 // Item is type constraint for items that can be stored in the queue.
@@ -113,14 +106,14 @@ type Backup[T Item[T]] interface {
 	Push(ctx context.Context, vs []T) error
 	// Del removes the given items from the backup, exactly one matching (Item.Equal)
 	// occurrence per element of vs. It is called with the precise items removed from the
-	// queue — those popped by a PopN and those deleted by a Del — so the backup stays a
+	// queue — those popped by a Pop and those deleted by a Del — so the backup stays a
 	// true mirror regardless of the backing's ordering. An element with no match is a
 	// no-op for that element.
 	Del(ctx context.Context, vs []T) error
 	// Restore re-inserts vs at the front of the backup, in vs order, undoing a Del whose
 	// corresponding queue mutation then failed (the on-disk delete or its commit did not
 	// land). It is the compensating counterpart of Del so the backup remains a true
-	// mirror. For items removed from the head (a PopN) this restores order exactly; for
+	// mirror. For items removed from the head (a Pop) this restores order exactly; for
 	// interior items removed by a Del the relative order of vs is preserved at the head
 	// (exact positional restore is not possible).
 	Restore(ctx context.Context, vs []T) error
@@ -150,6 +143,13 @@ type Queue[T Item[T]] struct {
 	backing  Backing[T]
 	backup   Backup[T]
 	maxBatch int
+	// name labels OTEL spans/metrics for this queue (the queue.name attribute). An
+	// empty name disables telemetry entirely: no spans or metrics are recorded.
+	name string
+	// met holds the OTEL instruments. It is nil when name == "" (telemetry disabled);
+	// otherwise non-nil. The instruments are also no-op safe when no exporter is
+	// configured.
+	met *queueMetrics
 }
 
 type queueOptions struct {
@@ -180,28 +180,6 @@ func validateOptions[T Item[T]](o queueOptions) (Backup[T], error) {
 	return backup, nil
 }
 
-// validateKindOne checks that an item's Priority() matches the backing kind: a priority
-// backing requires Priority() > 0, a FIFO backing requires Priority() == 0.
-func validateKindOne[T Item[T]](priority bool, v T) error {
-	switch {
-	case priority && v.Priority() == 0:
-		return ErrPriorityRequired
-	case !priority && v.Priority() != 0:
-		return ErrPriorityNotAllowed
-	}
-	return nil
-}
-
-// validateKind applies validateKindOne to every item in vs.
-func validateKind[T Item[T]](priority bool, vs []T) error {
-	for _, v := range vs {
-		if err := validateKindOne(priority, v); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // Option is optional arguments for New().
 type Option func(o queueOptions) queueOptions
 
@@ -227,9 +205,32 @@ func WithBackup(b any) Option {
 	}
 }
 
-// New creates a new Queue backed by a Backing.
-// maxSize is the maximum number of items the queue can hold; a value < 1 (or Unlimited) makes the queue unbounded.
-func New[T Item[T]](ctx context.Context, b Backing[T], maxSize int, options ...Option) (*Queue[T], error) {
+// validateKind applies validateKindOne to every item in vs. Used by Backings.
+func validateKind[T Item[T]](priority bool, vs []T) error {
+	for _, v := range vs {
+		if err := validateKindOne(priority, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateKindOne checks that an item's Priority() matches the backing kind: a priority
+// backing requires Priority() > 0, a FIFO backing requires Priority() == 0.
+func validateKindOne[T Item[T]](priority bool, v T) error {
+	switch {
+	case priority && v.Priority() == 0:
+		return ErrPriorityRequired
+	case !priority && v.Priority() != 0:
+		return ErrPriorityNotAllowed
+	}
+	return nil
+}
+
+// New creates a new Queue backed by a Backing. name is used for OTEL metric and traces, if empty string no telemetry
+// is recorded for the queue. maxSize is the maximum number of items the queue can hold;
+// a value < 1 (or const Unlimited) makes the queue unbounded.
+func New[T Item[T]](ctx context.Context, name string, b Backing[T], maxSize int, options ...Option) (*Queue[T], error) {
 	if b == nil {
 		return nil, fmt.Errorf("backing cannot be nil")
 	}
@@ -258,12 +259,27 @@ func New[T Item[T]](ctx context.Context, b Backing[T], maxSize int, options ...O
 		return nil, err
 	}
 
-	q := &Queue[T]{backing: b, backup: backup, lk: lk, maxBatch: opts.maxBatch}
+	q := &Queue[T]{
+		backing:  b,
+		backup:   backup,
+		lk:       lk,
+		maxBatch: opts.maxBatch,
+		name:     name,
+	}
+	// An empty name disables telemetry: no meter is built and instrument/recordDepth
+	// become no-ops, so nothing is recorded.
+	if name != "" {
+		meter := context.MeterProvider(ctx).Meter(metrics.MeterName(2))
+		q.met = newQueueMetrics(meter)
+	}
 	if backup != nil {
 		if err := b.Hydrate(ctx, backup); err != nil {
 			b.Close(ctx)
 			return nil, err
 		}
+	}
+	if q.met != nil {
+		q.met.lastDepth.Store(b.Len())
 	}
 	return q, nil
 }
@@ -284,54 +300,66 @@ func WithSideEffect(f func() error) OpOption {
 	}
 }
 
-// Close closes the queue and releases any resources associated with it. After calling Close, the queue should not be used.
-func (q *Queue[T]) Close(ctx context.Context, options ...OpOption) error {
+// Close closes the queue and releases any resources associated with it. After calling Close,
+// the queue should not be used.
+func (q *Queue[T]) Close(ctx context.Context, options ...OpOption) (err error) {
+	ctx, done := q.instrument(ctx, "Close")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
 
-	if err := q.backing.Close(ctx); err != nil {
+	if err = q.backing.Close(ctx); err != nil {
 		return err
 	}
 
 	if opts.sideEffect != nil {
-		return opts.sideEffect()
+		err = opts.sideEffect()
+		return err
 	}
 	return nil
-
 }
 
 // NotEmpty waits until the queue is not empty or the context is cancelled.
-func (q *Queue[T]) NotEmpty(ctx context.Context, options ...OpOption) error {
+func (q *Queue[T]) NotEmpty(ctx context.Context, options ...OpOption) (err error) {
+	ctx, done := q.instrument(ctx, "NotEmpty")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
 
-	if err := q.backing.NotEmpty(ctx); err != nil {
+	if err = q.backing.NotEmpty(ctx); err != nil {
 		return err
 	}
 
 	if opts.sideEffect != nil {
-		return opts.sideEffect()
+		err = opts.sideEffect()
+		return err
 	}
 	return nil
 }
 
 // NotFull waits until the queue is not full or the context is cancelled.
-func (q *Queue[T]) NotFull(ctx context.Context, options ...OpOption) error {
+func (q *Queue[T]) NotFull(ctx context.Context, options ...OpOption) (err error) {
+	ctx, done := q.instrument(ctx, "NotFull")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
 
-	if err := q.backing.NotFull(ctx); err != nil {
+	if err = q.backing.NotFull(ctx); err != nil {
 		return err
 	}
 
 	if opts.sideEffect != nil {
-		return opts.sideEffect()
+		err = opts.sideEffect()
+		return err
 	}
 	return nil
 }
@@ -345,6 +373,9 @@ func (q *Queue[T]) NotFull(ctx context.Context, options ...OpOption) error {
 // value indicates whether the batch was pushed: if false the error indicates why; if true
 // the error reports the side effect's result.
 func (q *Queue[T]) Push(ctx context.Context, vs []T, options ...OpOption) (ok bool, err error) {
+	ctx, done := q.instrument(ctx, "Push")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
@@ -352,46 +383,55 @@ func (q *Queue[T]) Push(ctx context.Context, vs []T, options ...OpOption) (ok bo
 
 	if len(vs) == 0 {
 		if opts.sideEffect != nil {
-			return true, opts.sideEffect()
+			err = opts.sideEffect()
+			return true, err
 		}
 		return true, nil
 	}
 
 	if len(vs) > q.maxBatch {
-		return false, ErrBatchTooLarge
-	}
-
-	if err := q.backing.Push(ctx, vs); err != nil {
+		err = ErrBatchTooLarge
 		return false, err
 	}
 
+	if err = q.backing.Push(ctx, vs); err != nil {
+		return false, err
+	}
+	q.recordDepth(ctx)
+
 	if opts.sideEffect != nil {
-		return true, opts.sideEffect()
+		err = opts.sideEffect()
+		return true, err
 	}
 	return true, nil
 }
 
-// PopN removes and returns up to n items from the front of the queue. n must be >= 1 or
-// this will panic. PopN blocks until at least one item is available (or the context
+// Pop removes and returns up to n items from the front of the queue. n must be >= 1 or
+// this will panic. Pop blocks until at least one item is available (or the context
 // is canceled, returning context.Cause(ctx)), then returns between 1 and n items —
 // whatever is available without further blocking. The returned slice is non-empty on a
 // nil error. If a side effect is configured it runs after the items are removed; its
 // error is returned alongside the items (the items are still removed).
-func (q *Queue[T]) PopN(ctx context.Context, n int, options ...OpOption) ([]T, error) {
+func (q *Queue[T]) Pop(ctx context.Context, n int, options ...OpOption) (items []T, err error) {
 	if n < 1 {
 		panic("invalid argument: n must be >= 1")
 	}
+	ctx, done := q.instrument(ctx, "Pop")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
 
-	items, err := q.backing.PopN(ctx, n)
+	items, err = q.backing.Pop(ctx, n)
 	if err != nil {
 		return nil, err
 	}
+	q.recordDepth(ctx)
 	if opts.sideEffect != nil {
-		return items, opts.sideEffect()
+		err = opts.sideEffect()
+		return items, err
 	}
 	return items, nil
 }
@@ -400,6 +440,9 @@ func (q *Queue[T]) PopN(ctx context.Context, n int, options ...OpOption) ([]T, e
 // second return value will be false. If the queue is not empty, the second return value will be true
 // and the first return value will be the item at the front of the queue.
 func (q *Queue[T]) Peek(ctx context.Context, options ...OpOption) (v T, ok bool, err error) {
+	ctx, done := q.instrument(ctx, "Peek")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
@@ -410,7 +453,8 @@ func (q *Queue[T]) Peek(ctx context.Context, options ...OpOption) (v T, ok bool,
 		return v, false, err
 	}
 	if opts.sideEffect != nil {
-		return v, ok, opts.sideEffect()
+		err = opts.sideEffect()
+		return v, ok, err
 	}
 	return v, ok, nil
 }
@@ -418,18 +462,22 @@ func (q *Queue[T]) Peek(ctx context.Context, options ...OpOption) (v T, ok bool,
 // Exists returns true if the item exists in the queue. This is useful for checking if an item is in the queue before
 // pushing it onto the queue. If we have an index configured, this will use that. If its a btree, this will be
 // O log(n). If standard array, this will be O(n), so if your list is large this can be problematic.
-func (q *Queue[T]) Exists(ctx context.Context, v T, options ...OpOption) (bool, error) {
+func (q *Queue[T]) Exists(ctx context.Context, v T, options ...OpOption) (exists bool, err error) {
+	ctx, done := q.instrument(ctx, "Exists")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
 
-	exists, err := q.backing.Exists(ctx, v)
+	exists, err = q.backing.Exists(ctx, v)
 	if err != nil {
 		return false, err
 	}
 	if opts.sideEffect != nil {
-		return exists, opts.sideEffect()
+		err = opts.sideEffect()
+		return exists, err
 	}
 	return exists, nil
 }
@@ -437,17 +485,22 @@ func (q *Queue[T]) Exists(ctx context.Context, v T, options ...OpOption) (bool, 
 // Del removes every item from the queue that returns Item.Equal(e) == true for any element e of v
 // (all matches, not just one). Duplicate elements in v are idempotent and an empty v is a no-op.
 // If no items match, this returns a nil error.
-func (q *Queue[T]) Del(ctx context.Context, v []T, options ...OpOption) error {
+func (q *Queue[T]) Del(ctx context.Context, v []T, options ...OpOption) (err error) {
+	ctx, done := q.instrument(ctx, "Del")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
 
-	if err := q.backing.Del(ctx, v); err != nil {
+	if err = q.backing.Del(ctx, v); err != nil {
 		return err
 	}
+	q.recordDepth(ctx)
 	if opts.sideEffect != nil {
-		return opts.sideEffect()
+		err = opts.sideEffect()
+		return err
 	}
 	return nil
 }
@@ -468,16 +521,21 @@ func (q *Queue[T]) Len() int64 {
 }
 
 // Clear removes all items from the queue.
-func (q *Queue[T]) Clear(ctx context.Context, options ...OpOption) error {
+func (q *Queue[T]) Clear(ctx context.Context, options ...OpOption) (err error) {
+	ctx, done := q.instrument(ctx, "Clear")
+	defer func() { done(&err) }()
+
 	opts := opOptions{}
 	for _, option := range options {
 		opts = option(opts)
 	}
-	if err := q.backing.Clear(ctx); err != nil {
+	if err = q.backing.Clear(ctx); err != nil {
 		return err
 	}
+	q.recordDepth(ctx)
 	if opts.sideEffect != nil {
-		return opts.sideEffect()
+		err = opts.sideEffect()
+		return err
 	}
 	return nil
 }
@@ -488,7 +546,20 @@ func (q *Queue[T]) Clear(ctx context.Context, options ...OpOption) error {
 // Do not call a mutating Queue method from inside the loop on the same goroutine — that
 // self-deadlocks; use RangeAllCOW if you need writers to make progress during iteration.
 func (q *Queue[T]) RangeAll(ctx context.Context) iter.Seq2[T, error] {
-	return q.backing.All(ctx)
+	inner := q.backing.All(ctx)
+	return func(yield func(T, error) bool) {
+		_, done := q.instrument(ctx, "RangeAll")
+		var rangeErr error
+		defer func() { done(&rangeErr) }()
+		for v, err := range inner {
+			if err != nil {
+				rangeErr = err
+			}
+			if !yield(v, err) {
+				return
+			}
+		}
+	}
 }
 
 // RangeAllCOW is like RangeAll but does not block writers for the whole iteration. It
@@ -498,7 +569,20 @@ func (q *Queue[T]) RangeAll(ctx context.Context) iter.Seq2[T, error] {
 // items yielded after that reflect the queue state at that moment, not later mutations.
 // For on-disk backings the remainder is also copied into memory, which can be large.
 func (q *Queue[T]) RangeAllCOW(ctx context.Context) iter.Seq2[T, error] {
-	return q.backing.AllCOW(ctx)
+	inner := q.backing.AllCOW(ctx)
+	return func(yield func(T, error) bool) {
+		_, done := q.instrument(ctx, "RangeAllCOW")
+		var rangeErr error
+		defer func() { done(&rangeErr) }()
+		for v, err := range inner {
+			if err != nil {
+				rangeErr = err
+			}
+			if !yield(v, err) {
+				return
+			}
+		}
+	}
 }
 
 // Backing is the underlying data structure that implements the queue. It is sealed to this
@@ -521,10 +605,10 @@ type Backing[T Item[T]] interface {
 	// returned if the batch cannot ever fit; otherwise it blocks until the whole batch fits
 	// or the context is canceled (context.Cause(ctx)). The caller guarantees len(vs) > 0.
 	Push(ctx context.Context, vs []T) error
-	// PopN removes and returns up to n items from the front of the queue. It blocks until
+	// Pop removes and returns up to n items from the front of the queue. It blocks until
 	// at least one item is available or the context is canceled (context.Cause(ctx)),
 	// then returns 1..n items. The caller guarantees n >= 1.
-	PopN(ctx context.Context, n int) ([]T, error)
+	Pop(ctx context.Context, n int) ([]T, error)
 	// Peek returns the item at the front of the queue without removing it. If the queue is empty the
 	// second return value will be false. If the queue is not empty, the second return value will be true
 	// and the first return value will be the item at the front of the queue.

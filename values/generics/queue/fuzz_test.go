@@ -139,12 +139,12 @@ func runScript(t *testing.T, ctx context.Context, name string, q *Queue[Number[i
 			if m.empty() {
 				continue
 			}
-			items, err := q.PopN(ctx, 1)
+			items, err := q.Pop(ctx, 1)
 			if err != nil || len(items) != 1 {
-				t.Fatalf("Fuzz%s: PopN got (items=%v err=%v), want 1 item, nil", name, items, err)
+				t.Fatalf("Fuzz%s: Pop got (items=%v err=%v), want 1 item, nil", name, items, err)
 			}
 			if want := m.pop(); items[0].V != want {
-				t.Fatalf("Fuzz%s: PopN got %d, want %d", name, items[0].V, want)
+				t.Fatalf("Fuzz%s: Pop got %d, want %d", name, items[0].V, want)
 			}
 		case 2: // peek
 			pv, ok, err := q.Peek(ctx)
@@ -188,12 +188,12 @@ func runScript(t *testing.T, ctx context.Context, name string, q *Queue[Number[i
 
 	// Drain whatever remains and confirm the order matches the model exactly.
 	for !m.empty() {
-		items, err := q.PopN(ctx, 1)
+		items, err := q.Pop(ctx, 1)
 		if err != nil || len(items) != 1 {
-			t.Fatalf("Fuzz%s: drain PopN got (items=%v err=%v), want 1 item, nil", name, items, err)
+			t.Fatalf("Fuzz%s: drain Pop got (items=%v err=%v), want 1 item, nil", name, items, err)
 		}
 		if want := m.pop(); items[0].V != want {
-			t.Fatalf("Fuzz%s: drain PopN got %d, want %d", name, items[0].V, want)
+			t.Fatalf("Fuzz%s: drain Pop got %d, want %d", name, items[0].V, want)
 		}
 	}
 	if got := q.Len(); got != 0 {
@@ -230,7 +230,7 @@ var fifoFuzzBackings = []func(t *testing.T, ctx context.Context) (Backing[Number
 	func(*testing.T, context.Context) (Backing[Number[int]], error) {
 		return NewBTreeFIFO[Number[int]](WithIndex())
 	},
-	func(*testing.T, context.Context) (Backing[Number[int]], error) { return NewBtypeFIFO[Number[int]]() },
+	func(*testing.T, context.Context) (Backing[Number[int]], error) { return newBtypeFIFO[Number[int]]() },
 	func(t *testing.T, ctx context.Context) (Backing[Number[int]], error) {
 		return NewBboltFIFO[Number[int]](ctx, diskRoot(t), WithNoSync())
 	},
@@ -266,7 +266,7 @@ func FuzzFIFO(f *testing.F) {
 		if err != nil {
 			t.Fatalf("FuzzFIFO: backing build got err == %s, want err == nil", err)
 		}
-		q, err := New[Number[int]](ctx, b, 0)
+		q, err := New[Number[int]](ctx, "test", b, 0)
 		if err != nil {
 			t.Fatalf("FuzzFIFO: New got err == %s, want err == nil", err)
 		}
@@ -284,7 +284,7 @@ func FuzzPriority(f *testing.F) {
 		if err != nil {
 			t.Fatalf("FuzzPriority: backing build got err == %s, want err == nil", err)
 		}
-		q, err := New[Number[int]](ctx, b, 0)
+		q, err := New[Number[int]](ctx, "test", b, 0)
 		if err != nil {
 			t.Fatalf("FuzzPriority: New got err == %s, want err == nil", err)
 		}
