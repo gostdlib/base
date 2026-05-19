@@ -81,6 +81,9 @@ func (p *priorityHeap[T]) setMaxSize(n int) error {
 func (p *priorityHeap[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	p.lk.lock()
 	defer p.lk.unlock()
+	// Append in backup order, then heapify once: heap.Init is O(n) (Floyd build-heap)
+	// vs O(n log n) for a per-item heap.Push. seq is assigned in RangeAll order so the
+	// pop order (prioritySeqLess) is unchanged regardless of the post-Init slice layout.
 	for v, err := range b.RangeAll(ctx) {
 		if err != nil {
 			return err
@@ -91,9 +94,10 @@ func (p *priorityHeap[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 		if err := b.OnLoad(ctx, v); err != nil {
 			return err
 		}
-		heap.Push(&p.h, seqItem[T]{seq: p.nextSeq, item: v})
+		p.h.items = append(p.h.items, seqItem[T]{seq: p.nextSeq, item: v})
 		p.nextSeq++
 	}
+	heap.Init(&p.h)
 	p.backup = b
 	return nil
 }

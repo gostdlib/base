@@ -95,9 +95,9 @@ func (q *Queue[T]) instrument(ctx context.Context, op string) (context.Context, 
 				sp.Status(codes.Error, err.Error())
 			}
 		}
-		if sp.IsRecording() {
-			sp.End()
-		}
+		// End unconditionally: always end what you started (OTEL convention).
+		// span.Span.End is itself a no-op on a non-recording span.
+		sp.End()
 	}
 }
 
