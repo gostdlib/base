@@ -107,7 +107,7 @@ func (f *fifo[T]) Push(ctx context.Context, vs []T) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return f.closedOrCause(ctx)
 		}
 	}
 }
@@ -152,7 +152,7 @@ func (f *fifo[T]) Pop(ctx context.Context, n int) ([]T, error) {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return nil, context.Cause(ctx)
+			return nil, f.closedOrCause(ctx)
 		}
 	}
 }
@@ -236,7 +236,7 @@ func (f *fifo[T]) NotEmpty(ctx context.Context) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return f.closedOrCause(ctx)
 		}
 	}
 }
@@ -258,7 +258,7 @@ func (f *fifo[T]) NotFull(ctx context.Context) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return f.closedOrCause(ctx)
 		}
 	}
 }
@@ -268,6 +268,20 @@ func (f *fifo[T]) Len() int64 {
 	f.lk.rlock()
 	defer f.lk.runlock()
 	return int64(len(f.items))
+}
+
+// closedOrCause returns ErrClosed if the backing has been closed, else the ctx cause.
+// Used in the ctx.Done() arm of a blocked wait so Close deterministically wins a race
+// with ctx cancellation.
+func (f *fifo[T]) closedOrCause(ctx context.Context) error {
+	f.lk.lock()
+	c := f.closed
+	f.lk.unlock()
+	if c {
+		return ErrClosed
+	}
+	cause := context.Cause(ctx)
+	return cause
 }
 
 // Close implements Backing.Close().

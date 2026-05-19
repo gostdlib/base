@@ -136,7 +136,7 @@ func (p *priorityHeap[T]) Push(ctx context.Context, vs []T) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return p.closedOrCause(ctx)
 		}
 	}
 }
@@ -184,7 +184,7 @@ func (p *priorityHeap[T]) Pop(ctx context.Context, n int) ([]T, error) {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return nil, context.Cause(ctx)
+			return nil, p.closedOrCause(ctx)
 		}
 	}
 }
@@ -268,7 +268,7 @@ func (p *priorityHeap[T]) NotEmpty(ctx context.Context) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return p.closedOrCause(ctx)
 		}
 	}
 }
@@ -290,7 +290,7 @@ func (p *priorityHeap[T]) NotFull(ctx context.Context) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return p.closedOrCause(ctx)
 		}
 	}
 }
@@ -300,6 +300,20 @@ func (p *priorityHeap[T]) Len() int64 {
 	p.lk.rlock()
 	defer p.lk.runlock()
 	return int64(p.h.Len())
+}
+
+// closedOrCause returns ErrClosed if the backing has been closed, else the ctx cause.
+// Used in the ctx.Done() arm of a blocked wait so Close deterministically wins a race
+// with ctx cancellation.
+func (p *priorityHeap[T]) closedOrCause(ctx context.Context) error {
+	p.lk.lock()
+	c := p.closed
+	p.lk.unlock()
+	if c {
+		return ErrClosed
+	}
+	cause := context.Cause(ctx)
+	return cause
 }
 
 // Close implements Backing.Close().

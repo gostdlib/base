@@ -301,7 +301,9 @@ func WithSideEffect(f func() error) OpOption {
 }
 
 // Close closes the queue and releases any resources associated with it. After calling Close,
-// the queue should not be used.
+// the queue should not be used. Any Push/Pop/NotEmpty/NotFull blocked on a full/empty queue
+// unblocks and returns ErrClosed, which takes precedence over a simultaneous context
+// cancellation.
 func (q *Queue[T]) Close(ctx context.Context, options ...OpOption) (err error) {
 	ctx, done := q.instrument(ctx, "Close")
 	defer func() { done(&err) }()
@@ -322,7 +324,9 @@ func (q *Queue[T]) Close(ctx context.Context, options ...OpOption) (err error) {
 	return nil
 }
 
-// NotEmpty waits until the queue is not empty or the context is cancelled.
+// NotEmpty waits until the queue is not empty or the context is cancelled. If the queue
+// is closed while blocked it returns ErrClosed (which takes precedence over context
+// cancellation).
 func (q *Queue[T]) NotEmpty(ctx context.Context, options ...OpOption) (err error) {
 	ctx, done := q.instrument(ctx, "NotEmpty")
 	defer func() { done(&err) }()
@@ -343,7 +347,9 @@ func (q *Queue[T]) NotEmpty(ctx context.Context, options ...OpOption) (err error
 	return nil
 }
 
-// NotFull waits until the queue is not full or the context is cancelled.
+// NotFull waits until the queue is not full or the context is cancelled. If the queue is
+// closed while blocked it returns ErrClosed (which takes precedence over context
+// cancellation).
 func (q *Queue[T]) NotFull(ctx context.Context, options ...OpOption) (err error) {
 	ctx, done := q.instrument(ctx, "NotFull")
 	defer func() { done(&err) }()
@@ -369,9 +375,11 @@ func (q *Queue[T]) NotFull(ctx context.Context, options ...OpOption) (err error)
 // than the configured max batch size (WithMaxBatch, default 1000) returns ErrBatchTooLarge,
 // as does a batch larger than a bounded queue's maximum size. Otherwise Push blocks until
 // the whole batch fits or the context is canceled, in which case context.Cause(ctx) is
-// returned. Because the items can be pushed but the side effect can fail, the second return
-// value indicates whether the batch was pushed: if false the error indicates why; if true
-// the error reports the side effect's result.
+// returned. If the queue is closed while a Push is blocked it returns (false, ErrClosed);
+// ErrClosed takes precedence over a simultaneous context cancellation. Because the items
+// can be pushed but the side effect can fail, the second return value indicates whether
+// the batch was pushed: if false the error indicates why; if true the error reports the
+// side effect's result.
 func (q *Queue[T]) Push(ctx context.Context, vs []T, options ...OpOption) (ok bool, err error) {
 	ctx, done := q.instrument(ctx, "Push")
 	defer func() { done(&err) }()
@@ -409,9 +417,11 @@ func (q *Queue[T]) Push(ctx context.Context, vs []T, options ...OpOption) (ok bo
 // Pop removes and returns up to n items from the front of the queue. n must be >= 1 or
 // this will panic. Pop blocks until at least one item is available (or the context
 // is canceled, returning context.Cause(ctx)), then returns between 1 and n items —
-// whatever is available without further blocking. The returned slice is non-empty on a
-// nil error. If a side effect is configured it runs after the items are removed; its
-// error is returned alongside the items (the items are still removed).
+// whatever is available without further blocking. If the queue is closed while a Pop is
+// blocked it returns ErrClosed; ErrClosed takes precedence over a simultaneous context
+// cancellation. The returned slice is non-empty on a nil error. If a side effect is
+// configured it runs after the items are removed; its error is returned alongside the
+// items (the items are still removed).
 func (q *Queue[T]) Pop(ctx context.Context, n int, options ...OpOption) (items []T, err error) {
 	if n < 1 {
 		panic("invalid argument: n must be >= 1")
@@ -604,10 +614,15 @@ type Backing[T Item[T]] interface {
 	// Push pushes a batch of items as a unit (all or none). On a bounded queue an error is
 	// returned if the batch cannot ever fit; otherwise it blocks until the whole batch fits
 	// or the context is canceled (context.Cause(ctx)). The caller guarantees len(vs) > 0.
+	// If Close is called while Push is blocked, the call unblocks and returns ErrClosed;
+	// ErrClosed takes precedence over context cancellation (a closed backing returns
+	// ErrClosed even if ctx is also canceled).
 	Push(ctx context.Context, vs []T) error
 	// Pop removes and returns up to n items from the front of the queue. It blocks until
 	// at least one item is available or the context is canceled (context.Cause(ctx)),
-	// then returns 1..n items. The caller guarantees n >= 1.
+	// then returns 1..n items. The caller guarantees n >= 1. If Close is called while Pop
+	// is blocked, the call unblocks and returns ErrClosed; ErrClosed takes precedence over
+	// context cancellation.
 	Pop(ctx context.Context, n int) ([]T, error)
 	// Peek returns the item at the front of the queue without removing it. If the queue is empty the
 	// second return value will be false. If the queue is not empty, the second return value will be true
@@ -621,14 +636,20 @@ type Backing[T Item[T]] interface {
 	// (all matches, not just one). Duplicate elements in v are idempotent and an empty v is a no-op.
 	// If no items match, this returns a nil error. Errors are only for disk issues.
 	Del(ctx context.Context, v []T) error
-	// NotEmpty waits until the queue is not empty or the context is cancelled.
+	// NotEmpty waits until the queue is not empty or the context is cancelled. If Close
+	// is called while blocked it returns ErrClosed; ErrClosed takes precedence over
+	// context cancellation.
 	NotEmpty(ctx context.Context) error
-	// NotFull waits until the queue is not full or the context is cancelled.
+	// NotFull waits until the queue is not full or the context is cancelled. If Close is
+	// called while blocked it returns ErrClosed; ErrClosed takes precedence over context
+	// cancellation.
 	NotFull(ctx context.Context) error
 	// Len returns the number of items in the queue.
 	Len() int64
-	// Close closes the queue and releases any resources associated with it.
-	// After calling Close, the queue should not be used.
+	// Close closes the queue and releases any resources associated with it. After calling
+	// Close, the queue should not be used. Close unblocks any in-flight Push/Pop/NotEmpty/
+	// NotFull blocked on a full/empty queue; those calls return ErrClosed (which takes
+	// precedence over a simultaneous context cancellation).
 	Close(ctx context.Context) error
 	// Clear removes all items from the queue. Errors are only for disk issues.
 	Clear(ctx context.Context) error

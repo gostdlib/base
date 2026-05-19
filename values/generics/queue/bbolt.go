@@ -556,7 +556,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 			select {
 			case <-wait:
 			case <-ctx.Done():
-				return context.Cause(ctx)
+				return p.closedOrCause(ctx)
 			}
 			continue
 		}
@@ -587,7 +587,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 		select {
 		case <-r.done:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return p.closedOrCause(ctx)
 		}
 	}
 }
@@ -691,7 +691,7 @@ func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return nil, context.Cause(ctx)
+			return nil, p.closedOrCause(ctx)
 		}
 	}
 }
@@ -904,7 +904,7 @@ func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return p.closedOrCause(ctx)
 		}
 	}
 }
@@ -926,7 +926,7 @@ func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return p.closedOrCause(ctx)
 		}
 	}
 }
@@ -936,6 +936,20 @@ func (p *bboltBacking[T]) Len() int64 {
 	p.lk.rlock()
 	defer p.lk.runlock()
 	return p.count
+}
+
+// closedOrCause returns ErrClosed if the backing has been closed, else the ctx cause.
+// Used in the ctx.Done() arm of a blocked wait so Close deterministically wins a race
+// with ctx cancellation.
+func (p *bboltBacking[T]) closedOrCause(ctx context.Context) error {
+	p.lk.lock()
+	c := p.closed
+	p.lk.unlock()
+	if c {
+		return ErrClosed
+	}
+	cause := context.Cause(ctx)
+	return cause
 }
 
 // Close implements Backing.Close().

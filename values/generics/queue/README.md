@@ -78,7 +78,8 @@ if err != nil {
 	panic(err) 
 }
 
-q, err := queue.New(ctx, b, queue.Unlimited) // Unlimited == 0 == unbounded
+// The name labels OTEL spans/metrics for this queue; an empty name disables telemetry.
+q, err := queue.New(ctx, "example", b, queue.Unlimited) // Unlimited == 0 == unbounded
 if err != nil { 
 	panic(err) 
 }
@@ -105,7 +106,7 @@ Items pop in ascending `Priority` regardless of push order; priority items must 
 
 ```go
 b, _ := queue.NewPriority[queue.Number[int]]()
-q, _ := queue.New(ctx, b, queue.Unlimited)
+q, _ := queue.New(ctx, "example", b, queue.Unlimited)
 defer q.Close(ctx)
 
 q.Push(ctx, []queue.Number[int]{{V: 30, P: 30}, {V: 10, P: 10}, {V: 20, P: 20}})
@@ -128,7 +129,7 @@ makes `Exists` O(1) and `Del` O(log n).
 
 ```go
 b, _ := queue.NewBTreeFIFO[queue.Number[int]](queue.WithIndex())
-q, _ := queue.New(ctx, b, queue.Unlimited)
+q, _ := queue.New(ctx, "example", b, queue.Unlimited)
 defer q.Close(ctx)
 
 q.Push(ctx, []queue.Number[int]{{V: 1}, {V: 2}, {V: 3}})
@@ -176,7 +177,7 @@ A single `Push` whose batch exceeds `maxSize` can never fit and returns
 canceled).
 
 ```go
-q, _ := queue.New(ctx, b, 2) // at most 2 items
+q, _ := queue.New(ctx, "example", b, 2) // at most 2 items
 _, err := q.Push(ctx, []queue.Number[int]{{V: 1}, {V: 2}, {V: 3}})
 errors.Is(err, queue.ErrBatchTooLarge) // true
 ```
@@ -199,7 +200,7 @@ survives process restarts.
 ```go
 root, _ := os.OpenRoot(dir)
 b, _ := queue.NewBboltFIFO[queue.Number[int]](ctx, root)
-q, _ := queue.New(ctx, b, queue.Unlimited)
+q, _ := queue.New(ctx, "example", b, queue.Unlimited)
 defer q.Close(ctx)
 
 q.Push(ctx, []queue.Number[int]{{V: 10}, {V: 20}})
@@ -219,7 +220,7 @@ mutation is mirrored to the backup so it stays a true copy.
 type memBackup struct { /* implements queue.Backup[queue.Number[int]] */ }
 
 mb := &memBackup{items: []queue.Number[int]{{V: 1}, {V: 2}}}
-q, _ := queue.New(ctx, b, queue.Unlimited, queue.WithBackup(mb))
+q, _ := queue.New(ctx, "example", b, queue.Unlimited, queue.WithBackup(mb))
 // q.Len() == 2 (hydrated); OnLoad fired for 1 and 2
 q.Pop(ctx, 2)
 // mb mirrors the deletes; mb.Len() == 0
