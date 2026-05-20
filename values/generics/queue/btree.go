@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"sync/atomic"
 
 	"github.com/tidwall/btree"
 )
@@ -58,16 +59,18 @@ func (x *btreeIndex[T]) bucket(hash uint64) []seqItem[T] {
 // Semantics (blocking, hydration, backup mirror) mirror fifo. lk and maxSize are injected
 // by New via setQueueLock and setMaxSize before any other use.
 type btreeBacking[T Item[T]] struct {
-	lk         *qlock
-	tree       *btree.BTreeG[seqItem[T]]
-	idx        *btreeIndex[T]
-	nextSeq    uint64
-	maxSize    int
-	priority   bool
-	notFullCh  chan struct{}
-	notEmptyCh chan struct{}
-	closed     bool
-	backup     Backup[T]
+	lk              *qlock
+	tree            *btree.BTreeG[seqItem[T]]
+	idx             *btreeIndex[T]
+	nextSeq         uint64
+	maxSize         int
+	priority        bool
+	notFullCh       chan struct{}
+	notEmptyCh      chan struct{}
+	notFullWaiters  atomic.Int32
+	notEmptyWaiters atomic.Int32
+	closed          bool
+	backup          Backup[T]
 }
 
 // fifoSeqLess orders seqItem values by insert sequence only, giving the btree FIFO order.
@@ -188,8 +191,13 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(b.priority, vs); err != nil {
 		return err
 	}
+	parked := false
 	for {
 		b.lk.lock()
+		if parked {
+			b.notFullWaiters.Add(-1)
+			parked = false
+		}
 		if b.closed {
 			b.lk.unlock()
 			return ErrClosed
@@ -215,17 +223,20 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 					b.idx.add(si)
 				}
 			}
-			if wasEmpty {
+			if wasEmpty && b.notEmptyWaiters.Load() > 0 {
 				resetSignal(&b.notEmptyCh)
 			}
 			b.lk.unlock()
 			return nil
 		}
 		wait := b.notFullCh
+		b.notFullWaiters.Add(1)
+		parked = true
 		b.lk.unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			b.notFullWaiters.Add(-1)
 			return b.closedOrCause(ctx)
 		}
 	}
@@ -233,14 +244,22 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 
 // Pop implements Backing.Pop().
 func (b *btreeBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
+	parked := false
 	for {
 		b.lk.lock()
+		if parked {
+			b.notEmptyWaiters.Add(-1)
+			parked = false
+		}
+		if b.closed {
+			b.lk.unlock()
+			return nil, ErrClosed
+		}
 		if b.tree.Len() > 0 {
 			k := n
 			if k > b.tree.Len() {
 				k = b.tree.Len()
 			}
-			wasFull := b.maxSize > 0 && b.tree.Len() == b.maxSize
 			out := make([]T, 0, k)
 			if b.backup != nil {
 				// Peek the first k in pop order without mutating, so the backup is
@@ -270,21 +289,22 @@ func (b *btreeBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 					}
 				}
 			}
-			if wasFull {
+			// Freed capacity: wake any parked producer. Gated on notFullWaiters
+			// so the steady-state case (no producer waiting) does no chan alloc.
+			if b.notFullWaiters.Load() > 0 {
 				resetSignal(&b.notFullCh)
 			}
 			b.lk.unlock()
 			return out, nil
 		}
-		if b.closed {
-			b.lk.unlock()
-			return nil, ErrClosed
-		}
 		wait := b.notEmptyCh
+		b.notEmptyWaiters.Add(1)
+		parked = true
 		b.lk.unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			b.notEmptyWaiters.Add(-1)
 			return nil, b.closedOrCause(ctx)
 		}
 	}
@@ -338,7 +358,6 @@ func (b *btreeBacking[T]) Del(ctx context.Context, v []T) error {
 	if b.closed {
 		return ErrClosed
 	}
-	wasFull := b.maxSize > 0 && b.tree.Len() >= b.maxSize
 	var toDel []seqItem[T]
 	if b.idx != nil {
 		// Scan only the buckets for the distinct hashes in v; dedup collected items
@@ -387,7 +406,8 @@ func (b *btreeBacking[T]) Del(ctx context.Context, v []T) error {
 			b.idx.remove(it.item.Hash(), it.seq)
 		}
 	}
-	if wasFull && (b.maxSize == 0 || b.tree.Len() < b.maxSize) {
+	// Freed capacity: gated on notFullWaiters; see Pop.
+	if b.notFullWaiters.Load() > 0 {
 		resetSignal(&b.notFullCh)
 	}
 	return nil
@@ -395,8 +415,13 @@ func (b *btreeBacking[T]) Del(ctx context.Context, v []T) error {
 
 // NotEmpty implements Backing.NotEmpty().
 func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
+	parked := false
 	for {
 		b.lk.rlock()
+		if parked {
+			b.notEmptyWaiters.Add(-1)
+			parked = false
+		}
 		if b.closed {
 			b.lk.runlock()
 			return ErrClosed
@@ -406,10 +431,13 @@ func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
 			return nil
 		}
 		wait := b.notEmptyCh
+		b.notEmptyWaiters.Add(1)
+		parked = true
 		b.lk.runlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			b.notEmptyWaiters.Add(-1)
 			return b.closedOrCause(ctx)
 		}
 	}
@@ -417,8 +445,13 @@ func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
 
 // NotFull implements Backing.NotFull().
 func (b *btreeBacking[T]) NotFull(ctx context.Context) error {
+	parked := false
 	for {
 		b.lk.rlock()
+		if parked {
+			b.notFullWaiters.Add(-1)
+			parked = false
+		}
 		if b.closed {
 			b.lk.runlock()
 			return ErrClosed
@@ -428,10 +461,13 @@ func (b *btreeBacking[T]) NotFull(ctx context.Context) error {
 			return nil
 		}
 		wait := b.notFullCh
+		b.notFullWaiters.Add(1)
+		parked = true
 		b.lk.runlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			b.notFullWaiters.Add(-1)
 			return b.closedOrCause(ctx)
 		}
 	}
@@ -448,9 +484,9 @@ func (b *btreeBacking[T]) Len() int64 {
 // Used in the ctx.Done() arm of a blocked wait so Close deterministically wins a race
 // with ctx cancellation.
 func (b *btreeBacking[T]) closedOrCause(ctx context.Context) error {
-	b.lk.lock()
+	b.lk.rlock()
 	c := b.closed
-	b.lk.unlock()
+	b.lk.runlock()
 	if c {
 		return ErrClosed
 	}
@@ -482,17 +518,20 @@ func (b *btreeBacking[T]) Clear(ctx context.Context) error {
 	if b.closed {
 		return ErrClosed
 	}
+	if b.tree.Len() == 0 {
+		return nil
+	}
 	if b.backup != nil {
 		if err := b.backup.Clear(ctx); err != nil {
 			return err
 		}
 	}
-	wasFull := b.maxSize > 0 && b.tree.Len() >= b.maxSize
 	b.tree.Clear()
 	if b.idx != nil {
 		b.idx = newBtreeIndex[T]()
 	}
-	if wasFull {
+	// Freed capacity: gated on notFullWaiters; see Pop.
+	if b.notFullWaiters.Load() > 0 {
 		resetSignal(&b.notFullCh)
 	}
 	return nil

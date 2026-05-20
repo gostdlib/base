@@ -60,6 +60,8 @@ func (u Number[T]) Priority() uint64 {
 // the encoding is injective; for floats the value is canonicalized (adding +0.0 collapses
 // -0.0 to +0.0) so Equal values (-0.0 == +0.0) hash equally; NaN never compares Equal.
 func (u Number[T]) Hash() uint64 {
+	// reflect.Kind reports the underlying kind, so this is correct for defined
+	// numeric types (e.g. type ID int64), which NumberConstraint admits via ~.
 	rv := reflect.ValueOf(u.V)
 	switch rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:

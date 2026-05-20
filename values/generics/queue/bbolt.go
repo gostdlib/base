@@ -8,6 +8,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-json-experiment/json"
@@ -32,11 +33,27 @@ var (
 // path. It is always nil in production.
 var bboltFaultAfterBackup func() error
 
+// bboltCommitStart is a test-only seam. When non-nil it is invoked at the very start
+// of commit(), before any backup mirror or db.Update, so a test can pin the flusher
+// mid-commit and race a concurrent Clear/Close against it. It is always nil in
+// production. commit() runs only in the single flusher goroutine.
+var bboltCommitStart func()
+
 // flushResult is shared by every Push whose items joined one buffered batch. The flusher
 // sets err then closes done; waiters read err after done is closed.
 type flushResult struct {
 	done chan struct{}
 	err  error
+}
+
+// clearCmd is a synchronous Clear request routed to the flusher goroutine. Routing
+// through the flusher serializes Clear with all in-flight commits: any item the
+// flusher is about to commit (or is mid-commit on) is drained first, then the bucket
+// is deleted. Without this routing a Clear concurrent with a mid-commit Push would
+// delete the bucket before the commit's db.Update landed, letting the item reappear.
+type clearCmd struct {
+	ctx  context.Context
+	done chan error
 }
 
 func jsonDecode[T any](data []byte) (T, error) {
@@ -86,14 +103,16 @@ type bboltBacking[T Item[T]] struct {
 	// committed (buffered or snapshot-in-flight). Guarded by lk like count. The bounded
 	// maxSize admission gate tests count+pending so concurrent Pushes whose items are
 	// still buffered cannot collectively overshoot maxSize.
-	pending    int64
-	maxSize    int
-	maxBatch   int
-	priority   bool
-	notFullCh  chan struct{}
-	notEmptyCh chan struct{}
-	closed     bool
-	backup     Backup[T]
+	pending         int64
+	maxSize         int
+	maxBatch        int
+	priority        bool
+	notFullCh       chan struct{}
+	notEmptyCh      chan struct{}
+	notFullWaiters  atomic.Int32
+	notEmptyWaiters atomic.Int32
+	closed          bool
+	backup          Backup[T]
 
 	// Write-staging buffer. push appends here and blocks until the flusher commits the
 	// batch. buf, cur and flushReq are guarded by lk; cur.done/err follow the
@@ -102,6 +121,7 @@ type bboltBacking[T Item[T]] struct {
 	buf         []T
 	cur         *flushResult
 	flushReq    chan struct{}
+	clearReq    chan *clearCmd
 	flushCtx    context.Context
 	flushCancel context.CancelFunc
 	flushGroup  sync.Group
@@ -270,6 +290,7 @@ func newBboltBacking[T Item[T]](ctx context.Context, root *os.Root, o backingOpt
 		notEmptyCh: make(chan struct{}),
 		cur:        &flushResult{done: make(chan struct{})},
 		flushReq:   make(chan struct{}, 1),
+		clearReq:   make(chan *clearCmd, 1),
 		encode:     encode,
 		decode:     decode,
 	}
@@ -335,6 +356,8 @@ func (p *bboltBacking[T]) flushLoop(ctx context.Context) error {
 			return nil
 		case <-p.flushReq:
 			p.doFlush(ctx)
+		case cmd := <-p.clearReq:
+			cmd.done <- p.doClear(cmd.ctx)
 		case <-t.C:
 			p.doFlush(ctx)
 		}
@@ -363,11 +386,16 @@ func (p *bboltBacking[T]) doFlush(ctx context.Context) {
 // then updates count/index/notEmpty under the lock. A backup or write failure fails the
 // whole batch (returned to every waiter); the items are not made visible.
 func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
+	if bboltCommitStart != nil {
+		bboltCommitStart()
+	}
 	if p.backup != nil {
 		if err := p.backup.Push(ctx, snap); err != nil {
 			p.lk.lock()
 			p.pending -= int64(len(snap))
-			resetSignal(&p.notFullCh)
+			if p.notFullWaiters.Load() > 0 {
+				resetSignal(&p.notFullCh)
+			}
 			p.lk.unlock()
 			return err
 		}
@@ -401,7 +429,9 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 	if err != nil {
 		p.lk.lock()
 		p.pending -= int64(len(snap))
-		resetSignal(&p.notFullCh)
+		if p.notFullWaiters.Load() > 0 {
+			resetSignal(&p.notFullCh)
+		}
 		p.lk.unlock()
 		return err
 	}
@@ -414,7 +444,7 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 			p.idx.add(e.hash, e.sk)
 		}
 	}
-	if wasEmpty {
+	if wasEmpty && p.notEmptyWaiters.Load() > 0 {
 		resetSignal(&p.notEmptyCh)
 	}
 	p.lk.unlock()
@@ -540,8 +570,13 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(p.priority, vs); err != nil {
 		return err
 	}
+	parked := false
 	for {
 		p.lk.lock()
+		if parked {
+			p.notFullWaiters.Add(-1)
+			parked = false
+		}
 		if p.closed {
 			p.lk.unlock()
 			return ErrClosed
@@ -552,10 +587,13 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 		}
 		if p.maxSize > 0 && p.count+p.pending+int64(len(vs)) > int64(p.maxSize) {
 			wait := p.notFullCh
+			p.notFullWaiters.Add(1)
+			parked = true
 			p.lk.unlock()
 			select {
 			case <-wait:
 			case <-ctx.Done():
+				p.notFullWaiters.Add(-1)
 				return p.closedOrCause(ctx)
 			}
 			continue
@@ -594,8 +632,17 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 
 // Pop implements Backing.Pop().
 func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
+	parked := false
 	for {
 		p.lk.lock()
+		if parked {
+			p.notEmptyWaiters.Add(-1)
+			parked = false
+		}
+		if p.closed {
+			p.lk.unlock()
+			return nil, ErrClosed
+		}
 		if p.count > 0 {
 			k := n
 			if int64(k) > p.count {
@@ -674,23 +721,23 @@ func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 					p.idx.remove(v.Hash(), sks[i])
 				}
 			}
-			wasFull := p.maxSize > 0 && p.count == int64(p.maxSize)
 			p.count -= int64(k)
-			if wasFull {
+			// Freed capacity: wake any parked producer. Gated on notFullWaiters
+			// so the steady-state case (no producer waiting) does no chan alloc.
+			if p.notFullWaiters.Load() > 0 {
 				resetSignal(&p.notFullCh)
 			}
 			p.lk.unlock()
 			return out, nil
 		}
-		if p.closed {
-			p.lk.unlock()
-			return nil, ErrClosed
-		}
 		wait := p.notEmptyCh
+		p.notEmptyWaiters.Add(1)
+		parked = true
 		p.lk.unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notEmptyWaiters.Add(-1)
 			return nil, p.closedOrCause(ctx)
 		}
 	}
@@ -879,9 +926,9 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 			p.idx.remove(khash[i], sk)
 		}
 	}
-	wasFull := p.maxSize > 0 && p.count >= int64(p.maxSize)
 	p.count -= int64(removed)
-	if wasFull && (p.maxSize == 0 || p.count < int64(p.maxSize)) {
+	// Freed capacity: gated on notFullWaiters; see Pop.
+	if p.notFullWaiters.Load() > 0 {
 		resetSignal(&p.notFullCh)
 	}
 	return nil
@@ -889,8 +936,13 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 
 // NotEmpty implements Backing.NotEmpty().
 func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
+	parked := false
 	for {
 		p.lk.rlock()
+		if parked {
+			p.notEmptyWaiters.Add(-1)
+			parked = false
+		}
 		if p.closed {
 			p.lk.runlock()
 			return ErrClosed
@@ -900,10 +952,13 @@ func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 			return nil
 		}
 		wait := p.notEmptyCh
+		p.notEmptyWaiters.Add(1)
+		parked = true
 		p.lk.runlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notEmptyWaiters.Add(-1)
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -911,8 +966,13 @@ func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 
 // NotFull implements Backing.NotFull().
 func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
+	parked := false
 	for {
 		p.lk.rlock()
+		if parked {
+			p.notFullWaiters.Add(-1)
+			parked = false
+		}
 		if p.closed {
 			p.lk.runlock()
 			return ErrClosed
@@ -922,10 +982,13 @@ func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
 			return nil
 		}
 		wait := p.notFullCh
+		p.notFullWaiters.Add(1)
+		parked = true
 		p.lk.runlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notFullWaiters.Add(-1)
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -942,9 +1005,9 @@ func (p *bboltBacking[T]) Len() int64 {
 // Used in the ctx.Done() arm of a blocked wait so Close deterministically wins a race
 // with ctx cancellation.
 func (p *bboltBacking[T]) closedOrCause(ctx context.Context) error {
-	p.lk.lock()
+	p.lk.rlock()
 	c := p.closed
-	p.lk.unlock()
+	p.lk.runlock()
 	if c {
 		return ErrClosed
 	}
@@ -980,8 +1043,43 @@ func (p *bboltBacking[T]) Close(ctx context.Context) error {
 	return errors.Join(gErr, bErr, cErr)
 }
 
-// Clear implements Backing.Clear().
+// Clear implements Backing.Clear(). It is routed through the single-threaded flusher
+// so it serializes with all in-flight commits: any item whose Push has buffered or is
+// mid-commit is drained first (its Push returns success and its items are briefly in
+// the queue) and only then is the bucket deleted. No in-flight commit can land items
+// after the delete.
 func (p *bboltBacking[T]) Clear(ctx context.Context) error {
+	cmd := &clearCmd{ctx: ctx, done: make(chan error, 1)}
+	select {
+	case p.clearReq <- cmd:
+	case <-p.flushCtx.Done():
+		return ErrClosed
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+	select {
+	case err := <-cmd.done:
+		return err
+	case <-p.flushCtx.Done():
+		// The flusher exited (Close) before processing cmd.
+		return ErrClosed
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
+// doClear runs only in the flusher goroutine. It first drains any buffered items
+// (so their Pushes return success and the items are reflected in p.count), then
+// deletes the bucket under p.lk. Because it runs single-threaded with all commit()s,
+// no concurrent commit can land items after the delete.
+//
+// The drain step uses the flusher lifetime ctx (p.flushCtx), not the Clear caller's
+// ctx: the items being committed belong to other callers' Pushes, and a Clear
+// caller's ctx cancellation must not fail them via backup.Push. The Clear-specific
+// operations below (backup.Clear) do use the caller's ctx — that one the caller owns.
+func (p *bboltBacking[T]) doClear(ctx context.Context) error {
+	p.doFlush(p.flushCtx)
+
 	p.lk.lock()
 	defer p.lk.unlock()
 	if p.closed {
@@ -995,7 +1093,6 @@ func (p *bboltBacking[T]) Clear(ctx context.Context) error {
 			return err
 		}
 	}
-	wasFull := p.maxSize > 0 && p.count >= int64(p.maxSize)
 	err := p.db.Update(func(tx *bolt.Tx) error {
 		if err := tx.DeleteBucket(bboltItemsBucket); err != nil {
 			return err
@@ -1010,7 +1107,8 @@ func (p *bboltBacking[T]) Clear(ctx context.Context) error {
 	if p.idx != nil {
 		p.idx = newBboltIndex()
 	}
-	if wasFull {
+	// Freed capacity: gated on notFullWaiters; see Pop.
+	if p.notFullWaiters.Load() > 0 {
 		resetSignal(&p.notFullCh)
 	}
 	return nil
@@ -1059,22 +1157,26 @@ func (p *bboltBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 			yield(zero, ErrClosed)
 			return
 		}
-		var snap []T
+		// snap holds the raw encoded remainder, copied once a writer is waiting. We
+		// store undecoded bytes so the read lock (which excludes that writer) is held
+		// only for the scan, not the decode+consume phase that follows — honoring the
+		// copy-on-write contract: a waiting writer proceeds during iteration.
+		var snap [][]byte
 		contended := false
 		stop := false
 		var rerr error
 		p.db.View(func(tx *bolt.Tx) error {
 			c := tx.Bucket(bboltItemsBucket).Cursor()
 			for k, data := c.First(); k != nil; k, data = c.Next() {
+				if contended || p.lk.writeWanted() {
+					contended = true
+					snap = append(snap, append([]byte(nil), data...))
+					continue
+				}
 				v, err := p.decodeItem(data)
 				if err != nil {
 					rerr = err
 					return errStopIter
-				}
-				if contended || p.lk.writeWanted() {
-					contended = true
-					snap = append(snap, v)
-					continue
 				}
 				select {
 				case <-ctx.Done():
@@ -1098,7 +1200,12 @@ func (p *bboltBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 		if stop {
 			return
 		}
-		for _, v := range snap {
+		for _, data := range snap {
+			v, err := p.decodeItem(data)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
 			select {
 			case <-ctx.Done():
 				yield(zero, context.Cause(ctx))

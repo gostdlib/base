@@ -6,6 +6,7 @@ import (
 	"errors"
 	"iter"
 	"sort"
+	"sync/atomic"
 )
 
 // minHeap implements container/heap.Interface ordered by prioritySeqLess (defined in btree.go).
@@ -38,14 +39,16 @@ func (h *minHeap[T]) Pop() any {
 // Semantics (blocking, hydration, backup mirror) mirror fifo. lk and maxSize are injected
 // by New via setQueueLock and setMaxSize before any other use.
 type priorityHeap[T Item[T]] struct {
-	lk         *qlock
-	h          minHeap[T]
-	nextSeq    uint64
-	maxSize    int
-	notFullCh  chan struct{}
-	notEmptyCh chan struct{}
-	closed     bool
-	backup     Backup[T]
+	lk              *qlock
+	h               minHeap[T]
+	nextSeq         uint64
+	maxSize         int
+	notFullCh       chan struct{}
+	notEmptyCh      chan struct{}
+	notFullWaiters  atomic.Int32
+	notEmptyWaiters atomic.Int32
+	closed          bool
+	backup          Backup[T]
 }
 
 // NewPriority returns an in-memory priority Backing backed by container/heap. Items pop in
@@ -107,8 +110,13 @@ func (p *priorityHeap[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(true, vs); err != nil {
 		return err
 	}
+	parked := false
 	for {
 		p.lk.lock()
+		if parked {
+			p.notFullWaiters.Add(-1)
+			parked = false
+		}
 		if p.closed {
 			p.lk.unlock()
 			return ErrClosed
@@ -129,17 +137,20 @@ func (p *priorityHeap[T]) Push(ctx context.Context, vs []T) error {
 				heap.Push(&p.h, seqItem[T]{seq: p.nextSeq, item: v})
 				p.nextSeq++
 			}
-			if wasEmpty {
+			if wasEmpty && p.notEmptyWaiters.Load() > 0 {
 				resetSignal(&p.notEmptyCh)
 			}
 			p.lk.unlock()
 			return nil
 		}
 		wait := p.notFullCh
+		p.notFullWaiters.Add(1)
+		parked = true
 		p.lk.unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notFullWaiters.Add(-1)
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -147,14 +158,22 @@ func (p *priorityHeap[T]) Push(ctx context.Context, vs []T) error {
 
 // Pop implements Backing.Pop().
 func (p *priorityHeap[T]) Pop(ctx context.Context, n int) ([]T, error) {
+	parked := false
 	for {
 		p.lk.lock()
+		if parked {
+			p.notEmptyWaiters.Add(-1)
+			parked = false
+		}
+		if p.closed {
+			p.lk.unlock()
+			return nil, ErrClosed
+		}
 		if p.h.Len() > 0 {
 			k := n
 			if k > p.h.Len() {
 				k = p.h.Len()
 			}
-			wasFull := p.maxSize > 0 && p.h.Len() == p.maxSize
 			popped := make([]seqItem[T], 0, k)
 			out := make([]T, 0, k)
 			for i := 0; i < k; i++ {
@@ -173,21 +192,22 @@ func (p *priorityHeap[T]) Pop(ctx context.Context, n int) ([]T, error) {
 					return nil, err
 				}
 			}
-			if wasFull {
+			// Freed capacity: wake any parked producer. Gated on notFullWaiters
+			// so the steady-state case (no producer waiting) does no chan alloc.
+			if p.notFullWaiters.Load() > 0 {
 				resetSignal(&p.notFullCh)
 			}
 			p.lk.unlock()
 			return out, nil
 		}
-		if p.closed {
-			p.lk.unlock()
-			return nil, ErrClosed
-		}
 		wait := p.notEmptyCh
+		p.notEmptyWaiters.Add(1)
+		parked = true
 		p.lk.unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notEmptyWaiters.Add(-1)
 			return nil, p.closedOrCause(ctx)
 		}
 	}
@@ -229,7 +249,6 @@ func (p *priorityHeap[T]) Del(ctx context.Context, v []T) error {
 	if p.closed {
 		return ErrClosed
 	}
-	wasFull := p.maxSize > 0 && p.h.Len() >= p.maxSize
 	kept := make([]seqItem[T], 0, len(p.h.items))
 	var removed []T
 	for _, it := range p.h.items {
@@ -249,7 +268,8 @@ func (p *priorityHeap[T]) Del(ctx context.Context, v []T) error {
 	}
 	p.h.items = kept
 	heap.Init(&p.h)
-	if wasFull && (p.maxSize == 0 || p.h.Len() < p.maxSize) {
+	// Freed capacity: gated on notFullWaiters; see Pop.
+	if p.notFullWaiters.Load() > 0 {
 		resetSignal(&p.notFullCh)
 	}
 	return nil
@@ -257,8 +277,13 @@ func (p *priorityHeap[T]) Del(ctx context.Context, v []T) error {
 
 // NotEmpty implements Backing.NotEmpty().
 func (p *priorityHeap[T]) NotEmpty(ctx context.Context) error {
+	parked := false
 	for {
 		p.lk.rlock()
+		if parked {
+			p.notEmptyWaiters.Add(-1)
+			parked = false
+		}
 		if p.closed {
 			p.lk.runlock()
 			return ErrClosed
@@ -268,10 +293,13 @@ func (p *priorityHeap[T]) NotEmpty(ctx context.Context) error {
 			return nil
 		}
 		wait := p.notEmptyCh
+		p.notEmptyWaiters.Add(1)
+		parked = true
 		p.lk.runlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notEmptyWaiters.Add(-1)
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -279,8 +307,13 @@ func (p *priorityHeap[T]) NotEmpty(ctx context.Context) error {
 
 // NotFull implements Backing.NotFull().
 func (p *priorityHeap[T]) NotFull(ctx context.Context) error {
+	parked := false
 	for {
 		p.lk.rlock()
+		if parked {
+			p.notFullWaiters.Add(-1)
+			parked = false
+		}
 		if p.closed {
 			p.lk.runlock()
 			return ErrClosed
@@ -290,10 +323,13 @@ func (p *priorityHeap[T]) NotFull(ctx context.Context) error {
 			return nil
 		}
 		wait := p.notFullCh
+		p.notFullWaiters.Add(1)
+		parked = true
 		p.lk.runlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			p.notFullWaiters.Add(-1)
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -310,9 +346,9 @@ func (p *priorityHeap[T]) Len() int64 {
 // Used in the ctx.Done() arm of a blocked wait so Close deterministically wins a race
 // with ctx cancellation.
 func (p *priorityHeap[T]) closedOrCause(ctx context.Context) error {
-	p.lk.lock()
+	p.lk.rlock()
 	c := p.closed
-	p.lk.unlock()
+	p.lk.runlock()
 	if c {
 		return ErrClosed
 	}
@@ -344,18 +380,21 @@ func (p *priorityHeap[T]) Clear(ctx context.Context) error {
 	if p.closed {
 		return ErrClosed
 	}
+	if p.h.Len() == 0 {
+		return nil
+	}
 	if p.backup != nil {
 		if err := p.backup.Clear(ctx); err != nil {
 			return err
 		}
 	}
-	wasFull := p.maxSize > 0 && p.h.Len() >= p.maxSize
 	var zero seqItem[T]
 	for i := range p.h.items {
 		p.h.items[i] = zero
 	}
 	p.h.items = p.h.items[:0]
-	if wasFull {
+	// Freed capacity: gated on notFullWaiters; see Pop.
+	if p.notFullWaiters.Load() > 0 {
 		resetSignal(&p.notFullCh)
 	}
 	return nil

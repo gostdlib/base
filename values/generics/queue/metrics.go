@@ -67,6 +67,8 @@ func newQueueMetrics(m metric.Meter) *queueMetrics {
 //	ctx, done := q.instrument(ctx, "Push")
 //	defer func() { done(&err) }()
 //
+// errp must be non-nil (every caller passes the address of a named return).
+//
 // When the queue has no name (q.met == nil) telemetry is disabled and this is a no-op
 // returning ctx unchanged. Otherwise span.New still no-ops unless ctx already carries a
 // recording span and the meter no-ops unless an exporter is configured.
@@ -84,10 +86,7 @@ func (q *Queue[T]) instrument(ctx context.Context, op string) (context.Context, 
 
 	return ctx, func(errp *error) {
 		q.met.latency.Record(ctx, time.Since(start).Seconds(), attrs)
-		var err error
-		if errp != nil {
-			err = *errp
-		}
+		err := *errp
 		if err != nil {
 			q.met.errs.Add(ctx, 1, attrs)
 			if sp.IsRecording() {

@@ -278,9 +278,12 @@ func New[T Item[T]](ctx context.Context, name string, b Backing[T], maxSize int,
 			return nil, err
 		}
 	}
-	if q.met != nil {
-		q.met.lastDepth.Store(b.Len())
-	}
+	// Seed the depth counter and lastDepth from any hydrated items so the
+	// queue.depth UpDownCounter reflects the true absolute depth from t0.
+	// (lastDepth is still at its zero value here, so this emits +Len() and
+	// stores Len(); skipping it would under-report depth by the hydrated
+	// count and let the counter go negative if those items drain first.)
+	q.recordDepth(ctx)
 	return q, nil
 }
 
@@ -371,7 +374,8 @@ func (q *Queue[T]) NotFull(ctx context.Context, options ...OpOption) (err error)
 }
 
 // Push pushes a batch of items onto the queue as a unit: either all items are pushed or
-// none are. An empty or nil batch is a no-op that returns (true, nil). A batch with more
+// none are. An empty or nil batch is a no-op that returns (true, nil); it does not
+// consult the backing, so this holds even on a closed queue. A batch with more
 // than the configured max batch size (WithMaxBatch, default 1000) returns ErrBatchTooLarge,
 // as does a batch larger than a bounded queue's maximum size. Otherwise Push blocks until
 // the whole batch fits or the context is canceled, in which case context.Cause(ctx) is
@@ -556,12 +560,11 @@ func (q *Queue[T]) Clear(ctx context.Context, options ...OpOption) (err error) {
 // Do not call a mutating Queue method from inside the loop on the same goroutine — that
 // self-deadlocks; use RangeAllCOW if you need writers to make progress during iteration.
 func (q *Queue[T]) RangeAll(ctx context.Context) iter.Seq2[T, error] {
-	inner := q.backing.All(ctx)
 	return func(yield func(T, error) bool) {
-		_, done := q.instrument(ctx, "RangeAll")
+		ctx, done := q.instrument(ctx, "RangeAll")
 		var rangeErr error
 		defer func() { done(&rangeErr) }()
-		for v, err := range inner {
+		for v, err := range q.backing.All(ctx) {
 			if err != nil {
 				rangeErr = err
 			}
@@ -579,12 +582,11 @@ func (q *Queue[T]) RangeAll(ctx context.Context) iter.Seq2[T, error] {
 // items yielded after that reflect the queue state at that moment, not later mutations.
 // For on-disk backings the remainder is also copied into memory, which can be large.
 func (q *Queue[T]) RangeAllCOW(ctx context.Context) iter.Seq2[T, error] {
-	inner := q.backing.AllCOW(ctx)
 	return func(yield func(T, error) bool) {
-		_, done := q.instrument(ctx, "RangeAllCOW")
+		ctx, done := q.instrument(ctx, "RangeAllCOW")
 		var rangeErr error
 		defer func() { done(&rangeErr) }()
-		for v, err := range inner {
+		for v, err := range q.backing.AllCOW(ctx) {
 			if err != nil {
 				rangeErr = err
 			}
