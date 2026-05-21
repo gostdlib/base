@@ -8,7 +8,6 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-json-experiment/json"
@@ -103,16 +102,14 @@ type bboltBacking[T Item[T]] struct {
 	// committed (buffered or snapshot-in-flight). Guarded by lk like count. The bounded
 	// maxSize admission gate tests count+pending so concurrent Pushes whose items are
 	// still buffered cannot collectively overshoot maxSize.
-	pending         int64
-	maxSize         int
-	maxBatch        int
-	priority        bool
-	notFullCh       chan struct{}
-	notEmptyCh      chan struct{}
-	notFullWaiters  atomic.Int32
-	notEmptyWaiters atomic.Int32
-	closed          bool
-	backup          Backup[T]
+	pending  int64
+	maxSize  int
+	maxBatch int
+	priority bool
+	notFull  *signal
+	notEmpty *signal
+	closed   bool
+	backup   Backup[T]
 
 	// Write-staging buffer. push appends here and blocks until the flusher commits the
 	// batch. buf, cur and flushReq are guarded by lk; cur.done/err follow the
@@ -281,18 +278,18 @@ func newBboltBacking[T Item[T]](ctx context.Context, root *os.Root, o backingOpt
 		return nil, err
 	}
 	p := &bboltBacking[T]{
-		lk:         &qlock{},
-		db:         db,
-		keyOf:      keyOf,
-		count:      count,
-		priority:   priority,
-		notFullCh:  make(chan struct{}),
-		notEmptyCh: make(chan struct{}),
-		cur:        &flushResult{done: make(chan struct{})},
-		flushReq:   make(chan struct{}, 1),
-		clearReq:   make(chan *clearCmd, 1),
-		encode:     encode,
-		decode:     decode,
+		lk:       &qlock{},
+		db:       db,
+		keyOf:    keyOf,
+		count:    count,
+		priority: priority,
+		notFull:  newSignal(),
+		notEmpty: newSignal(),
+		cur:      &flushResult{done: make(chan struct{})},
+		flushReq: make(chan struct{}, 1),
+		clearReq: make(chan *clearCmd, 1),
+		encode:   encode,
+		decode:   decode,
 	}
 	if o.index {
 		p.idx = newBboltIndex()
@@ -393,10 +390,10 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 		if err := p.backup.Push(ctx, snap); err != nil {
 			p.lk.lock()
 			p.pending -= int64(len(snap))
-			if p.notFullWaiters.Load() > 0 {
-				resetSignal(&p.notFullCh)
-			}
 			p.lk.unlock()
+			if p.notFull.HasWaiters() {
+				p.notFull.Signal()
+			}
 			return err
 		}
 	}
@@ -429,10 +426,10 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 	if err != nil {
 		p.lk.lock()
 		p.pending -= int64(len(snap))
-		if p.notFullWaiters.Load() > 0 {
-			resetSignal(&p.notFullCh)
-		}
 		p.lk.unlock()
+		if p.notFull.HasWaiters() {
+			p.notFull.Signal()
+		}
 		return err
 	}
 	p.lk.lock()
@@ -444,10 +441,10 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 			p.idx.add(e.hash, e.sk)
 		}
 	}
-	if wasEmpty && p.notEmptyWaiters.Load() > 0 {
-		resetSignal(&p.notEmptyCh)
-	}
 	p.lk.unlock()
+	if wasEmpty && p.notEmpty.HasWaiters() {
+		p.notEmpty.Signal()
+	}
 	return nil
 }
 
@@ -570,13 +567,8 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(p.priority, vs); err != nil {
 		return err
 	}
-	parked := false
 	for {
 		p.lk.lock()
-		if parked {
-			p.notFullWaiters.Add(-1)
-			parked = false
-		}
 		if p.closed {
 			p.lk.unlock()
 			return ErrClosed
@@ -586,14 +578,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 			return ErrBatchTooLarge
 		}
 		if p.maxSize > 0 && p.count+p.pending+int64(len(vs)) > int64(p.maxSize) {
-			wait := p.notFullCh
-			p.notFullWaiters.Add(1)
-			parked = true
-			p.lk.unlock()
-			select {
-			case <-wait:
-			case <-ctx.Done():
-				p.notFullWaiters.Add(-1)
+			if err := p.notFull.Wait(ctx, p.lk.unlock); err != nil {
 				return p.closedOrCause(ctx)
 			}
 			continue
@@ -632,13 +617,8 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 
 // Pop implements Backing.Pop().
 func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
-	parked := false
 	for {
 		p.lk.lock()
-		if parked {
-			p.notEmptyWaiters.Add(-1)
-			parked = false
-		}
 		if p.closed {
 			p.lk.unlock()
 			return nil, ErrClosed
@@ -722,22 +702,14 @@ func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 				}
 			}
 			p.count -= int64(k)
-			// Freed capacity: wake any parked producer. Gated on notFullWaiters
-			// so the steady-state case (no producer waiting) does no chan alloc.
-			if p.notFullWaiters.Load() > 0 {
-				resetSignal(&p.notFullCh)
+			// Freed capacity: gated on HasWaiters; see Pop.
+			if p.notFull.HasWaiters() {
+				p.notFull.Signal()
 			}
 			p.lk.unlock()
 			return out, nil
 		}
-		wait := p.notEmptyCh
-		p.notEmptyWaiters.Add(1)
-		parked = true
-		p.lk.unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			p.notEmptyWaiters.Add(-1)
+		if err := p.notEmpty.Wait(ctx, p.lk.unlock); err != nil {
 			return nil, p.closedOrCause(ctx)
 		}
 	}
@@ -927,22 +899,17 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 		}
 	}
 	p.count -= int64(removed)
-	// Freed capacity: gated on notFullWaiters; see Pop.
-	if p.notFullWaiters.Load() > 0 {
-		resetSignal(&p.notFullCh)
+	// Freed capacity: gated on HasWaiters; see Pop.
+	if p.notFull.HasWaiters() {
+		p.notFull.Signal()
 	}
 	return nil
 }
 
 // NotEmpty implements Backing.NotEmpty().
 func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
-	parked := false
 	for {
 		p.lk.rlock()
-		if parked {
-			p.notEmptyWaiters.Add(-1)
-			parked = false
-		}
 		if p.closed {
 			p.lk.runlock()
 			return ErrClosed
@@ -951,14 +918,7 @@ func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 			p.lk.runlock()
 			return nil
 		}
-		wait := p.notEmptyCh
-		p.notEmptyWaiters.Add(1)
-		parked = true
-		p.lk.runlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			p.notEmptyWaiters.Add(-1)
+		if err := p.notEmpty.Wait(ctx, p.lk.runlock); err != nil {
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -966,13 +926,8 @@ func (p *bboltBacking[T]) NotEmpty(ctx context.Context) error {
 
 // NotFull implements Backing.NotFull().
 func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
-	parked := false
 	for {
 		p.lk.rlock()
-		if parked {
-			p.notFullWaiters.Add(-1)
-			parked = false
-		}
 		if p.closed {
 			p.lk.runlock()
 			return ErrClosed
@@ -981,14 +936,7 @@ func (p *bboltBacking[T]) NotFull(ctx context.Context) error {
 			p.lk.runlock()
 			return nil
 		}
-		wait := p.notFullCh
-		p.notFullWaiters.Add(1)
-		parked = true
-		p.lk.runlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			p.notFullWaiters.Add(-1)
+		if err := p.notFull.Wait(ctx, p.lk.runlock); err != nil {
 			return p.closedOrCause(ctx)
 		}
 	}
@@ -1032,14 +980,15 @@ func (p *bboltBacking[T]) Close(ctx context.Context) error {
 	gErr := p.flushGroup.Wait(ctx)
 
 	p.lk.lock()
-	defer p.lk.unlock()
 	var bErr error
 	if p.backup != nil {
 		bErr = p.backup.Close(ctx)
 	}
 	cErr := p.db.Close()
-	close(p.notEmptyCh)
-	close(p.notFullCh)
+	p.lk.unlock()
+	// Wake any parked Wait callers; they re-acquire p.lk, see closed, return ErrClosed.
+	p.notEmpty.Signal()
+	p.notFull.Signal()
 	return errors.Join(gErr, bErr, cErr)
 }
 
@@ -1107,9 +1056,9 @@ func (p *bboltBacking[T]) doClear(ctx context.Context) error {
 	if p.idx != nil {
 		p.idx = newBboltIndex()
 	}
-	// Freed capacity: gated on notFullWaiters; see Pop.
-	if p.notFullWaiters.Load() > 0 {
-		resetSignal(&p.notFullCh)
+	// Freed capacity: gated on HasWaiters; see Pop.
+	if p.notFull.HasWaiters() {
+		p.notFull.Signal()
 	}
 	return nil
 }

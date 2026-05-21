@@ -28,10 +28,10 @@ func waitForSignalWaiters(t *testing.T, s *signal, want int32) {
 // nil after Signal is called and the internal waiters counter is reset to zero.
 func TestSignalWaitThenSignal(t *testing.T) {
 	ctx := t.Context()
-	s := newSignal(ctx, 4)
+	s := newSignal()
 
 	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx) }()
+	go func() { done <- s.Wait(ctx, func() {}) }()
 
 	waitForSignalWaiters(t, s, 1)
 	s.Signal()
@@ -64,11 +64,11 @@ func TestSignalMultipleWaiters(t *testing.T) {
 
 	for _, test := range tests {
 		ctx := t.Context()
-		s := newSignal(ctx, 8)
+		s := newSignal()
 
 		done := make(chan error, test.n)
 		for range test.n {
-			go func() { done <- s.Wait(ctx) }()
+			go func() { done <- s.Wait(ctx, func() {}) }()
 		}
 		waitForSignalWaiters(t, s, test.n)
 		s.Signal()
@@ -91,18 +91,16 @@ func TestSignalMultipleWaiters(t *testing.T) {
 
 // TestSignalContextCancel verifies that a Wait blocked on the signal returns
 // context.Cause(ctx) when the per-call context is cancelled, before any Signal is
-// issued. A final Signal is sent so the cleanup goroutine inside Wait drains its
-// pooled channel and the waiters counter returns to zero, exercising the cancel-then-
-// Signal teardown path.
+// issued, and that the waiters counter decrements via Wait's deferred Add(-1).
 func TestSignalContextCancel(t *testing.T) {
 	parent := t.Context()
-	s := newSignal(parent, 4)
+	s := newSignal()
 
 	wantCause := errors.New("wait cancelled by test")
 	ctx, cancel := context.WithCancelCause(parent)
 
 	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx) }()
+	go func() { done <- s.Wait(ctx, func() {}) }()
 
 	waitForSignalWaiters(t, s, 1)
 	cancel(wantCause)
@@ -119,13 +117,8 @@ func TestSignalContextCancel(t *testing.T) {
 		t.Fatalf("TestSignalContextCancel: Wait did not return within 2s after cancel")
 	}
 
-	// The cancelled Wait left a cleanup goroutine waiting for ch; Signal lets that
-	// inner pool goroutine acquire RLock so the cleanup can drain ch and return the
-	// channel to the pool. Signal itself busy-waits until waiters == 0, so once it
-	// returns the counter must be zero.
-	s.Signal()
 	if w := s.waiters.Load(); w != 0 {
-		t.Errorf("TestSignalContextCancel: after Signal got waiters == %d, want 0", w)
+		t.Errorf("TestSignalContextCancel: after Wait returned got waiters == %d, want 0", w)
 	}
 }
 
@@ -134,10 +127,10 @@ func TestSignalContextCancel(t *testing.T) {
 func TestSignalParentContextCancel(t *testing.T) {
 	wantCause := errors.New("parent cancelled by test")
 	ctx, cancel := context.WithCancelCause(t.Context())
-	s := newSignal(ctx, 2)
+	s := newSignal()
 
 	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx) }()
+	go func() { done <- s.Wait(ctx, func() {}) }()
 
 	waitForSignalWaiters(t, s, 1)
 	cancel(wantCause)
@@ -151,10 +144,8 @@ func TestSignalParentContextCancel(t *testing.T) {
 		t.Fatalf("TestSignalParentContextCancel: Wait did not return within 2s after cancel")
 	}
 
-	// Drain the cleanup goroutine so the signal is reusable / leak-free.
-	s.Signal()
 	if w := s.waiters.Load(); w != 0 {
-		t.Errorf("TestSignalParentContextCancel: after Signal got waiters == %d, want 0", w)
+		t.Errorf("TestSignalParentContextCancel: after Wait returned got waiters == %d, want 0", w)
 	}
 }
 
@@ -163,12 +154,12 @@ func TestSignalParentContextCancel(t *testing.T) {
 // Waits block again — without that, the second cycle's Wait would not register.
 func TestSignalRepeatedCycles(t *testing.T) {
 	ctx := t.Context()
-	s := newSignal(ctx, 4)
+	s := newSignal()
 
 	const cycles = 5
 	for i := 0; i < cycles; i++ {
 		done := make(chan error, 1)
-		go func() { done <- s.Wait(ctx) }()
+		go func() { done <- s.Wait(ctx, func() {}) }()
 
 		waitForSignalWaiters(t, s, 1)
 		s.Signal()
@@ -193,7 +184,7 @@ func TestSignalRepeatedCycles(t *testing.T) {
 // after the no-op Signal and observing that it actually blocks until a second Signal.
 func TestSignalNoWaiters(t *testing.T) {
 	ctx := t.Context()
-	s := newSignal(ctx, 2)
+	s := newSignal()
 
 	signalReturned := make(chan struct{})
 	go func() {
@@ -209,7 +200,7 @@ func TestSignalNoWaiters(t *testing.T) {
 	// After Signal with no waiters, the write lock should be held again so a new
 	// Wait blocks. Verify by polling done.
 	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx) }()
+	go func() { done <- s.Wait(ctx, func() {}) }()
 
 	waitForSignalWaiters(t, s, 1)
 	select {
@@ -235,10 +226,10 @@ func TestSignalNoWaiters(t *testing.T) {
 // a short window, then verify Signal releases it.
 func TestSignalWaitBlocksUntilSignal(t *testing.T) {
 	ctx := t.Context()
-	s := newSignal(ctx, 2)
+	s := newSignal()
 
 	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx) }()
+	go func() { done <- s.Wait(ctx, func() {}) }()
 
 	waitForSignalWaiters(t, s, 1)
 
@@ -263,12 +254,11 @@ func TestSignalWaitBlocksUntilSignal(t *testing.T) {
 // TestSignalMixedCancelAndSuccess verifies a tricky concurrent scenario: among N
 // waiters, half have their per-call context cancelled before Signal, the other half
 // receive a successful Signal. The cancelled waiters must return the cancel cause and
-// the successful ones must return nil. After Signal completes, the waiters counter
-// must be zero — meaning the cleanup goroutines for cancelled Waits drained their
-// channels.
+// the successful ones must return nil. After all Waits have returned, the waiters
+// counter must be zero.
 func TestSignalMixedCancelAndSuccess(t *testing.T) {
 	parent := t.Context()
-	s := newSignal(parent, 8)
+	s := newSignal()
 
 	const n = 10
 	wantCause := errors.New("mixed cancel")
@@ -282,7 +272,7 @@ func TestSignalMixedCancelAndSuccess(t *testing.T) {
 	for i := range n {
 		ctx, cancel := context.WithCancelCause(parent)
 		cancels[i] = cancel
-		go func() { results <- result{idx: i, err: s.Wait(ctx)} }()
+		go func() { results <- result{idx: i, err: s.Wait(ctx, func() {})} }()
 	}
 	waitForSignalWaiters(t, s, n)
 
@@ -308,8 +298,7 @@ func TestSignalMixedCancelAndSuccess(t *testing.T) {
 		}
 	}
 
-	// Now Signal the remaining odd-indexed Waits (and also lets the cancelled Waits'
-	// cleanup goroutines drain).
+	// Now Signal the remaining odd-indexed Waits.
 	s.Signal()
 
 	for i := 0; i < n/2; i++ {
@@ -337,18 +326,18 @@ func TestSignalMixedCancelAndSuccess(t *testing.T) {
 }
 
 // TestSignalAlreadyCancelledCtx verifies the edge case where ctx is already cancelled
-// before Wait is called. Wait must still register as a waiter, return the cause, and
-// the cleanup path must eventually decrement the counter once Signal fires.
+// before Wait is called. Wait must register as a waiter, return the cause, and
+// decrement the counter via the deferred Add(-1) on return.
 func TestSignalAlreadyCancelledCtx(t *testing.T) {
 	parent := t.Context()
-	s := newSignal(parent, 2)
+	s := newSignal()
 
 	wantCause := errors.New("pre-cancelled")
 	ctx, cancel := context.WithCancelCause(parent)
 	cancel(wantCause)
 
 	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx) }()
+	go func() { done <- s.Wait(ctx, func() {}) }()
 
 	select {
 	case err := <-done:
@@ -359,49 +348,18 @@ func TestSignalAlreadyCancelledCtx(t *testing.T) {
 		t.Fatalf("TestSignalAlreadyCancelledCtx: Wait did not return within 2s on pre-cancelled ctx")
 	}
 
-	s.Signal()
 	if w := s.waiters.Load(); w != 0 {
-		t.Errorf("TestSignalAlreadyCancelledCtx: after Signal got waiters == %d, want 0", w)
-	}
-}
-
-// TestSignalPoolSizeZero verifies that newSignal works with poolSize == 0; the
-// sync.Pool then falls back to its New() func for every channel and never buffers.
-// Waits must still block, Signal must still release them.
-func TestSignalPoolSizeZero(t *testing.T) {
-	ctx := t.Context()
-	s := newSignal(ctx, 0)
-
-	const n = 4
-	done := make(chan error, n)
-	for range n {
-		go func() { done <- s.Wait(ctx) }()
-	}
-	waitForSignalWaiters(t, s, n)
-	s.Signal()
-
-	for i := 0; i < n; i++ {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("TestSignalPoolSizeZero: Wait #%d got err == %s, want err == nil", i, err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("TestSignalPoolSizeZero: only %d/%d Waits returned", i, n)
-		}
-	}
-	if w := s.waiters.Load(); w != 0 {
-		t.Errorf("TestSignalPoolSizeZero: got waiters == %d, want 0", w)
+		t.Errorf("TestSignalAlreadyCancelledCtx: after Wait returned got waiters == %d, want 0", w)
 	}
 }
 
 // TestSignalConcurrentSignals exercises a sequence of overlapping Wait/Signal pairs
-// to surface races between Signal's busy-wait loop and Wait's waiter-counter
-// increments. Each iteration registers a fresh batch of waiters and signals them,
-// asserting that the counter always lands back at zero before the next batch.
+// to surface races between Signal's channel swap and Wait's waiter-counter and
+// generation capture. Each iteration registers a fresh batch of waiters and signals
+// them, asserting that the counter always lands back at zero before the next batch.
 func TestSignalConcurrentSignals(t *testing.T) {
 	ctx := t.Context()
-	s := newSignal(ctx, 8)
+	s := newSignal()
 
 	const cycles = 20
 	const perCycle = 8
@@ -410,7 +368,7 @@ func TestSignalConcurrentSignals(t *testing.T) {
 		done := make(chan struct{}, perCycle)
 		for range perCycle {
 			go func() {
-				if err := s.Wait(ctx); err == nil {
+				if err := s.Wait(ctx, func() {}); err == nil {
 					received.Add(1)
 				}
 				done <- struct{}{}

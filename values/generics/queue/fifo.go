@@ -4,34 +4,30 @@ import (
 	"context"
 	"errors"
 	"iter"
-	"sync/atomic"
 )
 
 // fifo is an in-memory FIFO queue backed by a slice.
 //
-// notFullWaiters and notEmptyWaiters count goroutines currently parked on the
-// corresponding signal channel. Each park site increments before parking and
-// decrements after waking; mutators only call resetSignal when the relevant
-// counter > 0, so the steady-state case (no waiters) does zero chan alloc.
+// notFull and notEmpty are signal primitives; mutators call Signal() only when
+// HasWaiters() reports a parked waiter, so the steady-state case (no waiters)
+// is allocation-free.
 type fifo[T Item[T]] struct {
-	lk              *qlock
-	items           []T
-	maxSize         int
-	notFullCh       chan struct{}
-	notEmptyCh      chan struct{}
-	notFullWaiters  atomic.Int32
-	notEmptyWaiters atomic.Int32
-	closed          bool
-	backup          Backup[T]
+	lk       *qlock
+	items    []T
+	maxSize  int
+	notFull  *signal
+	notEmpty *signal
+	closed   bool
+	backup   Backup[T]
 }
 
 // NewFIFO returns an in-memory FIFO Backing backed by a slice. Use this when queue size is
 // going to be < 10K items.
 func NewFIFO[T Item[T]]() (Backing[T], error) {
 	return &fifo[T]{
-		lk:         &qlock{},
-		notFullCh:  make(chan struct{}),
-		notEmptyCh: make(chan struct{}),
+		lk:       &qlock{},
+		notFull:  newSignal(),
+		notEmpty: newSignal(),
 	}, nil
 }
 
@@ -74,24 +70,13 @@ func (f *fifo[T]) Hydrate(ctx context.Context, b Backup[T]) error {
 	return nil
 }
 
-// resetSignal closes the channel and replaces it with a fresh one. Caller must hold the write lock.
-func resetSignal(ch *chan struct{}) {
-	close(*ch)
-	*ch = make(chan struct{})
-}
-
 // Push implements Backing.Push().
 func (f *fifo[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(false, vs); err != nil {
 		return err
 	}
-	parked := false
 	for {
 		f.lk.lock()
-		if parked {
-			f.notFullWaiters.Add(-1)
-			parked = false
-		}
 		if f.closed {
 			f.lk.unlock()
 			return ErrClosed
@@ -109,20 +94,15 @@ func (f *fifo[T]) Push(ctx context.Context, vs []T) error {
 			}
 			wasEmpty := len(f.items) == 0
 			f.items = append(f.items, vs...)
-			if wasEmpty && f.notEmptyWaiters.Load() > 0 {
-				resetSignal(&f.notEmptyCh)
+			if wasEmpty && f.notEmpty.HasWaiters() {
+				f.notEmpty.Signal()
 			}
 			f.lk.unlock()
 			return nil
 		}
-		wait := f.notFullCh
-		f.notFullWaiters.Add(1)
-		parked = true
-		f.lk.unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			f.notFullWaiters.Add(-1)
+		// f.lk is released by Wait, but only AFTER it has synchronously
+		// registered as a waiter (Mesa invariant).
+		if err := f.notFull.Wait(ctx, f.lk.unlock); err != nil {
 			return f.closedOrCause(ctx)
 		}
 	}
@@ -131,13 +111,8 @@ func (f *fifo[T]) Push(ctx context.Context, vs []T) error {
 // Pop implements Backing.Pop().
 func (f *fifo[T]) Pop(ctx context.Context, n int) ([]T, error) {
 	var zero T
-	parked := false
 	for {
 		f.lk.lock()
-		if parked {
-			f.notEmptyWaiters.Add(-1)
-			parked = false
-		}
 		if f.closed {
 			f.lk.unlock()
 			return nil, ErrClosed
@@ -161,22 +136,15 @@ func (f *fifo[T]) Pop(ctx context.Context, n int) ([]T, error) {
 				f.items[i] = zero
 			}
 			f.items = f.items[k:]
-			// Freed capacity: wake any parked producer. Gated on notFullWaiters so the
-			// steady-state case (no producer waiting) does no chan alloc.
-			if f.notFullWaiters.Load() > 0 {
-				resetSignal(&f.notFullCh)
+			// Freed capacity: wake any parked producer. Gated on HasWaiters so
+			// the steady-state case (no producer waiting) skips the Signal.
+			if f.notFull.HasWaiters() {
+				f.notFull.Signal()
 			}
 			f.lk.unlock()
 			return out, nil
 		}
-		wait := f.notEmptyCh
-		f.notEmptyWaiters.Add(1)
-		parked = true
-		f.lk.unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			f.notEmptyWaiters.Add(-1)
+		if err := f.notEmpty.Wait(ctx, f.lk.unlock); err != nil {
 			return nil, f.closedOrCause(ctx)
 		}
 	}
@@ -237,22 +205,17 @@ func (f *fifo[T]) Del(ctx context.Context, v []T) error {
 		}
 	}
 	f.items = kept
-	// Freed capacity: gated on notFullWaiters; see Pop.
-	if f.notFullWaiters.Load() > 0 {
-		resetSignal(&f.notFullCh)
+	// Freed capacity: gated on HasWaiters; see Pop.
+	if f.notFull.HasWaiters() {
+		f.notFull.Signal()
 	}
 	return nil
 }
 
 // NotEmpty implements Backing.NotEmpty().
 func (f *fifo[T]) NotEmpty(ctx context.Context) error {
-	parked := false
 	for {
 		f.lk.rlock()
-		if parked {
-			f.notEmptyWaiters.Add(-1)
-			parked = false
-		}
 		if f.closed {
 			f.lk.runlock()
 			return ErrClosed
@@ -261,14 +224,7 @@ func (f *fifo[T]) NotEmpty(ctx context.Context) error {
 			f.lk.runlock()
 			return nil
 		}
-		wait := f.notEmptyCh
-		f.notEmptyWaiters.Add(1)
-		parked = true
-		f.lk.runlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			f.notEmptyWaiters.Add(-1)
+		if err := f.notEmpty.Wait(ctx, f.lk.runlock); err != nil {
 			return f.closedOrCause(ctx)
 		}
 	}
@@ -276,13 +232,8 @@ func (f *fifo[T]) NotEmpty(ctx context.Context) error {
 
 // NotFull implements Backing.NotFull().
 func (f *fifo[T]) NotFull(ctx context.Context) error {
-	parked := false
 	for {
 		f.lk.rlock()
-		if parked {
-			f.notFullWaiters.Add(-1)
-			parked = false
-		}
 		if f.closed {
 			f.lk.runlock()
 			return ErrClosed
@@ -291,14 +242,7 @@ func (f *fifo[T]) NotFull(ctx context.Context) error {
 			f.lk.runlock()
 			return nil
 		}
-		wait := f.notFullCh
-		f.notFullWaiters.Add(1)
-		parked = true
-		f.lk.runlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			f.notFullWaiters.Add(-1)
+		if err := f.notFull.Wait(ctx, f.lk.runlock); err != nil {
 			return f.closedOrCause(ctx)
 		}
 	}
@@ -328,8 +272,8 @@ func (f *fifo[T]) closedOrCause(ctx context.Context) error {
 // Close implements Backing.Close().
 func (f *fifo[T]) Close(ctx context.Context) error {
 	f.lk.lock()
-	defer f.lk.unlock()
 	if f.closed {
+		f.lk.unlock()
 		return nil
 	}
 	var err error
@@ -337,8 +281,10 @@ func (f *fifo[T]) Close(ctx context.Context) error {
 		err = f.backup.Close(ctx)
 	}
 	f.closed = true
-	close(f.notEmptyCh)
-	close(f.notFullCh)
+	f.lk.unlock()
+	// Wake any parked Wait callers; they re-acquire f.lk, see closed, return ErrClosed.
+	f.notEmpty.Signal()
+	f.notFull.Signal()
 	return err
 }
 
@@ -362,9 +308,9 @@ func (f *fifo[T]) Clear(ctx context.Context) error {
 		f.items[i] = zero
 	}
 	f.items = f.items[:0]
-	// Freed capacity: gated on notFullWaiters; see Pop.
-	if f.notFullWaiters.Load() > 0 {
-		resetSignal(&f.notFullCh)
+	// Freed capacity: gated on HasWaiters; see Pop.
+	if f.notFull.HasWaiters() {
+		f.notFull.Signal()
 	}
 	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"iter"
-	"sync/atomic"
 
 	"github.com/tidwall/btree"
 )
@@ -59,18 +58,16 @@ func (x *btreeIndex[T]) bucket(hash uint64) []seqItem[T] {
 // Semantics (blocking, hydration, backup mirror) mirror fifo. lk and maxSize are injected
 // by New via setQueueLock and setMaxSize before any other use.
 type btreeBacking[T Item[T]] struct {
-	lk              *qlock
-	tree            *btree.BTreeG[seqItem[T]]
-	idx             *btreeIndex[T]
-	nextSeq         uint64
-	maxSize         int
-	priority        bool
-	notFullCh       chan struct{}
-	notEmptyCh      chan struct{}
-	notFullWaiters  atomic.Int32
-	notEmptyWaiters atomic.Int32
-	closed          bool
-	backup          Backup[T]
+	lk       *qlock
+	tree     *btree.BTreeG[seqItem[T]]
+	idx      *btreeIndex[T]
+	nextSeq  uint64
+	maxSize  int
+	priority bool
+	notFull  *signal
+	notEmpty *signal
+	closed   bool
+	backup   Backup[T]
 }
 
 // fifoSeqLess orders seqItem values by insert sequence only, giving the btree FIFO order.
@@ -129,9 +126,9 @@ func newBTreeBacking[T Item[T]](o backingOpts, less func(a, b seqItem[T]) bool, 
 			Degree:  o.width,
 			NoLocks: true,
 		}),
-		priority:   priority,
-		notFullCh:  make(chan struct{}),
-		notEmptyCh: make(chan struct{}),
+		priority: priority,
+		notFull:  newSignal(),
+		notEmpty: newSignal(),
 	}
 	if o.index {
 		b.idx = newBtreeIndex[T]()
@@ -191,13 +188,8 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 	if err := validateKind(b.priority, vs); err != nil {
 		return err
 	}
-	parked := false
 	for {
 		b.lk.lock()
-		if parked {
-			b.notFullWaiters.Add(-1)
-			parked = false
-		}
 		if b.closed {
 			b.lk.unlock()
 			return ErrClosed
@@ -223,20 +215,13 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 					b.idx.add(si)
 				}
 			}
-			if wasEmpty && b.notEmptyWaiters.Load() > 0 {
-				resetSignal(&b.notEmptyCh)
+			if wasEmpty && b.notEmpty.HasWaiters() {
+				b.notEmpty.Signal()
 			}
 			b.lk.unlock()
 			return nil
 		}
-		wait := b.notFullCh
-		b.notFullWaiters.Add(1)
-		parked = true
-		b.lk.unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			b.notFullWaiters.Add(-1)
+		if err := b.notFull.Wait(ctx, b.lk.unlock); err != nil {
 			return b.closedOrCause(ctx)
 		}
 	}
@@ -244,13 +229,8 @@ func (b *btreeBacking[T]) Push(ctx context.Context, vs []T) error {
 
 // Pop implements Backing.Pop().
 func (b *btreeBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
-	parked := false
 	for {
 		b.lk.lock()
-		if parked {
-			b.notEmptyWaiters.Add(-1)
-			parked = false
-		}
 		if b.closed {
 			b.lk.unlock()
 			return nil, ErrClosed
@@ -289,22 +269,14 @@ func (b *btreeBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 					}
 				}
 			}
-			// Freed capacity: wake any parked producer. Gated on notFullWaiters
-			// so the steady-state case (no producer waiting) does no chan alloc.
-			if b.notFullWaiters.Load() > 0 {
-				resetSignal(&b.notFullCh)
+			// Freed capacity: gated on HasWaiters; see Pop.
+			if b.notFull.HasWaiters() {
+				b.notFull.Signal()
 			}
 			b.lk.unlock()
 			return out, nil
 		}
-		wait := b.notEmptyCh
-		b.notEmptyWaiters.Add(1)
-		parked = true
-		b.lk.unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			b.notEmptyWaiters.Add(-1)
+		if err := b.notEmpty.Wait(ctx, b.lk.unlock); err != nil {
 			return nil, b.closedOrCause(ctx)
 		}
 	}
@@ -406,22 +378,17 @@ func (b *btreeBacking[T]) Del(ctx context.Context, v []T) error {
 			b.idx.remove(it.item.Hash(), it.seq)
 		}
 	}
-	// Freed capacity: gated on notFullWaiters; see Pop.
-	if b.notFullWaiters.Load() > 0 {
-		resetSignal(&b.notFullCh)
+	// Freed capacity: gated on HasWaiters; see Pop.
+	if b.notFull.HasWaiters() {
+		b.notFull.Signal()
 	}
 	return nil
 }
 
 // NotEmpty implements Backing.NotEmpty().
 func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
-	parked := false
 	for {
 		b.lk.rlock()
-		if parked {
-			b.notEmptyWaiters.Add(-1)
-			parked = false
-		}
 		if b.closed {
 			b.lk.runlock()
 			return ErrClosed
@@ -430,14 +397,7 @@ func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
 			b.lk.runlock()
 			return nil
 		}
-		wait := b.notEmptyCh
-		b.notEmptyWaiters.Add(1)
-		parked = true
-		b.lk.runlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			b.notEmptyWaiters.Add(-1)
+		if err := b.notEmpty.Wait(ctx, b.lk.runlock); err != nil {
 			return b.closedOrCause(ctx)
 		}
 	}
@@ -445,13 +405,8 @@ func (b *btreeBacking[T]) NotEmpty(ctx context.Context) error {
 
 // NotFull implements Backing.NotFull().
 func (b *btreeBacking[T]) NotFull(ctx context.Context) error {
-	parked := false
 	for {
 		b.lk.rlock()
-		if parked {
-			b.notFullWaiters.Add(-1)
-			parked = false
-		}
 		if b.closed {
 			b.lk.runlock()
 			return ErrClosed
@@ -460,14 +415,7 @@ func (b *btreeBacking[T]) NotFull(ctx context.Context) error {
 			b.lk.runlock()
 			return nil
 		}
-		wait := b.notFullCh
-		b.notFullWaiters.Add(1)
-		parked = true
-		b.lk.runlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			b.notFullWaiters.Add(-1)
+		if err := b.notFull.Wait(ctx, b.lk.runlock); err != nil {
 			return b.closedOrCause(ctx)
 		}
 	}
@@ -497,8 +445,8 @@ func (b *btreeBacking[T]) closedOrCause(ctx context.Context) error {
 // Close implements Backing.Close().
 func (b *btreeBacking[T]) Close(ctx context.Context) error {
 	b.lk.lock()
-	defer b.lk.unlock()
 	if b.closed {
+		b.lk.unlock()
 		return nil
 	}
 	var err error
@@ -506,8 +454,9 @@ func (b *btreeBacking[T]) Close(ctx context.Context) error {
 		err = b.backup.Close(ctx)
 	}
 	b.closed = true
-	close(b.notEmptyCh)
-	close(b.notFullCh)
+	b.lk.unlock()
+	b.notEmpty.Signal()
+	b.notFull.Signal()
 	return err
 }
 
@@ -530,9 +479,9 @@ func (b *btreeBacking[T]) Clear(ctx context.Context) error {
 	if b.idx != nil {
 		b.idx = newBtreeIndex[T]()
 	}
-	// Freed capacity: gated on notFullWaiters; see Pop.
-	if b.notFullWaiters.Load() > 0 {
-		resetSignal(&b.notFullCh)
+	// Freed capacity: gated on HasWaiters; see Pop.
+	if b.notFull.HasWaiters() {
+		b.notFull.Signal()
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/samber/slog-zap/v2 v2.6.2
 	github.com/samber/slog-zerolog/v2 v2.7.3
+	github.com/sitano/gsysint v0.0.0-20190607084937-69a4f3233e4e
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/tidwall/btree v1.8.1
 	github.com/tidwall/btype v0.2.0
