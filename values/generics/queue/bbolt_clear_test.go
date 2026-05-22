@@ -51,10 +51,18 @@ func TestBboltClearDrainsInFlightPush(t *testing.T) {
 	}
 
 	clearErr := make(chan error, 1)
-	go func() { clearErr <- q.Clear(ctx) }()
-
-	// Give Clear time to register at clearReq (post-fix) or to run-and-return
-	// without waiting (pre-fix).
+	clearStarted := make(chan struct{})
+	go func() {
+		close(clearStarted) // about to invoke Clear
+		clearErr <- q.Clear(ctx)
+	}()
+	// Wait until the worker has reached Clear, then sleep so a pre-fix Clear that
+	// acquires the lock and deletes the bucket synchronously has time to do so
+	// before we release the flusher. Without the started barrier the scheduler
+	// could delay the worker until after close(release), masking the bug because
+	// the late Clear would land after the commit had already re-populated the
+	// bucket.
+	<-clearStarted
 	time.Sleep(50 * time.Millisecond)
 
 	close(release)

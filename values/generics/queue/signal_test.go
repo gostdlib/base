@@ -119,36 +119,11 @@ func TestSignalContextCancel(t *testing.T) {
 	}
 }
 
-// TestSignalParentContextCancel verifies that cancellation of the same context used to
-// construct the signal also releases an in-flight Wait with the cause from the parent.
-func TestSignalParentContextCancel(t *testing.T) {
-	wantCause := errors.New("parent cancelled by test")
-	ctx, cancel := context.WithCancelCause(t.Context())
-	s := newSignal()
-
-	done := make(chan error, 1)
-	go func() { done <- s.Wait(ctx, func() {}) }()
-
-	waitForSignalWaiters(t, s, 1)
-	cancel(wantCause)
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, wantCause) {
-			t.Errorf("TestSignalParentContextCancel: got err == %v, want %v", err, wantCause)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("TestSignalParentContextCancel: Wait did not return within 2s after cancel")
-	}
-
-	if w := s.waiters.Load(); w != 0 {
-		t.Errorf("TestSignalParentContextCancel: after Wait returned got waiters == %d, want 0", w)
-	}
-}
-
 // TestSignalRepeatedCycles verifies that the signal can be reused across many
-// Wait/Signal cycles. After each Signal the write lock is re-acquired, so subsequent
-// Waits block again — without that, the second cycle's Wait would not register.
+// Wait/Signal cycles. After Broadcast wakes the current parker, the underlying
+// parker.Waiter is rearmed: the next Register returns a fresh parker that blocks
+// until the next Broadcast, so each cycle's Wait blocks even though the previous
+// cycle's Signal already fired.
 func TestSignalRepeatedCycles(t *testing.T) {
 	ctx := t.Context()
 	s := newSignal()
@@ -175,10 +150,11 @@ func TestSignalRepeatedCycles(t *testing.T) {
 	}
 }
 
-// TestSignalNoWaiters verifies that Signal is safe to call when no Wait is pending. It
-// must return promptly (the busy-wait loop sees waiters == 0 on first check) and leave
-// the signal in the "next Wait blocks" state, which we confirm by registering a Wait
-// after the no-op Signal and observing that it actually blocks until a second Signal.
+// TestSignalNoWaiters verifies that Signal is safe to call when no Wait is registered.
+// Broadcast on a parker.Waiter with no parkers is effectively a no-op, and the Waiter
+// stays armed — a subsequent Wait still blocks until the next Signal. We confirm by
+// issuing a no-op Signal first, then registering a Wait and observing it blocks until
+// a second Signal.
 func TestSignalNoWaiters(t *testing.T) {
 	ctx := t.Context()
 	s := newSignal()
@@ -194,8 +170,9 @@ func TestSignalNoWaiters(t *testing.T) {
 		t.Fatalf("TestSignalNoWaiters: Signal with no waiters did not return within 2s")
 	}
 
-	// After Signal with no waiters, the write lock should be held again so a new
-	// Wait blocks. Verify by polling done.
+	// After a Signal with no parkers registered, the parker.Waiter is still armed,
+	// so a fresh Wait must block. Poll done to confirm it does not return before
+	// the second Signal.
 	done := make(chan error, 1)
 	go func() { done <- s.Wait(ctx, func() {}) }()
 
@@ -350,10 +327,11 @@ func TestSignalAlreadyCancelledCtx(t *testing.T) {
 	}
 }
 
-// TestSignalConcurrentSignals exercises a sequence of overlapping Wait/Signal pairs
-// to surface races between Signal's channel swap and Wait's waiter-counter and
-// generation capture. Each iteration registers a fresh batch of waiters and signals
-// them, asserting that the counter always lands back at zero before the next batch.
+// TestSignalConcurrentSignals exercises overlapping Wait/Signal pairs across many
+// cycles to surface races between Wait's parker.Register + waiters.Add(1) under
+// signal.mu and Signal's Broadcast under the parker's own mutex. Each iteration
+// registers a fresh batch of waiters, broadcasts them, and asserts the waiter counter
+// lands back at zero before the next batch begins.
 func TestSignalConcurrentSignals(t *testing.T) {
 	ctx := t.Context()
 	s := newSignal()

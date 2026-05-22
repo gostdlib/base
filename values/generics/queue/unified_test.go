@@ -147,7 +147,9 @@ func TestQueueEmpty(t *testing.T) {
 			err error
 		}
 		got := make(chan result, 1)
+		started := make(chan struct{})
 		go func() {
+			close(started) // about to enter Pop; if it returns immediately, we'll see r below
 			items, err := q.Pop(ctx, 1)
 			r := result{err: err}
 			if err == nil && len(items) == 1 {
@@ -155,9 +157,12 @@ func TestQueueEmpty(t *testing.T) {
 			}
 			got <- r
 		}()
-		// Pop on an empty (non-canceled) queue must block, not return: after a grace
-		// period it must still be pending. This deterministically catches a spurious
-		// return on empty even if the goroutine raced ahead of this check.
+		// Wait until the worker has reached the Pop call, then sleep so a broken Pop
+		// that returns immediately on empty has time to land its result on got before
+		// we push. Without the started barrier the scheduler could run the worker
+		// only AFTER the Push below, masking a non-blocking Pop because the late call
+		// would see the just-pushed item.
+		<-started
 		time.Sleep(50 * time.Millisecond)
 		select {
 		case r := <-got:

@@ -123,10 +123,17 @@ func TestBboltRangeAllCOWReleasesLock(t *testing.T) {
 			t.Fatalf("TestBboltRangeAllCOWReleasesLock: iteration got err == %s, want err == nil", err)
 		}
 		if seen == 0 {
+			pushStarted := make(chan struct{})
 			go func() {
+				close(pushStarted) // about to enter Push (which then blocks on writeWanted)
 				_, _ = q.Push(ctx, []Number[int]{fifoItem(999)})
 				pushed <- time.Now()
 			}()
+			// Wait for the worker to reach Push before sleeping; if the scheduler
+			// delayed the goroutine until after the iteration finished, the writer
+			// would never have been pending mid-scan and a broken COW that holds
+			// the lock through the whole decode would still appear to pass.
+			<-pushStarted
 			time.Sleep(40 * time.Millisecond) // let the writer register as pending
 		}
 		seen++

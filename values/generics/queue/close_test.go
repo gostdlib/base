@@ -16,11 +16,16 @@ func TestQueueCloseUnblocks(t *testing.T) {
 			ctx := t.Context()
 			q := m.make(t, ctx, 0)
 			errCh := make(chan error, 1)
+			started := make(chan struct{})
 			go func() {
+				close(started) // about to enter Pop
 				_, err := q.Pop(ctx, 1)
 				errCh <- err
 			}()
-			time.Sleep(50 * time.Millisecond) // let Pop park on the empty queue
+			// Wait for the worker to reach Pop, then sleep so a non-blocking Pop
+			// would land its result on errCh before we Close.
+			<-started
+			time.Sleep(50 * time.Millisecond)
 			if err := q.Close(ctx); err != nil {
 				t.Fatalf("TestQueueCloseUnblocks(%s): Close got err == %s, want err == nil", m.name, err)
 			}
@@ -42,11 +47,14 @@ func TestQueueCloseUnblocks(t *testing.T) {
 				t.Fatalf("TestQueueCloseUnblocks(%s): fill Push got (ok=%v err=%v), want (true,nil)", m.name, ok, err)
 			}
 			errCh := make(chan error, 1)
+			started := make(chan struct{})
 			go func() {
+				close(started) // about to enter Push
 				_, err := q.Push(ctx, []Number[int]{m.item(1)})
 				errCh <- err
 			}()
-			time.Sleep(50 * time.Millisecond) // let Push park on the full queue
+			<-started
+			time.Sleep(50 * time.Millisecond)
 			if err := q.Close(ctx); err != nil {
 				t.Fatalf("TestQueueCloseUnblocks(%s): Close got err == %s, want err == nil", m.name, err)
 			}
