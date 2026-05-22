@@ -7,16 +7,13 @@ import (
 	"time"
 )
 
-// Run all tests in this file with -race. The only non-atomic data flow
-// in parker.go is the write to parker.g inside unlockf and the read of
-// parker.g inside broadcast/reset. That pair is synchronized through
-// parker.state (CAS to Parked → Swap from Parked); if the analysis is
-// wrong, the race detector flags it here under load.
+// Run all tests with -race. The only non-atomic data flow is the write to
+// Parker.g inside unlockf and the read in Broadcast/Wake. That pair is
+// synchronized through Parker.state (CAS to Parked → Swap from Parked); if
+// the analysis is wrong, the race detector flags it under load.
 
 // waitForParkers spins until at least n parkers are registered on w.
-// Without it, a broadcast that wins the race before any wait() reaches
-// the register step proves nothing about the parked-and-woken path.
-func waitForParkers(t *testing.T, w *waiter, n int) {
+func waitForParkers(t *testing.T, w *Waiter, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -33,49 +30,36 @@ func waitForParkers(t *testing.T, w *waiter, n int) {
 	}
 }
 
-func TestWaitBroadcastBasic(t *testing.T) {
-	w := newWaiter()
+func TestRegisterParkBroadcast(t *testing.T) {
+	w := New()
 	done := make(chan struct{})
 	go func() {
-		w.wait()
+		p := w.Register()
+		p.Park()
 		close(done)
 	}()
 	waitForParkers(t, w, 1)
-	w.broadcast()
+	w.Broadcast()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatalf("TestWaitBroadcastBasic: wait did not return after broadcast")
-	}
-}
-
-func TestBroadcastBeforeWait(t *testing.T) {
-	w := newWaiter()
-	w.broadcast()
-	done := make(chan struct{})
-	go func() {
-		w.wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("TestBroadcastBeforeWait: wait did not return after pre-broadcast")
+		t.Fatalf("TestRegisterParkBroadcast: Park did not return after Broadcast")
 	}
 }
 
 func TestManyWaitersOneBroadcast(t *testing.T) {
 	const n = 64
-	w := newWaiter()
+	w := New()
 	woken := make(chan struct{}, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			w.wait()
+			p := w.Register()
+			p.Park()
 			woken <- struct{}{}
 		}()
 	}
 	waitForParkers(t, w, n)
-	w.broadcast()
+	w.Broadcast()
 	for i := 0; i < n; i++ {
 		select {
 		case <-woken:
@@ -85,129 +69,161 @@ func TestManyWaitersOneBroadcast(t *testing.T) {
 	}
 }
 
-func TestResetCycles(t *testing.T) {
+func TestWakeBeforePark(t *testing.T) {
+	w := New()
+	p := w.Register()
+	p.Wake()
+	done := make(chan struct{})
+	go func() {
+		p.Park()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("TestWakeBeforePark: Park did not return after pre-Wake")
+	}
+}
+
+func TestWakeAfterPark(t *testing.T) {
+	w := New()
+	done := make(chan struct{})
+	go func() {
+		p := w.Register()
+		p.Park()
+		close(done)
+	}()
+	waitForParkers(t, w, 1)
+	// Reach into the waiter to grab the parker we just registered, then
+	// wake only that one (mimics signal.Wait's ctx-cancellation path).
+	w.mu.Lock()
+	p := w.parkers[0]
+	w.mu.Unlock()
+	p.Wake()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("TestWakeAfterPark: Park did not return after Wake")
+	}
+}
+
+func TestBroadcastIsIdempotent(t *testing.T) {
+	w := New()
+	done := make(chan struct{})
+	go func() {
+		p := w.Register()
+		p.Park()
+		close(done)
+	}()
+	waitForParkers(t, w, 1)
+	w.Broadcast()
+	w.Broadcast() // no-op: list already drained
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("TestBroadcastIsIdempotent: Park did not return")
+	}
+}
+
+// TestRaceRegisterParkBroadcast exercises the narrow race window between
+// Register (parker visible in the list) and Park (CAS state to parkParked
+// inside unlockf): Broadcast may run before or after the CAS, and both
+// orderings must lead to Park returning. Workhorse case for -race —
+// Parker.g is the only non-atomic data passed between goroutines.
+//
+// The caller-side rendezvous (registered channel) matches the Mesa-style
+// contract: Broadcast may not race ahead of Register or the wake is lost.
+// The race we want -race to police is purely between unlockf's CAS and
+// Broadcast's Swap on the same parker.state.
+func TestRaceRegisterParkBroadcast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("TestRaceRegisterParkBroadcast: skipping race stress in -short")
+	}
+	const iters = 5000
+	for i := 0; i < iters; i++ {
+		w := New()
+		var woken atomic.Bool
+		registered := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			p := w.Register()
+			close(registered)
+			p.Park()
+			woken.Store(true)
+			close(done)
+		}()
+		<-registered
+		w.Broadcast()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("TestRaceRegisterParkBroadcast: iter %d: Park did not return", i)
+		}
+		if !woken.Load() {
+			t.Fatalf("TestRaceRegisterParkBroadcast: iter %d: waiter did not record wake", i)
+		}
+	}
+}
+
+// TestRaceWakeVsBroadcast: each iteration races a per-parker Wake against
+// a Broadcast targeting the same parker. Both must be safe; the waiter
+// must wake exactly once.
+func TestRaceWakeVsBroadcast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("TestRaceWakeVsBroadcast: skipping race stress in -short")
+	}
+	const iters = 5000
+	for i := 0; i < iters; i++ {
+		w := New()
+		done := make(chan struct{})
+		var p *Parker
+		ready := make(chan struct{})
+		go func() {
+			p = w.Register()
+			close(ready)
+			p.Park()
+			close(done)
+		}()
+		<-ready
+		go w.Broadcast()
+		go p.Wake()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("TestRaceWakeVsBroadcast: iter %d: Park did not return", i)
+		}
+	}
+}
+
+// TestRaceManyCycles: many Broadcast cycles with several concurrent
+// waiters per cycle, no synchronization between cycles. Exercises the
+// parker list churn under load.
+func TestRaceManyCycles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("TestRaceManyCycles: skipping race stress in -short")
+	}
 	const (
-		cycles  = 200
-		waiters = 8
+		cycles  = 500
+		waiters = 4
 	)
-	w := newWaiter()
+	w := New()
 	for c := 0; c < cycles; c++ {
 		done := make(chan struct{}, waiters)
 		for i := 0; i < waiters; i++ {
 			go func() {
-				w.wait()
+				p := w.Register()
+				p.Park()
 				done <- struct{}{}
 			}()
 		}
 		waitForParkers(t, w, waiters)
-		w.broadcast()
+		w.Broadcast()
 		for i := 0; i < waiters; i++ {
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
-				t.Fatalf("TestResetCycles: cycle %d only saw %d/%d waiters return", c, i, waiters)
+				t.Fatalf("TestRaceManyCycles: cycle %d: %d/%d waiters returned", c, i, waiters)
 			}
 		}
-		w.reset()
-	}
-}
-
-// TestRaceUnsynchronized: hammer wait+broadcast with no rendezvous so
-// every interleaving (broadcast-before-register, broadcast-during-park,
-// broadcast-after-park) gets exercised. This is the workhorse case for
-// -race: parker.g is the only non-atomic data passed between goroutines.
-func TestRaceUnsynchronized(t *testing.T) {
-	if testing.Short() {
-		t.Skip("TestRaceUnsynchronized: skipping race stress in -short")
-	}
-	const iters = 5000
-	for i := 0; i < iters; i++ {
-		w := newWaiter()
-		var woken atomic.Bool
-		done := make(chan struct{})
-		go func() {
-			w.wait()
-			woken.Store(true)
-			close(done)
-		}()
-		w.broadcast()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("TestRaceUnsynchronized: iter %d: wait did not return", i)
-		}
-		if !woken.Load() {
-			t.Fatalf("TestRaceUnsynchronized: iter %d: waiter did not record wake", i)
-		}
-	}
-}
-
-// TestRaceConcurrentBroadcasts: many goroutines call broadcast() at once.
-// One bumps gen even→odd; the rest must see odd and bail idempotently
-// without double-waking the single parked waiter.
-func TestRaceConcurrentBroadcasts(t *testing.T) {
-	const (
-		iters        = 500
-		broadcasters = 16
-	)
-	for i := 0; i < iters; i++ {
-		w := newWaiter()
-		done := make(chan struct{})
-		go func() {
-			w.wait()
-			close(done)
-		}()
-		waitForParkers(t, w, 1)
-		start := make(chan struct{})
-		bdone := make(chan struct{}, broadcasters)
-		for b := 0; b < broadcasters; b++ {
-			go func() {
-				<-start
-				w.broadcast()
-				bdone <- struct{}{}
-			}()
-		}
-		close(start)
-		for b := 0; b < broadcasters; b++ {
-			<-bdone
-		}
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("TestRaceConcurrentBroadcasts: iter %d: wait did not return", i)
-		}
-	}
-}
-
-// TestRaceBroadcastReset: drive many broadcast+reset cycles with no
-// waitForParkers rendezvous. Waiters that don't reach the register step
-// before broadcast must return spuriously via the gen mismatch path; the
-// test still requires every spawned waiter to complete each cycle.
-func TestRaceBroadcastReset(t *testing.T) {
-	if testing.Short() {
-		t.Skip("TestRaceBroadcastReset: skipping race stress in -short")
-	}
-	const (
-		cycles  = 1000
-		waiters = 4
-	)
-	w := newWaiter()
-	for c := 0; c < cycles; c++ {
-		done := make(chan struct{}, waiters)
-		for i := 0; i < waiters; i++ {
-			go func() {
-				w.wait()
-				done <- struct{}{}
-			}()
-		}
-		w.broadcast()
-		for i := 0; i < waiters; i++ {
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Fatalf("TestRaceBroadcastReset: cycle %d: %d/%d waiters returned", c, i, waiters)
-			}
-		}
-		w.reset()
 	}
 }
