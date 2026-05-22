@@ -344,6 +344,8 @@ func (f *fifo[T]) All(ctx context.Context) iter.Seq2[T, error] {
 func (f *fifo[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
+		f.lk.cowEnter()
+		defer f.lk.cowExit()
 		f.lk.rlock()
 		if f.closed {
 			f.lk.runlock()

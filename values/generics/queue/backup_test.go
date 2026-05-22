@@ -473,11 +473,12 @@ func TestBackupRestoreOrder(t *testing.T) {
 	}
 }
 
-// withBboltFault runs f with the bbolt fault seam armed to return injected after the
-// backup mirror, restoring the seam afterward. Tests are serial in this package.
-func withBboltFault(injected error, f func()) {
-	bboltFaultAfterBackup = func() error { return injected }
-	defer func() { bboltFaultAfterBackup = nil }()
+// withBboltFault runs f with bk's per-instance fault seam armed to return injected
+// after the backup mirror, restoring the seam afterward.
+func withBboltFault(bk Backing[Number[int]], injected error, f func()) {
+	b := bk.(*bboltBacking[Number[int]])
+	b.hooks.faultAfterBackup = func() error { return injected }
+	defer func() { b.hooks.faultAfterBackup = nil }()
 	f()
 }
 
@@ -505,7 +506,7 @@ func TestBackupRestoreOnPopFailure(t *testing.T) {
 
 	var items []Number[int]
 	var perr error
-	withBboltFault(injected, func() { items, perr = q.Pop(ctx, 2) })
+	withBboltFault(bk, injected, func() { items, perr = q.Pop(ctx, 2) })
 	switch {
 	case !errors.Is(perr, injected):
 		t.Errorf("TestBackupRestoreOnPopFailure: Pop got err == %v, want injected", perr)
@@ -557,7 +558,7 @@ func TestBackupRestoreOnDelFailure(t *testing.T) {
 	}
 
 	var derr error
-	withBboltFault(injected, func() { derr = q.Del(ctx, []Number[int]{queryItem(2)}) })
+	withBboltFault(bk, injected, func() { derr = q.Del(ctx, []Number[int]{queryItem(2)}) })
 	if !errors.Is(derr, injected) {
 		t.Errorf("TestBackupRestoreOnDelFailure: Del got err == %v, want injected", derr)
 	}

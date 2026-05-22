@@ -9,9 +9,6 @@ import (
 )
 
 // waitForSignalWaiters polls s.waiters until it equals want or the deadline expires.
-// It is needed because Wait() increments s.waiters synchronously but then submits a
-// pool goroutine, and Signal() must be called only after all expected waiters have
-// registered.
 func waitForSignalWaiters(t *testing.T, s *signal, want int32) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

@@ -17,19 +17,20 @@ func TestBboltClearDrainsInFlightPush(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	first := true
-	bboltCommitStart = func() {
-		if first {
-			first = false
-			close(started)
-		}
-		<-release
-	}
-	t.Cleanup(func() { bboltCommitStart = nil })
 
 	ctx := t.Context()
 	b, err := NewBboltFIFO[Number[int]](ctx, diskRoot(t))
 	if err != nil {
 		t.Fatalf("TestBboltClearDrainsInFlightPush: NewBboltFIFO got err == %s, want err == nil", err)
+	}
+	// Install the per-instance hook before the queue is exposed (and thus before any
+	// flusher work runs). New (below) is what starts the flusher goroutine.
+	b.(*bboltBacking[Number[int]]).hooks.commitStart = func() {
+		if first {
+			first = false
+			close(started)
+		}
+		<-release
 	}
 	q, err := New[Number[int]](ctx, "test", b, Unlimited)
 	if err != nil {

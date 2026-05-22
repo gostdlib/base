@@ -56,11 +56,11 @@ func TestBboltDoClearDrainUsesFlusherCtx(t *testing.T) {
 	backup := &fakeCtxBackup{}
 	p.backup = backup
 
-	// Manually stage an item the way a Push would: append to p.buf, bump pending,
+	// Manually stage an item the way a Push would: append to p.buf, bump inflight,
 	// remember the current cur so we can read its err after the drain.
 	p.lk.lock()
 	p.buf = []Number[int]{fifoItem(1)}
-	p.pending = 1
+	p.inflight = 1
 	bufCur := p.cur
 	p.lk.unlock()
 

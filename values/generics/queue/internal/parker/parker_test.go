@@ -107,6 +107,60 @@ func TestWakeAfterPark(t *testing.T) {
 	}
 }
 
+// TestDetachRemovesFromList: a Parker that was registered but is then
+// detached (no Release, no Broadcast) must not remain in the Waiter's
+// list — otherwise repeated ctx-cancelled Waits would grow it unbounded.
+func TestDetachRemovesFromList(t *testing.T) {
+	w := New()
+	for i := 0; i < 100; i++ {
+		p := w.Register()
+		p.Detach()
+	}
+	w.mu.Lock()
+	n := len(w.parkers)
+	w.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("TestDetachRemovesFromList: parkers list has %d entries after 100 Detach calls, want 0", n)
+	}
+}
+
+// TestDetachLeavesWakeSafe: a Wake racing with Detach must not panic and
+// must observe a consistent Parker. This mirrors signal.Wait's
+// cancel()-returned-false path where the AfterFunc callback may run Wake
+// concurrently with Detach.
+func TestDetachLeavesWakeSafe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("TestDetachLeavesWakeSafe: skipping race stress in -short")
+	}
+	const iters = 2000
+	for i := 0; i < iters; i++ {
+		w := New()
+		registered := make(chan *Parker, 1)
+		parked := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			p := w.Register()
+			registered <- p
+			p.Park()
+			close(parked)
+			// Detach after Park returns, simulating the ctx-cancelled
+			// path in signal.Wait where cancel() returned false.
+			p.Detach()
+			close(done)
+		}()
+		p := <-registered
+		go p.Wake() // race against the parked goroutine's Detach
+		<-parked
+		<-done
+		w.mu.Lock()
+		n := len(w.parkers)
+		w.mu.Unlock()
+		if n != 0 {
+			t.Fatalf("TestDetachLeavesWakeSafe: iter %d: parkers list has %d entries, want 0", i, n)
+		}
+	}
+}
+
 func TestBroadcastIsIdempotent(t *testing.T) {
 	w := New()
 	done := make(chan struct{})

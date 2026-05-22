@@ -26,17 +26,21 @@ var (
 	errStopIter = errors.New("stop iteration")
 )
 
-// bboltFaultAfterBackup is a test-only seam. When non-nil it is invoked inside Pop and
-// Del immediately after the backup has been mirrored but before the on-disk delete is
-// applied; a non-nil return aborts the transaction, exercising the Restore compensation
-// path. It is always nil in production.
-var bboltFaultAfterBackup func() error
-
-// bboltCommitStart is a test-only seam. When non-nil it is invoked at the very start
-// of commit(), before any backup mirror or db.Update, so a test can pin the flusher
-// mid-commit and race a concurrent Clear/Close against it. It is always nil in
-// production. commit() runs only in the single flusher goroutine.
-var bboltCommitStart func()
+// bboltHooks is a per-instance set of test seams. Tests set fields on a specific
+// *bboltBacking[T] before any flusher work runs; both fields are nil in production.
+// Per-instance (rather than package globals) so concurrent tests on different queues
+// do not step on each other.
+type bboltHooks struct {
+	// faultAfterBackup, when non-nil, is invoked inside Pop and Del immediately after the
+	// backup has been mirrored but before the on-disk delete is applied; a non-nil return
+	// aborts the transaction, exercising the Restore compensation path.
+	faultAfterBackup func() error
+	// commitStart, when non-nil, is invoked at the very start of commit(), before any
+	// backup mirror or db.Update, so a test can pin the flusher mid-commit and race a
+	// concurrent Clear/Close against it. commit() runs only in the single flusher
+	// goroutine, so a plain func is race-free here.
+	commitStart func()
+}
 
 // flushResult is shared by every Push whose items joined one buffered batch. The flusher
 // sets err then closes done; waiters read err after done is closed.
@@ -98,11 +102,12 @@ type bboltBacking[T Item[T]] struct {
 	keyOf func(v T, seq uint64) []byte
 	idx   *bboltIndex
 	count int64
-	// pending is the number of items admitted into the staging buffer but not yet
+	// inflight is the number of items admitted into the staging buffer but not yet
 	// committed (buffered or snapshot-in-flight). Guarded by lk like count. The bounded
-	// maxSize admission gate tests count+pending so concurrent Pushes whose items are
-	// still buffered cannot collectively overshoot maxSize.
-	pending  int64
+	// maxSize admission gate tests count+inflight so concurrent Pushes whose items are
+	// still buffered cannot collectively overshoot maxSize. (Named distinctly from
+	// qlock.pending, which counts writers blocked on the lock.)
+	inflight int64
 	maxSize  int
 	maxBatch int
 	priority bool
@@ -126,6 +131,9 @@ type bboltBacking[T Item[T]] struct {
 	// On-disk codec from WithCodec; nil falls back to the default JSON encoding.
 	encode func(dst *bytes.Buffer, v T) error
 	decode func(src []byte, dst *T) error
+
+	// hooks holds optional test seams. Both fields are nil in production.
+	hooks bboltHooks
 }
 
 // encodeItem serializes v for storage using the WithCodec encoder if set, else the
@@ -383,13 +391,13 @@ func (p *bboltBacking[T]) doFlush(ctx context.Context) {
 // then updates count/index/notEmpty under the lock. A backup or write failure fails the
 // whole batch (returned to every waiter); the items are not made visible.
 func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
-	if bboltCommitStart != nil {
-		bboltCommitStart()
+	if p.hooks.commitStart != nil {
+		p.hooks.commitStart()
 	}
 	if p.backup != nil {
 		if err := p.backup.Push(ctx, snap); err != nil {
 			p.lk.lock()
-			p.pending -= int64(len(snap))
+			p.inflight -= int64(len(snap))
 			p.lk.unlock()
 			if p.notFull.HasWaiters() {
 				p.notFull.Signal()
@@ -425,7 +433,7 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 	})
 	if err != nil {
 		p.lk.lock()
-		p.pending -= int64(len(snap))
+		p.inflight -= int64(len(snap))
 		p.lk.unlock()
 		if p.notFull.HasWaiters() {
 			p.notFull.Signal()
@@ -435,7 +443,7 @@ func (p *bboltBacking[T]) commit(ctx context.Context, snap []T) error {
 	p.lk.lock()
 	wasEmpty := p.count == 0
 	p.count += int64(len(snap))
-	p.pending -= int64(len(snap))
+	p.inflight -= int64(len(snap))
 	if p.idx != nil {
 		for _, e := range ents {
 			p.idx.add(e.hash, e.sk)
@@ -577,7 +585,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 			p.lk.unlock()
 			return ErrBatchTooLarge
 		}
-		if p.maxSize > 0 && p.count+p.pending+int64(len(vs)) > int64(p.maxSize) {
+		if p.maxSize > 0 && p.count+p.inflight+int64(len(vs)) > int64(p.maxSize) {
 			if err := p.notFull.Wait(ctx, p.lk.unlock); err != nil {
 				return p.closedOrCause(ctx)
 			}
@@ -585,7 +593,7 @@ func (p *bboltBacking[T]) Push(ctx context.Context, vs []T) error {
 		}
 		if len(p.buf)+len(vs) <= p.maxBatch {
 			p.buf = append(p.buf, vs...)
-			p.pending += int64(len(vs))
+			p.inflight += int64(len(vs))
 			r := p.cur
 			p.lk.unlock()
 			// Group commit: signal on every append, not just when full. The flusher
@@ -663,8 +671,8 @@ func (p *bboltBacking[T]) Pop(ctx context.Context, n int) ([]T, error) {
 					}
 					backupDeleted = true
 				}
-				if bboltFaultAfterBackup != nil {
-					if e := bboltFaultAfterBackup(); e != nil {
+				if p.hooks.faultAfterBackup != nil {
+					if e := p.hooks.faultAfterBackup(); e != nil {
 						return e
 					}
 				}
@@ -867,8 +875,8 @@ func (p *bboltBacking[T]) Del(ctx context.Context, v []T) error {
 		}
 	}
 	err := p.db.Update(func(tx *bolt.Tx) error {
-		if bboltFaultAfterBackup != nil {
-			if e := bboltFaultAfterBackup(); e != nil {
+		if p.hooks.faultAfterBackup != nil {
+			if e := p.hooks.faultAfterBackup(); e != nil {
 				return e
 			}
 		}
@@ -1100,6 +1108,8 @@ func (p *bboltBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 func (p *bboltBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
+		p.lk.cowEnter()
+		defer p.lk.cowExit()
 		p.lk.rlock()
 		if p.closed {
 			p.lk.runlock()

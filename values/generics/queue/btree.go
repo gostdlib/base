@@ -513,6 +513,8 @@ func (b *btreeBacking[T]) All(ctx context.Context) iter.Seq2[T, error] {
 func (b *btreeBacking[T]) AllCOW(ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
+		b.lk.cowEnter()
+		defer b.lk.cowExit()
 		b.lk.rlock()
 		if b.closed {
 			b.lk.runlock()

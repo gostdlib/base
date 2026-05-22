@@ -57,10 +57,19 @@ func (s *signal) Wait(ctx context.Context, unlock func()) error {
 	cancel := context.AfterFunc(ctx, p.WakeFunc())
 	p.Park()
 	if cancel() {
+		// AfterFunc callback never ran: nothing else holds a reference
+		// to p, safe to recycle through the pool.
 		p.Release()
+	} else {
+		// Callback either ran or is running. Pool recycling would race
+		// with Wake, but the callback never touches p.waiter, so we can
+		// still detach p from the Waiter's list. Without this, every
+		// ctx-cancelled Wait would leave a stale parker in the list,
+		// growing it unboundedly under repeated timed-out waits and
+		// making a later Signal() O(stale). The parker is then GC'd
+		// once the AfterFunc registration releases its ref.
+		p.Detach()
 	}
-	// If cancel returned false the callback either ran or is running; we
-	// can't recycle p (Wake might still touch it) — let it be GC'd.
 
 	if err := ctx.Err(); err != nil {
 		return context.Cause(ctx)

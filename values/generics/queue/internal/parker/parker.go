@@ -130,10 +130,34 @@ func (w *Waiter) Register() *Parker {
 	return p
 }
 
+// Detach removes p from its Waiter's parkers list without resetting any
+// field and without returning p to the pool. Use this when a ctx-watcher
+// callback (e.g. one registered with context.AfterFunc) may still be
+// executing p.Wake concurrently: Wake touches p.state and p.g but not
+// p.waiter, so list removal is race-free, while pool recycling would not
+// be (a recycled Parker handed to a new caller would see Wake's stale
+// state mutation). After Detach the Parker is unreachable from the
+// Waiter and becomes garbage as soon as the watcher releases it.
+func (p *Parker) Detach() {
+	w := p.waiter
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	for i, q := range w.parkers {
+		if q == p {
+			w.parkers = append(w.parkers[:i], w.parkers[i+1:]...)
+			break
+		}
+	}
+	w.mu.Unlock()
+	p.waiter = nil
+}
+
 // Release returns p to the internal pool for reuse. The caller must
 // guarantee no other goroutine holds a reference to p — in particular,
 // any ctx-watcher that might call p.Wake must have completed first. If in
-// doubt, do not call Release; the GC will reclaim p normally.
+// doubt, call Detach instead (or do nothing and let the GC reclaim p).
 //
 // Release removes p from its Waiter's list. If Broadcast already drained
 // p (the common case for non-ctx-fire waits), the removal is a no-op.
