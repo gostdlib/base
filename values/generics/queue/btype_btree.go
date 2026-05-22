@@ -22,8 +22,14 @@ type tree[K, V any] struct {
 	stdops      bool        // Flag used by outer types
 	count       int         // total tree count
 	root        *node[K, V] // root node
-	dataCopy    func(V) V   // Value data copy-on-write
-	dataRelease func(V)     // Value data on release
+	// spare holds an empty, exclusively-owned leaf that survived a Pop-to-empty.
+	// insertFirstItem reuses it instead of allocating a fresh ~1KB leaf on every
+	// empty->1 cycle (FIFO workloads that intermittently drain). Only populated by
+	// collapseRootIfNeeded when the dropped root is a leaf with rc==0 (no Copy()
+	// snapshot references it), so it is safe to mutate on reuse.
+	spare       *node[K, V]
+	dataCopy    func(V) V // Value data copy-on-write
+	dataRelease func(V)   // Value data on release
 	dataCompare func(K, V, K, V) int
 	dataSearch  func(int, *K, *V, K, V) (int, bool)
 }
@@ -186,9 +192,16 @@ func (n *node[K, V]) insertChildAt(child *node[K, V], i int) {
 }
 
 // Insert the first item into a map. This makes the root a new leaf and set the
-// count to 1.
+// count to 1. If a spare leaf survived a previous Pop-to-empty cycle it is
+// reused instead of allocating; nodePopFront zeroes each emptied slot so the
+// spare's keys/values arrays are clean for reuse.
 func (t *tree[K, V]) insertFirstItem(key K, value V) {
-	t.root = t.newNode(true)
+	if t.spare != nil {
+		t.root = t.spare
+		t.spare = nil
+	} else {
+		t.root = t.newNode(true)
+	}
 	t.root.keys[0] = key
 	t.root.values[0] = value
 	t.root.len = 1
@@ -533,6 +546,12 @@ func (t *tree[K, V]) DrainBackward() iter.Seq2[K, V] {
 
 func (t *tree[K, V]) collapseRootIfNeeded() {
 	if t.count == 0 {
+		// Recycle the now-empty leaf if it is exclusively owned (no Copy()
+		// snapshot is referencing it). Only stash one; if a spare already
+		// exists let this one go to GC.
+		if t.spare == nil && t.root != nil && t.root.leaf() && atomic.LoadInt64(&t.root.rc) == 0 {
+			t.spare = t.root
+		}
 		t.root = nil
 	} else if t.root.len == 0 && !t.root.leaf() {
 		t.root = t.root.branch.children[0]
