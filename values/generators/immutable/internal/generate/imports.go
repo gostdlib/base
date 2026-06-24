@@ -3,7 +3,6 @@ package generate
 import (
 	"go/ast"
 	"go/token"
-	"log"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -73,55 +72,29 @@ func findStructImports(fileAst *ast.File, structName string) ([]string, error) {
 		// Check for a FuncDecl (could be a method or a regular function)
 		funcDecl, ok := decl.(*ast.FuncDecl)
 		if ok && funcDecl.Recv != nil && funcDecl.Name != nil {
-			// Ensure the function body is not nil before processing
-			if funcDecl.Body != nil {
-				collectPackageRefs(funcDecl.Body, importsMap, usedImports)
-			} else {
-				log.Println("Empty function body")
-			}
 			// For a method, the receiver is in funcDecl.Recv.List
 			// e.g. `func (r *MyStruct) MyMethod(...) { ... }`
+			// Only collect imports from methods that are actually copied onto the immutable type:
+			// those whose receiver matches the target struct (handled below) and that have a named
+			// receiver. extractMethods skips unnamed-receiver methods, so collecting their imports
+			// here would leak an unused import into the generated file.
 			recv := funcDecl.Recv.List
-			if len(recv) == 1 {
-				// The receiver might be *structName or structName
-				starExpr, isStar := recv[0].Type.(*ast.StarExpr)
-				if isStar {
-					switch x := starExpr.X.(type) {
-					case *ast.Ident:
-						// e.g. (*Record) – no type param
-						if x.Name == structName {
-							collectPackageRefs(funcDecl.Body, importsMap, usedImports)
-						}
-
-					case *ast.SelectorExpr:
-						// e.g. (*somePkg.Record)
-						if x.Sel.Name == structName {
-							collectPackageRefs(funcDecl.Body, importsMap, usedImports)
-						}
-
-					case *ast.IndexExpr:
-						// e.g. (*Record[T]) or (*somePkg.Record[T])
-						// x.X is the “Record” or “somePkg.Record” part
-						// x.Index is the type param “T” or even another expression
-						collectIfGenericReceiverMatches(
-							collectArgs{
-								x.X,
-								structName,
-								importsMap,
-								usedImports,
-								funcDecl.Body,
-							},
-						)
-					}
-				} else {
-					// e.g. (MyStruct)
-					ident, isIdent := recv[0].Type.(*ast.Ident)
-					if isIdent && ident.Name == structName {
-						// Method on structName
-						// og.Println("found method: ", funcDecl.Name.Name)
-						collectPackageRefs(funcDecl.Body, importsMap, usedImports)
-					}
+			if len(recv) == 1 && len(recv[0].Names) > 0 {
+				// Unwrap a pointer receiver (*T → T); pointer vs value is irrelevant for deciding which
+				// struct the method belongs to. The receiver may be a plain type (Record), a qualified
+				// type (somePkg.Record), or generic with one or more type params (Record[T] / Record[T, X]);
+				// collectIfGenericReceiverMatches handles all of these shapes.
+				recvType := recv[0].Type
+				if starExpr, ok := recvType.(*ast.StarExpr); ok {
+					recvType = starExpr.X
 				}
+				collectIfGenericReceiverMatches(collectArgs{
+					indexExpr:   recvType,
+					structName:  structName,
+					importsMap:  importsMap,
+					usedImports: usedImports,
+					body:        funcDecl.Body,
+				})
 			}
 		}
 	}

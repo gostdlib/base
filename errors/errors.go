@@ -15,7 +15,7 @@ you must use "go generate" for everything to work.
 		"github.com/gostdlib/base/errors"
 	)
 
-	//go:generate go tool github.com/gostdlib/base/generators/stringer -type=Category -linecomment
+	//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Category -linecomment
 
 	// Category represents the category of the error.
 	type Category uint32
@@ -30,7 +30,7 @@ you must use "go generate" for everything to work.
 		// ADD YOUR OWN CATEGORIES HERE
 	)
 
-	//go:generate go tool github.com/gostdlib/base/generators/stringer -type=Type -linecomment
+	//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Type -linecomment
 
 	// Type represents the type of the error.
 	type Type uint16

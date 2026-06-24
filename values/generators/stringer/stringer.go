@@ -287,6 +287,7 @@ func main() {
 		if g.reverse || g.marshal || g.list {
 			g.Printf("import (\n")
 			if g.marshal {
+				g.Printf("\t\"encoding/json\"\n")
 				g.Printf("\t\"fmt\"\n")
 			}
 			if g.list {
@@ -295,9 +296,6 @@ func main() {
 			g.Printf("\t\"strconv\"\n")
 			if g.reverse {
 				g.Printf("\t\"strings\"\n")
-			}
-			if g.marshal {
-				g.Printf("\t\"unsafe\"\n")
 			}
 			g.Printf(")\n")
 		} else {
@@ -1262,19 +1260,15 @@ func (g *Generator) buildMarshalMethods(typeName string) {
 	g.Printf("\tif !i.Valid() {\n")
 	g.Printf("\t\treturn nil, fmt.Errorf(\"invalid %s value: %%d\", i)\n", typeName)
 	g.Printf("\t}\n")
-	g.Printf("\ts := i.String()\n")
-	g.Printf("\treturn []byte(`\"` + s + `\"`), nil\n")
+	g.Printf("\treturn json.Marshal(i.String())\n")
 	g.Printf("}\n")
 
 	// UnmarshalJSON method
 	g.Printf("\n")
 	g.Printf("func (i *%s) UnmarshalJSON(data []byte) error {\n", typeName)
-	g.Printf("\tif len(data) < 2 || data[0] != '\"' || data[len(data)-1] != '\"' {\n")
-	g.Printf("\t\treturn fmt.Errorf(\"invalid JSON string for %s\")\n", typeName)
-	g.Printf("\t}\n")
 	g.Printf("\tvar s string\n")
-	g.Printf("\tif len(data) > 2 {\n")
-	g.Printf("\t\ts = unsafe.String(&data[1], len(data)-2)\n")
+	g.Printf("\tif err := json.Unmarshal(data, &s); err != nil {\n")
+	g.Printf("\t\treturn fmt.Errorf(\"invalid JSON string for %s: %%w\", err)\n", typeName)
 	g.Printf("\t}\n")
 	caseSensitive := !g.marshalinsensitive
 	g.Printf("\tval, ok := Reverse%s(s, %t)\n", typeName, caseSensitive)

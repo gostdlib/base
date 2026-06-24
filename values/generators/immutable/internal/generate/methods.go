@@ -61,7 +61,7 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 	var err error
 	ast.Inspect(node, func(n ast.Node) bool {
 		funcDecl, ok := n.(*ast.FuncDecl)
-		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 || len(funcDecl.Recv.List[0].Names) == 0 {
 			return true
 		}
 
@@ -91,6 +91,10 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 			if ident, ok := recv.X.(*ast.Ident); ok {
 				receiverName = ident.Name
 			}
+		case *ast.IndexListExpr: // Handle multiple type parameters
+			if ident, ok := recv.X.(*ast.Ident); ok {
+				receiverName = ident.Name
+			}
 		}
 
 		// Only proceed if the struct name matches (to avoid collecting methods for other types)
@@ -98,7 +102,7 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 			return true
 		}
 		// Check for mutating fields ... (unchanged)
-		if detectFieldMutation(funcDecl.Body, fieldMap) {
+		if detectFieldMutation(funcDecl.Body, fieldMap, receiverVar) {
 			err = fmt.Errorf("cannot generate immutable version: method %s mutates fields", funcDecl.Name.Name)
 			return false
 		}
@@ -170,25 +174,47 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 	return methods, nil
 }
 
-// detectFieldMutation is used to tell if a function that is being copied from the original
-// struct mutates a field. If it does, we can't generate an immutable version.
-func detectFieldMutation(body *ast.BlockStmt, fieldMap map[string]string) bool {
+// detectFieldMutation reports whether a method body mutates a field of the receiver, which would make
+// it unsafe to copy onto the immutable type. It catches direct assignment (r.Field = x, r.Field += x)
+// and increment/decrement (r.Field++, r.Field--) through the receiver variable.
+//
+// It deliberately does not catch indirect mutations the generator cannot soundly prove: mutation through
+// a pointer field (r.ptr.X = y), aliasing the receiver into another variable that is then mutated, or
+// element assignment into a map/slice field (r.items[k] = v). Methods doing those can slip through; the
+// immutable guarantee for collection fields instead rests on the immutable.Map/Slice field wrappers.
+func detectFieldMutation(body *ast.BlockStmt, fieldMap map[string]string, receiverVar string) bool {
 	mutated := false
 	ast.Inspect(body, func(n ast.Node) bool {
-		if assignStmt, ok := n.(*ast.AssignStmt); ok {
-			for _, lhs := range assignStmt.Lhs {
-				if selector, ok := lhs.(*ast.SelectorExpr); ok {
-					if ident, ok := selector.X.(*ast.Ident); ok {
-						// Check if ident refers to the receiver variable (e.g., "r")
-						if _, exists := fieldMap[selector.Sel.Name]; exists && ident.Name == "r" {
-							mutated = true
-							return false // Stop further inspection
-						}
-					}
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range n.Lhs {
+				if isReceiverFieldRef(lhs, fieldMap, receiverVar) {
+					mutated = true
+					return false // Stop further inspection.
 				}
+			}
+		case *ast.IncDecStmt:
+			if isReceiverFieldRef(n.X, fieldMap, receiverVar) {
+				mutated = true
+				return false // Stop further inspection.
 			}
 		}
 		return true
 	})
 	return mutated
+}
+
+// isReceiverFieldRef reports whether expr is a reference to a field of the receiver, i.e.
+// "<receiverVar>.<Field>" where <Field> is a known field of the struct.
+func isReceiverFieldRef(expr ast.Expr, fieldMap map[string]string, receiverVar string) bool {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, exists := fieldMap[selector.Sel.Name]
+	return exists && ident.Name == receiverVar
 }

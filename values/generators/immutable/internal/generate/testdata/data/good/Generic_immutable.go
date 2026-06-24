@@ -163,3 +163,8 @@ func (r *ImGeneric[T, X]) String() string {
 func (r *ImGeneric[T, X]) privateMethod() string {
 	return fmt.Sprintf("%+v", "private method")
 }
+
+// DoNotHavePtrReceiver is a copy of the original method from Generic.
+func (r ImGeneric[T, X]) DoNotHavePtrReceiver() string {
+	return fmt.Sprintf("%+v", "okay")
+}

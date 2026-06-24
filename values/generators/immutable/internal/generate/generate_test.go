@@ -14,9 +14,13 @@ import (
 )
 
 const (
-	mutatedMethod = "testdata/data/bad/mutatedMethod"
-	sharedName    = "testdata/data/bad/private_public_share_name"
-	goodData      = "testdata/data/good"
+	mutatedMethod   = "testdata/data/bad/mutatedMethod"
+	mutatedNonR     = "testdata/data/bad/mutatedNonRReceiver"
+	incDecMutation  = "testdata/data/bad/incDecMutation"
+	sharedName      = "testdata/data/bad/private_public_share_name"
+	goodData        = "testdata/data/good"
+	unnamedReceiver = "testdata/data/unnamedReceiver"
+	valueRecvMulti  = "testdata/data/valueRecvMultiParam"
 )
 
 func TestGenerate(t *testing.T) {
@@ -31,6 +35,20 @@ func TestGenerate(t *testing.T) {
 			name:       "Error: bad type, mutates data in method",
 			structName: "Generic",
 			pkgLoc:     mutatedMethod,
+			wantFound:  false,
+			wantErr:    true,
+		},
+		{
+			name:       "Error: bad type, mutates data in method via non-r receiver",
+			structName: "Generic",
+			pkgLoc:     mutatedNonR,
+			wantFound:  false,
+			wantErr:    true,
+		},
+		{
+			name:       "Error: bad type, mutates data in method via increment operator",
+			structName: "Generic",
+			pkgLoc:     incDecMutation,
 			wantFound:  false,
 			wantErr:    true,
 		},
@@ -59,6 +77,27 @@ func TestGenerate(t *testing.T) {
 			name:       "Good type",
 			structName: "NonGeneric",
 			pkgLoc:     goodData,
+			wantFound:  true,
+			wantErr:    false,
+		},
+		{
+			name:       "Good type, scalar-only struct must not import immutable package",
+			structName: "ScalarOnly",
+			pkgLoc:     goodData,
+			wantFound:  true,
+			wantErr:    false,
+		},
+		{
+			name:       "Good type, method with unnamed receiver is skipped without panicking",
+			structName: "Unnamed",
+			pkgLoc:     unnamedReceiver,
+			wantFound:  true,
+			wantErr:    false,
+		},
+		{
+			name:       "Good type, value receiver with multiple type params is copied so its import is consumed",
+			structName: "Pair",
+			pkgLoc:     valueRecvMulti,
 			wantFound:  true,
 			wantErr:    false,
 		},

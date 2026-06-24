@@ -95,3 +95,19 @@ func (r *NonGeneric) privateMethod() string {
 func (r NonGeneric) DoNotHavePtrReceiver() string {
 	return fmt.Sprintf("%+v", "okay")
 }
+
+//go:generate immutable -type ScalarOnly
+
+// ScalarOnly has only scalar fields so the generated immutable type must not import the immutable package.
+type ScalarOnly struct {
+	ID    uint64
+	Name  string
+	Email string
+
+	private string
+}
+
+// String method comment.
+func (s *ScalarOnly) String() string {
+	return fmt.Sprintf("%+v", "ScalarOnly")
+}

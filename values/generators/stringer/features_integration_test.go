@@ -237,9 +237,15 @@ const (
 	if !strings.Contains(string(content), "func (i *Color) UnmarshalJSON(") {
 		t.Errorf("Generated code does not contain UnmarshalJSON method:\n%s", content)
 	}
-	// Verify unsafe.String is used
-	if !strings.Contains(string(content), "unsafe.String(") {
-		t.Errorf("Generated code does not use unsafe.String:\n%s", content)
+	// Verify JSON-safe (un)escaping is used via encoding/json, not manual quoting.
+	if !strings.Contains(string(content), "json.Marshal(i.String())") {
+		t.Errorf("Generated MarshalJSON does not use json.Marshal for escaping:\n%s", content)
+	}
+	if !strings.Contains(string(content), "json.Unmarshal(data, &s)") {
+		t.Errorf("Generated UnmarshalJSON does not use json.Unmarshal for unescaping:\n%s", content)
+	}
+	if strings.Contains(string(content), "unsafe.String(") {
+		t.Errorf("Generated code still uses unsafe.String (manual, non-escaping parse):\n%s", content)
 	}
 	// Verify Valid() method is generated (marshal auto-enables -valid)
 	if !strings.Contains(string(content), "func (i Color) Valid() bool") {
@@ -316,6 +322,93 @@ func main() {
 		t.Fatalf("Test program failed: %v\n%s", err, output)
 	}
 
+	if !strings.Contains(string(output), "PASS") {
+		t.Errorf("Test program did not pass:\n%s", output)
+	}
+}
+
+// TestJSONMarshalingEscaping is a regression test: enum strings (via -linecomment) that contain JSON
+// metacharacters such as double quotes and backslashes must produce valid JSON and round-trip cleanly.
+// The previous implementation manually wrapped String() in quotes and parsed with unsafe.String, so a
+// value like `a"b` produced the invalid JSON `"a"b"`.
+func TestJSONMarshalingEscaping(t *testing.T) {
+	tempDir := t.TempDir()
+	stringerBin := buildStringer(t, tempDir)
+
+	testFile := filepath.Join(tempDir, "test.go")
+	testCode := `package main
+
+type Token int
+
+const (
+	Plain Token = iota // plain
+	Quoted             // a"b
+	Backslash          // c\d
+)
+`
+	if err := os.WriteFile(testFile, []byte(testCode), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	cmd := exec.Command(stringerBin, "-type=Token", "-linecomment", "-reverse", "-marshal", testFile)
+	cmd.Dir = tempDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Failed to run stringer: %v\n%s", err, output)
+	}
+
+	generatedFile := filepath.Join(tempDir, "token_string.go")
+
+	// Verify the program round-trips every value through JSON and that the marshaled bytes are valid JSON.
+	testProgram := filepath.Join(tempDir, "main.go")
+	programCode := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+func main() {
+	for _, tok := range []Token{Plain, Quoted, Backslash} {
+		data, err := json.Marshal(tok)
+		if err != nil {
+			fmt.Printf("FAIL: json.Marshal(%v) returned error: %v\n", tok, err)
+			os.Exit(1)
+		}
+		// Marshaled output must be valid JSON (decodes into a string without error).
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			fmt.Printf("FAIL: json.Marshal(%v) produced invalid JSON %s: %v\n", tok, data, err)
+			os.Exit(1)
+		}
+		if s != tok.String() {
+			fmt.Printf("FAIL: round-tripped string %q != String() %q\n", s, tok.String())
+			os.Exit(1)
+		}
+		var back Token
+		if err := json.Unmarshal(data, &back); err != nil {
+			fmt.Printf("FAIL: json.Unmarshal(%s) returned error: %v\n", data, err)
+			os.Exit(1)
+		}
+		if back != tok {
+			fmt.Printf("FAIL: round-trip %v -> %s -> %v\n", tok, data, back)
+			os.Exit(1)
+		}
+	}
+	fmt.Println("PASS")
+}
+`
+	if err := os.WriteFile(testProgram, []byte(programCode), 0644); err != nil {
+		t.Fatalf("Failed to write test program: %v", err)
+	}
+
+	cmd = exec.Command("go", "run", testFile, generatedFile, testProgram)
+	cmd.Dir = tempDir
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Test program failed: %v\n%s", err, output)
+	}
 	if !strings.Contains(string(output), "PASS") {
 		t.Errorf("Test program did not pass:\n%s", output)
 	}

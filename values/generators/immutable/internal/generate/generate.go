@@ -64,6 +64,7 @@ type StructData struct {
 	GenericUsage  string   // Generic usage (e.g., [T])
 	Methods       []Method // The methods to be copied to the immutable struct
 	Imports       []string // The imports needed for the struct
+	UsesImmutable bool     // True if any field is an immutable.Map or immutable.Slice, requiring the immutable import
 }
 
 var funcMap = template.FuncMap{
@@ -78,7 +79,9 @@ var structTemplate = template.Must(template.New("struct").Funcs(funcMap).Parse(`
 package {{.Package}}
 
 import (
+	{{- if .UsesImmutable }}
 	"github.com/gostdlib/base/values/immutable"
+	{{- end }}
 	{{ range .Imports }}
 	"{{.}}"
 	{{- end }}
@@ -211,6 +214,15 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 				return false
 			}
 
+			// Determine whether any field requires the immutable package import.
+			usesImmutable := false
+			for _, f := range fields {
+				if f.IsImmutable {
+					usesImmutable = true
+					break
+				}
+			}
+
 			// Prepare struct data
 			data := StructData{
 				Package:       packageName,
@@ -221,6 +233,7 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 				GenericParams: genericParams,
 				GenericUsage:  genericUsage,
 				Methods:       methods,
+				UsesImmutable: usesImmutable,
 			}
 
 			// Find any packages that the struct uses so we can import them.
