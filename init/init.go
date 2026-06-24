@@ -571,6 +571,18 @@ func (s setup) customInits() (stateFn, error) {
 	if err := g.Wait(ctx); err != nil {
 		return nil, err
 	}
+	return s.signalsInit, nil
+}
+
+// signalsInit registers the OS signal handlers provided via InitArgs.SignalHandlers. If no
+// handlers were provided, this is a no-op. If handler registration fails, Service() will panic.
+func (s setup) signalsInit() (stateFn, error) {
+	if len(s.args.SignalHandlers) == 0 {
+		return s.log, nil
+	}
+	if err := handleSignals(s.args); err != nil {
+		return nil, err
+	}
 	return s.log, nil
 }
 

@@ -21,13 +21,19 @@ func panicer(v any) {
 	panic(v)
 }
 
-// handleSignals registers signal handlers for the given signals.
-// If the signal is SIGQUIT, SIGINT, or SIGTERM this will panic after the handler is called.
-// In that case it will also call Close().
+// handleSignals registers signal handlers for the given signals. Only SIGQUIT, SIGINT and
+// SIGTERM may be registered; any other signal, or a nil handler, is rejected with an error.
+// When a registered signal is received, its handler is called, then Close() is called and
+// the process panics.
 func handleSignals(args InitArgs) error {
 	for sig, f := range args.SignalHandlers {
 		if f == nil {
 			return fmt.Errorf("signal(%s) was registered with a nil handler", sig)
+		}
+		switch sig {
+		case syscall.SIGQUIT, syscall.SIGINT, syscall.SIGTERM:
+		default:
+			return fmt.Errorf("signal(%s) is not supported; only SIGQUIT, SIGINT and SIGTERM may be registered", sig)
 		}
 	}
 
@@ -58,18 +64,11 @@ func handleSignals(args InitArgs) error {
 	return nil
 }
 
-// handleSignal handles an individual signal. If the signal is SIGQUIT, SIGINT, or SIGTERM
-// it will call the handler function for that signal and return an error. Otherwise, it will
-// return nil.
+// handleSignal handles an individual signal by calling its registered handler and returning an
+// error so the caller initiates graceful shutdown (Close() then panic). Only SIGQUIT, SIGINT and
+// SIGTERM can reach here, since handleSignals rejects any other signal at registration.
 func handleSignal(sig os.Signal, handlers map[os.Signal]func()) error {
-	switch sig {
-	case syscall.SIGQUIT, syscall.SIGINT, syscall.SIGTERM:
-		f := handlers[sig]
-		f()
-		return fmt.Errorf("signal(%s)", sig)
-	default:
-		f := handlers[sig]
-		f()
-	}
-	return nil
+	f := handlers[sig]
+	f()
+	return fmt.Errorf("signal(%s)", sig)
 }
