@@ -1,4 +1,4 @@
-package immutable
+package generate
 
 import (
 	"go/ast"

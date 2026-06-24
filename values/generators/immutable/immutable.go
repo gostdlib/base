@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gostdlib/base/values/immutable/generator/immutable"
+	"github.com/gostdlib/base/values/generators/immutable/internal/generate"
 )
 
 var structType = flag.String("type", "", "Name of the struct to make immutable")
@@ -38,7 +38,7 @@ func main() {
 	// Process each Go file until the target struct is found
 	found := false
 	for _, file := range goFiles {
-		if strings.HasSuffix(file, immutable.ImmutableSuffix) {
+		if strings.HasSuffix(file, generate.ImmutableSuffix) {
 			continue
 		}
 		fs := token.NewFileSet()
@@ -48,7 +48,7 @@ func main() {
 			continue
 		}
 
-		if found, err = immutable.Generate(fileAst, fs, &builder, *structType); found {
+		if found, err = generate.Generate(fileAst, fs, &builder, *structType); found {
 			break
 		}
 		if err != nil {

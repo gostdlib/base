@@ -15,7 +15,7 @@ import (
 	pb "github.com/gostdlib/base/errors/example/proto"
 )
 
-//go:generate stringer -type=Category -linecomment
+//go:generate go tool github.com/gostdlib/base/generators/stringer -type=Category -linecomment
 
 // Category represents the category of the error.
 type Category uint32
@@ -75,7 +75,7 @@ func init() {
 	}
 }
 
-//go:generate stringer -type=Type -linecomment
+//go:generate go tool github.com/gostdlib/base/generators/stringer -type=Type -linecomment
 
 // Type represents the type of the error.
 type Type uint16

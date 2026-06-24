@@ -91,6 +91,97 @@ func TestHandleSignals(t *testing.T) {
 	}
 }
 
+// TestSignalsInitWiring verifies that the setup state machine reaches signalsInit and that it
+// only registers OS signal notification when SignalHandlers were actually provided. This guards
+// against a regression where the handlers were documented but never wired into Service().
+func TestSignalsInitWiring(t *testing.T) {
+	originalNotifier := notifier
+	t.Cleanup(
+		func() { notifier = originalNotifier },
+	)
+
+	tests := []struct {
+		name       string
+		handlers   map[os.Signal]func()
+		wantNotify bool
+	}{
+		{
+			name:       "Success: no handlers skips signal registration",
+			handlers:   nil,
+			wantNotify: false,
+		},
+		{
+			name: "Success: handlers register signal notification",
+			handlers: map[os.Signal]func(){
+				syscall.SIGTERM: func() {},
+			},
+			wantNotify: true,
+		},
+	}
+
+	for _, test := range tests {
+		notified := atomic.Bool{}
+		notifier = func(c chan<- os.Signal, sig ...os.Signal) { notified.Store(true) }
+
+		s := setup{args: InitArgs{SignalHandlers: test.handlers}}
+		next, err := s.signalsInit()
+		switch {
+		case err != nil:
+			t.Errorf("TestSignalsInitWiring(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case next == nil:
+			t.Errorf("TestSignalsInitWiring(%s): got next state == nil, want next state != nil", test.name)
+			continue
+		}
+		if notified.Load() != test.wantNotify {
+			t.Errorf("TestSignalsInitWiring(%s): got notifier called == %v, want %v", test.name, notified.Load(), test.wantNotify)
+		}
+	}
+}
+
+// TestHandleSignalsValidation verifies that handleSignals rejects nil handlers and any signal
+// other than SIGQUIT, SIGINT or SIGTERM, matching the documented contract that registering an
+// unsupported signal causes Service() to panic.
+func TestHandleSignalsValidation(t *testing.T) {
+	originalNotifier := notifier
+	notifier = func(c chan<- os.Signal, sig ...os.Signal) {}
+	t.Cleanup(
+		func() { notifier = originalNotifier },
+	)
+
+	tests := []struct {
+		name     string
+		handlers map[os.Signal]func()
+		wantErr  bool
+	}{
+		{
+			name:     "Success: SIGTERM is a supported signal",
+			handlers: map[os.Signal]func(){syscall.SIGTERM: func() {}},
+			wantErr:  false,
+		},
+		{
+			name:     "Error: nil handler is rejected",
+			handlers: map[os.Signal]func(){syscall.SIGTERM: nil},
+			wantErr:  true,
+		},
+		{
+			name:     "Error: unsupported signal is rejected",
+			handlers: map[os.Signal]func(){syscall.SIGHUP: func() {}},
+			wantErr:  true,
+		},
+	}
+
+	for _, test := range tests {
+		err := handleSignals(InitArgs{SignalHandlers: test.handlers})
+		switch {
+		case err == nil && test.wantErr:
+			t.Errorf("TestHandleSignalsValidation(%s): got err == nil, want err != nil", test.name)
+		case err != nil && !test.wantErr:
+			t.Errorf("TestHandleSignalsValidation(%s): got err == %s, want err == nil", test.name, err)
+		}
+	}
+}
+
 func TestHandleSignal(t *testing.T) {
 	handled := false
 
@@ -129,16 +220,6 @@ func TestHandleSignal(t *testing.T) {
 				},
 			},
 			expectErr: true,
-		},
-		{
-			name: "Handle other signal",
-			sig:  syscall.SIGHUP,
-			handlers: map[os.Signal]func(){
-				syscall.SIGHUP: func() {
-					handled = true
-				},
-			},
-			expectErr: false,
 		},
 	}
 

@@ -1,6 +1,6 @@
-// Package immutable contains types and functions that can be used to generate immutable types from existing
+// Package generate contains types and functions that can be used to generate immutable types from existing
 // Go struct types.
-package immutable
+package generate
 
 import (
 	"bytes"
