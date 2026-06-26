@@ -66,8 +66,37 @@ func (s *ShardedMap[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 	return s.sm.CompareAndDelete(k, old)
 }
 
-// All returns an iterator for the map for use with range.
-// Not thread safe, only use when no other write calls are being made.
-func (s *ShardedMap[K, V]) All() iter.Seq2[K, V] {
+type allOptions struct {
+	lock bool
+}
+
+type AllOption func(o allOptions) allOptions
+
+// WithLock makes All() read-lock each shard while yielding that shard's entries, so other goroutines may
+// safely read and write the map while you iterate. Locking is per-shard and released as each shard
+// completes, so iteration is not a whole-map snapshot: writes to shards other than the one being yielded
+// happen concurrently and may or may not be observed. Do not call Get(), Set(), or Del() from inside the
+// iteration loop.
+func WithLock() AllOption {
+	return func(o allOptions) allOptions {
+		o.lock = true
+		return o
+	}
+}
+
+// All returns an iterator for the map for use with range. Without options it is not thread safe: only use
+// it when no other reads or writes are happening. Pass WithLock() to make iteration safe alongside
+// concurrent readers and writers; see WithLock for the per-shard semantics and restrictions.
+func (s *ShardedMap[K, V]) All(options ...AllOption) iter.Seq2[K, V] {
+	if len(options) == 0 {
+		return s.sm.All()
+	}
+	var opts allOptions
+	for _, option := range options {
+		opts = option(opts)
+	}
+	if opts.lock {
+		return s.sm.AllLocked()
+	}
 	return s.sm.All()
 }

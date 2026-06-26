@@ -66,7 +66,7 @@ type RunOption func(runOpts) (runOpts, error)
 // meaning the name has to be unique within that function. The Task is the function to run. If
 // task() ends, it will use the Backoff provided to restart the Task. If Context is canceled, this will stop
 // launching the task, however, the task itself has to honor the context passed to it in order for it to be stopped.
-// An error is only returned if an option fails.
+// An error is returned if an option fails or if ctx is already canceled before the task could be started.
 // Do not try to use this for a cron like task. If you need to run background cron like tasks,
 // use the .Once() method wrapped with some timer.
 func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponential.Backoff, options ...RunOption) error {
@@ -110,15 +110,9 @@ func (t *Tasks) Run(ctx context.Context, name string, task Task, boff *exponenti
 	}
 
 	// Restarts the task if it ends.
-	t.pool.Submit(
-		ctx,
-		func() {
-			boff.Retry(
-				ctx,
-				t.taskWrapper(name, bm, task),
-			)
-		},
-	)
+	if !t.pool.Submit(ctx, func() { boff.Retry(ctx, t.taskWrapper(name, bm, task)) }) {
+		return fmt.Errorf("background/Tasks.Run: context canceled before task %q could start: %w", name, context.Cause(ctx))
+	}
 
 	return nil
 }
@@ -168,6 +162,7 @@ func (t *Tasks) taskWrapper(name string, bm *backgroundTaskMetrics, task Task) e
 
 // Once is like Run, but it only runs the function once. If the function ends, it will not
 // be restarted. name can be reused if you want to keep stats on a collection of one shot tasks.
+// An error is returned if an option fails or if ctx is already canceled before the task could be started.
 func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...RunOption) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -195,7 +190,7 @@ func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...Run
 		t.tm.OnceTasks[name] = otm
 	}
 
-	t.pool.Submit(
+	submitted := t.pool.Submit(
 		ctx,
 		func() {
 			otm.ExecutedTotal.Add(ctx, 1)
@@ -216,6 +211,9 @@ func (t *Tasks) Once(ctx context.Context, name string, task Task, options ...Run
 			err = task(ctx)
 		},
 	)
+	if !submitted {
+		return fmt.Errorf("background/Tasks.Once: context canceled before task %q could start: %w", name, context.Cause(ctx))
+	}
 	return nil
 }
 

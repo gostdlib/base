@@ -13,7 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 type errValue struct{}
@@ -105,49 +105,46 @@ func TestDoErr(t *testing.T) {
 }
 
 func TestDoDupSuppress(t *testing.T) {
-	var g Flight[string, string]
-	var wg1, wg2 sync.WaitGroup
-	c := make(chan string, 1)
-	var calls int32
-	fn := func() (string, error) {
-		if atomic.AddInt32(&calls, 1) == 1 {
-			// First invocation.
-			wg1.Done()
+	synctest.Test(t, func(t *testing.T) {
+		var g Flight[string, string]
+		c := make(chan string, 1)
+		var calls atomic.Int32
+		fn := func() (string, error) {
+			calls.Add(1)
+			v := <-c
+			c <- v // pump; make available for any future calls
+			return v, nil
 		}
-		v := <-c
-		c <- v // pump; make available for any future calls
 
-		time.Sleep(10 * time.Millisecond) // let more goroutines enter Do
+		const n = 10
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				v, err, _ := g.Do(t.Context(), "key", fn)
+				if err != nil {
+					t.Errorf("Do error: %v", err)
+					return
+				}
+				if v != "bar" {
+					t.Errorf("Do = %T %v; want %q", v, v, "bar")
+				}
+			}()
+		}
 
-		return v, nil
-	}
+		// Wait until all n goroutines are durably blocked: exactly one is inside fn waiting on
+		// c, and the rest are waiting on that in-flight call. This replaces the original 10ms
+		// sleep that was used to "let more goroutines enter Do", and lets us assert the exact
+		// number of calls rather than a fuzzy range.
+		synctest.Wait()
+		c <- "bar"
+		wg.Wait()
 
-	const n = 10
-	wg1.Add(1)
-	for i := 0; i < n; i++ {
-		wg1.Add(1)
-		wg2.Add(1)
-		go func() {
-			defer wg2.Done()
-			wg1.Done()
-			v, err, _ := g.Do(t.Context(), "key", fn)
-			if err != nil {
-				t.Errorf("Do error: %v", err)
-				return
-			}
-			if v != "bar" {
-				t.Errorf("Do = %T %v; want %q", v, v, "bar")
-			}
-		}()
-	}
-	wg1.Wait()
-	// At least one goroutine is in fn now and all of them have at
-	// least reached the line before the Do.
-	c <- "bar"
-	wg2.Wait()
-	if got := atomic.LoadInt32(&calls); got <= 0 || got >= n {
-		t.Errorf("number of calls = %d; want over 0 and less than %d", got, n)
-	}
+		if got := calls.Load(); got != 1 {
+			t.Errorf("number of calls = %d; want exactly 1", got)
+		}
+	})
 }
 
 // Test that singleflight behaves correctly after Forget called.
@@ -213,72 +210,70 @@ func TestDoChan(t *testing.T) {
 // Test singleflight behaves correctly after Do panic.
 // See https://github.com/golang/go/issues/41133
 func TestPanicDo(t *testing.T) {
-	var g Flight[string, struct{}]
-	fn := func() (struct{}, error) {
-		panic("invalid memory address or nil pointer dereference")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var g Flight[string, struct{}]
+		fn := func() (struct{}, error) {
+			panic("invalid memory address or nil pointer dereference")
+		}
 
-	const n = 5
-	waited := int32(n)
-	panicCount := int32(0)
-	done := make(chan struct{})
-	for i := 0; i < n; i++ {
-		go func() {
-			defer func() {
-				if err := recover(); err != nil {
-					t.Logf("Got panic: %v\n%s", err, debug.Stack())
-					atomic.AddInt32(&panicCount, 1)
-				}
+		const n = 5
+		waited := int32(n)
+		panicCount := int32(0)
+		done := make(chan struct{})
+		for i := 0; i < n; i++ {
+			go func() {
+				defer func() {
+					if err := recover(); err != nil {
+						t.Logf("Got panic: %v\n%s", err, debug.Stack())
+						atomic.AddInt32(&panicCount, 1)
+					}
 
-				if atomic.AddInt32(&waited, -1) == 0 {
-					close(done)
-				}
+					if atomic.AddInt32(&waited, -1) == 0 {
+						close(done)
+					}
+				}()
+
+				g.Do(t.Context(), "key", fn)
 			}()
+		}
 
-			g.Do(t.Context(), "key", fn)
-		}()
-	}
-
-	select {
-	case <-done:
+		// No timeout guard is needed: if Do hangs, the bubble's deadlock detector fails the test.
+		<-done
 		if panicCount != n {
 			t.Errorf("Expect %d panic, but got %d", n, panicCount)
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("Do hangs")
-	}
+	})
 }
 
 func TestGoexitDo(t *testing.T) {
-	var g Flight[string, struct{}]
-	fn := func() (struct{}, error) {
-		runtime.Goexit()
-		return struct{}{}, nil
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var g Flight[string, struct{}]
+		fn := func() (struct{}, error) {
+			runtime.Goexit()
+			return struct{}{}, nil
+		}
 
-	const n = 5
-	waited := int32(n)
-	done := make(chan struct{})
-	for i := 0; i < n; i++ {
-		go func() {
-			var err error
-			defer func() {
-				if err != nil {
-					t.Errorf("Error should be nil, but got: %v", err)
-				}
-				if atomic.AddInt32(&waited, -1) == 0 {
-					close(done)
-				}
+		const n = 5
+		waited := int32(n)
+		done := make(chan struct{})
+		for i := 0; i < n; i++ {
+			go func() {
+				var err error
+				defer func() {
+					if err != nil {
+						t.Errorf("Error should be nil, but got: %v", err)
+					}
+					if atomic.AddInt32(&waited, -1) == 0 {
+						close(done)
+					}
+				}()
+				_, err, _ = g.Do(t.Context(), "key", fn)
 			}()
-			_, err, _ = g.Do(t.Context(), "key", fn)
-		}()
-	}
+		}
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatalf("Do hangs")
-	}
+		// No timeout guard is needed: if Do hangs, the bubble's deadlock detector fails the test.
+		<-done
+	})
 }
 
 func executable(t testing.TB) string {
