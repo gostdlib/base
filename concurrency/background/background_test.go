@@ -170,7 +170,7 @@ func TestBackgroundWithBackoff(t *testing.T) {
 }
 
 func TestOnce(t *testing.T) {
-	t.Parallel()
+	// Not parallel: bubble() replaces the global worker.Default() for synctest determinism.
 
 	b := New(context.Background())
 	defer b.Close(context.Background())
@@ -240,7 +240,7 @@ func TestRunOnceCanceledContext(t *testing.T) {
 }
 
 func TestCloseContextExpires(t *testing.T) {
-	t.Parallel()
+	// Not parallel: bubble() replaces the global worker.Default() for synctest determinism.
 
 	tests := []struct {
 		name string
