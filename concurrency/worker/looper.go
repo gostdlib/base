@@ -57,7 +57,7 @@ func Seq[K comparable, V any](ctx context.Context, pool *Pool, seq iter.Seq2[K, 
 			break
 		}
 		wg.Add(1)
-		pool.Submit(
+		submitted := pool.Submit(
 			ctx,
 			func() {
 				defer wg.Done()
@@ -66,6 +66,9 @@ func Seq[K comparable, V any](ctx context.Context, pool *Pool, seq iter.Seq2[K, 
 				}
 			},
 		)
+		if !submitted {
+			wg.Done() // Submit declined the job (ctx canceled); undo the Add so wg.Wait() can complete.
+		}
 	}
 	if cancel != nil {
 		pool.Submit(

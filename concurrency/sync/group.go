@@ -17,8 +17,9 @@ import (
 // to submit work to.
 type WorkerPool interface {
 	// Submit submits a function to the pool for execution. The context is for the
-	// pool use, not the function itself.
-	Submit(ctx context.Context, f func())
+	// pool use, not the function itself. If the context is cancelled before the function is executed,
+	// the function will not be executed and false will be returned. Otherwise true will be returned.
+	Submit(ctx context.Context, f func()) bool
 }
 
 // IndexErr is an error that includes the index of the error. This will
@@ -239,7 +240,9 @@ func (w *Group) noBackoff(ctx context.Context, f func(ctx context.Context) error
 		go w.executeFn(ctx, f, opts)
 		return
 	}
-	w.Pool.Submit(ctx, func() { w.executeFn(ctx, f, opts) })
+	if !w.Pool.Submit(ctx, func() { w.executeFn(ctx, f, opts) }) {
+		w.declined(ctx, opts)
+	}
 }
 
 // withBackoff is a helper function that executes the function f and handles the
@@ -258,7 +261,7 @@ func (w *Group) withBackoff(ctx context.Context, f func(ctx context.Context) err
 		return
 	}
 
-	w.Pool.Submit(
+	submitted := w.Pool.Submit(
 		ctx,
 		func() {
 			opts.backoff.Retry(
@@ -269,6 +272,22 @@ func (w *Group) withBackoff(ctx context.Context, f func(ctx context.Context) err
 			)
 		},
 	)
+	if !submitted {
+		w.declined(ctx, opts)
+	}
+}
+
+// declined unwinds the accounting done by execute() when the Pool refuses to run a job (Submit
+// returned false, e.g. the context was cancelled before the job could be enqueued). It mirrors
+// executeFn's cancelled-context path so Wait() returns and reports the cause rather than hanging
+// on a wg.Add(1) that would otherwise never be matched by a wg.Done().
+func (w *Group) declined(ctx context.Context, opts goOpts) {
+	defer w.count.Add(-1)
+	defer w.wg.Done()
+
+	if err := context.Cause(ctx); err != nil {
+		w.recErr(opts.index, err)
+	}
 }
 
 // executeFn is a helper function that executes the function f and handles the

@@ -356,28 +356,34 @@ func (p *Pool) StaticPool() int {
 // Submit submits the function to be executed. If the context is canceled before the
 // function is enqueued, the function will not be executed. Once enqueued, the function
 // will run regardless of context cancellation; it is the responsibility of the function
-// to check the context and return if it is canceled.
-func (p *Pool) Submit(ctx context.Context, f func()) {
+// to check the context and return if it is canceled. Submit returns true if the function was
+// accepted to run and false if it was declined (the context was canceled before enqueue).
+func (p *Pool) Submit(ctx context.Context, f func()) bool {
 	if p.limit != nil {
-		p.limitedSubmit(ctx, f)
-		return
+		return p.limitedSubmit(ctx, f)
 	}
-	p.submit(ctx, f)
+	return p.submit(ctx, f)
 }
 
 var warnTimer = 30 * time.Second
 
 // Submit submits function f to be run. Context can be cancelled before submit, however if the function is
 // already submitted it is the responsibility of the function to honor/not honor cancellation.
-func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
+func (p *Pool) limitedSubmit(ctx context.Context, f func()) bool {
 	spanner := span.Get(ctx)
 
 	t := time.Now()
 
+	// Fast-fail an already-cancelled context so we don't needlessly acquire/release a limit
+	// token (the actual no-run guarantee is enforced by submit()).
+	if ctx.Err() != nil {
+		return false
+	}
+
 	// Fast path: try non-blocking acquire to avoid timer allocation in the common case.
 	select {
 	case <-ctx.Done():
-		return
+		return false
 	case p.limit <- struct{}{}:
 		goto acquired
 	default:
@@ -387,7 +393,7 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 	if p.opts.disableLimitedWarn {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case p.limit <- struct{}{}:
 		}
 	} else {
@@ -396,7 +402,7 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) {
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return
+				return false
 			case <-timer.C:
 				name := p.name
 				if name == "" {
@@ -424,7 +430,9 @@ acquired:
 	}
 	if !p.submit(ctx, wrap) {
 		<-p.limit // Release the token since wrap() will never run.
+		return false
 	}
+	return true
 }
 
 // submit submits the function to be executed. If the context is canceled before the
@@ -436,6 +444,13 @@ func (p *Pool) submit(ctx context.Context, f func()) bool {
 	spanner := span.Get(ctx)
 
 	if f == nil {
+		return false
+	}
+
+	// Honor Submit's documented contract: a context already cancelled before enqueue means the
+	// job must not run. Without this, the select below races <-ctx.Done() against p.queue<-args
+	// and enqueues (runs) the job a fraction of the time.
+	if ctx.Err() != nil {
 		return false
 	}
 

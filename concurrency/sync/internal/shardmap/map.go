@@ -149,6 +149,34 @@ func (m *Map[K, V]) All() iter.Seq2[K, V] {
 	}
 }
 
+// AllLocked returns a sequence of all key/values. It read-locks each shard while yielding that shard's
+// entries and releases the lock before moving to the next shard, so other goroutines may safely read and
+// write the map during iteration (a write to the shard being yielded blocks until that shard completes).
+// It is not a whole-map snapshot. Do not call Get, Set, or Delete from inside the iteration loop itself:
+// re-entering the shard being yielded can deadlock.
+func (m *Map[K, V]) AllLocked() iter.Seq2[K, V] {
+	m.initDo()
+	return func(yield func(K, V) bool) {
+		for i := 0; i < m.shards; i++ {
+			// Run each shard's yield loop in a closure so the RUnlock happens via defer, releasing the
+			// shard lock even if the caller breaks (yield returns false) or yield panics.
+			stop := func() bool {
+				m.mus[i].RLock()
+				defer m.mus[i].RUnlock()
+				for k, v := range m.maps[i].All() {
+					if !yield(k, v) {
+						return true
+					}
+				}
+				return false
+			}()
+			if stop {
+				return
+			}
+		}
+	}
+}
+
 func (m *Map[K, V]) choose(key K) int {
 	return int(maphash.Comparable(m.seed, key) & uint64(m.shards-1))
 }

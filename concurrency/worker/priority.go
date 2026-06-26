@@ -127,13 +127,17 @@ func (d *Queue) QueueLen() int {
 func (d *Queue) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 
-	Default().Submit(
+	submitted := Default().Submit(
 		ctx,
 		func() {
 			d.processWait.Wait()
 			close(done)
 		},
 	)
+	if !submitted {
+		// ctx was canceled before the wait could be enqueued; done will never close.
+		return context.Cause(ctx)
+	}
 
 	select {
 	case <-ctx.Done():
