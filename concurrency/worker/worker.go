@@ -546,6 +546,7 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 	}
 
 	pool := &Pool{
+		name:       name,
 		queue:      p.queue,
 		opts:       p.opts,
 		metrics:    pm,

@@ -160,6 +160,35 @@ func TestSubPool(t *testing.T) {
 	})
 }
 
+// TestSubPoolName is a regression test for Sub() dropping the pool name. Because Sub() built the
+// child pool without copying name, every Sub()/Limited() pool reported as "unnamed" in the
+// "waiting more than 30 seconds to acquire limited pool slot" warning (see limitedSubmit), making
+// it impossible to tell which limited pool was starving.
+func TestSubPoolName(t *testing.T) {
+	ctx := context.Background()
+	p, err := New(ctx, "root")
+	if err != nil {
+		t.Fatalf("TestSubPoolName: got err == %s, want err == nil", err)
+	}
+	defer p.Close(ctx)
+
+	tests := []struct {
+		name string
+		pool *Pool
+		want string
+	}{
+		{name: "Success: Sub propagates the name", pool: p.Sub(ctx, "subby"), want: "subby"},
+		{name: "Success: Limited propagates the name", pool: p.Limited(ctx, "limity", 1), want: "limity"},
+		{name: "Success: empty name stays empty", pool: p.Sub(ctx, ""), want: ""},
+	}
+
+	for _, test := range tests {
+		if test.pool.name != test.want {
+			t.Errorf("TestSubPoolName(%s): got name == %q, want name == %q", test.name, test.pool.name, test.want)
+		}
+	}
+}
+
 func TestRunningZeroAfterWait(t *testing.T) {
 	t.Parallel()
 
