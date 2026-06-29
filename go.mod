@@ -3,7 +3,7 @@ module github.com/gostdlib/base
 go 1.25.0
 
 require (
-	github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d
+	github.com/Azure/retry v0.0.0-20260629192600-3a6893b45f6d
 	github.com/CAFxX/httpcompression v0.0.9
 	github.com/beeker1121/goque v2.1.0+incompatible
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2
