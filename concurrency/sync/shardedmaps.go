@@ -66,6 +66,30 @@ func (s *ShardedMap[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 	return s.sm.CompareAndDelete(k, old)
 }
 
+// SetAccept assigns a value to a key. The "accept" function can be used to inspect the previous value, if any,
+// and accept or reject the change. It also provides a safe way to block other goroutines from writing to the
+// same shard while inspecting. Returns the previous value, or false when no value was assigned.
+func (s *ShardedMap[K, V]) SetAccept(key K, value V, accept func(prev V, replaced bool) bool) (prev V, replaced bool) {
+	s.once.Do(func() {
+		if s.sm.IsEqual == nil {
+			s.sm.IsEqual = s.IsEqual
+		}
+	})
+	return s.sm.SetAccept(key, value, accept)
+}
+
+// DeleteAccept deletes a value for a key. The "accept" function can be used to inspect the previous value,
+// if any, and accept or reject the change. It also provides a safe way to block other goroutines from writing to the
+// same shard while inspecting. Returns the deleted value, or false when no value was assigned.
+func (s *ShardedMap[K, V]) DeleteAccept(key K, accept func(prev V, deleted bool) bool) (prev V, deleted bool) {
+	s.once.Do(func() {
+		if s.sm.IsEqual == nil {
+			s.sm.IsEqual = s.IsEqual
+		}
+	})
+	return s.sm.DeleteAccept(key, accept)
+}
+
 type allOptions struct {
 	lock bool
 }

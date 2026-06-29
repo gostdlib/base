@@ -207,28 +207,286 @@ func TestCompareAndSwap(t *testing.T) {
 	}
 }
 
-func TestDeleteAccept(t *testing.T) {
+func TestCompareAndDelete(t *testing.T) {
 	var m Map[string, string]
 	m.IsEqual = func(old, new string) bool {
 		return old == new
 	}
 
 	if !m.CompareAndDelete("hello", "world") {
-		t.Fatal("TestDeleteAccept: expected the first delete to succeed")
+		t.Fatal("TestCompareAndDelete: expected the first delete to succeed")
 	}
 
 	m.Set("hello", "world")
 	if swapped := m.CompareAndDelete("hello", "world"); !swapped {
-		t.Fatal("TestDeleteAccept: expected the second delete to succeed")
+		t.Fatal("TestCompareAndDelete: expected the second delete to succeed")
 	}
 
 	if v, ok := m.Get("hello"); ok || v != "" {
-		t.Fatalf("TestDeleteAccept: got %q, want %q", v, "")
+		t.Fatalf("TestCompareAndDelete: got %q, want %q", v, "")
 	}
 
 	m.Set("hello", "world")
 	if m.CompareAndDelete("hello", "planet") {
-		t.Fatal("TestDeleteAccept: expected the third delete to fail")
+		t.Fatal("TestCompareAndDelete: expected the third delete to fail")
+	}
+}
+
+func TestSetAccept(t *testing.T) {
+	const key = "key"
+
+	// accept reports the value passed to a non-nil accept func so the test can assert on it.
+	type accept struct {
+		ret      bool
+		gotPrev  string
+		gotState bool
+		called   bool
+	}
+
+	tests := []struct {
+		name string
+		// existing, when non-empty, is set on the key before SetAccept is called.
+		existing string
+		// useAccept controls whether a non-nil accept func is passed.
+		useAccept bool
+		// acceptRet is the value the accept func returns when useAccept is true.
+		acceptRet bool
+		wantPrev  string
+		wantRepl  bool
+		// wantPrevSeen / wantStateSeen are what accept should have been handed.
+		wantPrevSeen  string
+		wantStateSeen bool
+		// wantVal / wantExist describe the key's state after the call.
+		wantVal   string
+		wantExist bool
+	}{
+		{
+			name:      "Success: nil accept sets a new key",
+			useAccept: false,
+			wantPrev:  "",
+			wantRepl:  false,
+			wantVal:   "new",
+			wantExist: true,
+		},
+		{
+			name:      "Success: nil accept replaces an existing key",
+			existing:  "old",
+			useAccept: false,
+			wantPrev:  "old",
+			wantRepl:  true,
+			wantVal:   "new",
+			wantExist: true,
+		},
+		{
+			name:          "Success: accept returns true and keeps a new key",
+			useAccept:     true,
+			acceptRet:     true,
+			wantPrev:      "",
+			wantRepl:      false,
+			wantPrevSeen:  "",
+			wantStateSeen: false,
+			wantVal:       "new",
+			wantExist:     true,
+		},
+		{
+			name:          "Success: accept returns true and keeps a replacement",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     true,
+			wantPrev:      "old",
+			wantRepl:      true,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantVal:       "new",
+			wantExist:     true,
+		},
+		{
+			name:          "Success: accept rejects a new key so it is deleted",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrev:      "",
+			wantRepl:      false,
+			wantPrevSeen:  "",
+			wantStateSeen: false,
+			wantVal:       "",
+			wantExist:     false,
+		},
+		{
+			name:          "Success: accept rejects a replacement so the old value is restored",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrev:      "",
+			wantRepl:      false,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantVal:       "old",
+			wantExist:     true,
+		},
+	}
+
+	for _, test := range tests {
+		var m Map[string, string]
+		if test.existing != "" {
+			m.Set(key, test.existing)
+		}
+
+		var a accept
+		a.ret = test.acceptRet
+		var fn func(prev string, replaced bool) bool
+		if test.useAccept {
+			fn = func(prev string, replaced bool) bool {
+				a.called = true
+				a.gotPrev = prev
+				a.gotState = replaced
+				return a.ret
+			}
+		}
+
+		prev, repl := m.SetAccept(key, "new", fn)
+		switch {
+		case prev != test.wantPrev:
+			t.Errorf("TestSetAccept(%s): got prev == %q, want %q", test.name, prev, test.wantPrev)
+		case repl != test.wantRepl:
+			t.Errorf("TestSetAccept(%s): got replaced == %v, want %v", test.name, repl, test.wantRepl)
+		}
+
+		if test.useAccept {
+			switch {
+			case !a.called:
+				t.Errorf("TestSetAccept(%s): accept was not called", test.name)
+			case a.gotPrev != test.wantPrevSeen:
+				t.Errorf("TestSetAccept(%s): accept saw prev == %q, want %q", test.name, a.gotPrev, test.wantPrevSeen)
+			case a.gotState != test.wantStateSeen:
+				t.Errorf("TestSetAccept(%s): accept saw replaced == %v, want %v", test.name, a.gotState, test.wantStateSeen)
+			}
+		}
+
+		got, ok := m.Get(key)
+		switch {
+		case ok != test.wantExist:
+			t.Errorf("TestSetAccept(%s): after call, key exists == %v, want %v", test.name, ok, test.wantExist)
+		case got != test.wantVal:
+			t.Errorf("TestSetAccept(%s): after call, value == %q, want %q", test.name, got, test.wantVal)
+		}
+	}
+}
+
+func TestDeleteAccept(t *testing.T) {
+	const key = "key"
+
+	tests := []struct {
+		name string
+		// existing, when non-empty, is set on the key before DeleteAccept is called.
+		existing  string
+		useAccept bool
+		acceptRet bool
+		wantPrev  string
+		wantDel   bool
+		// wantPrevSeen / wantStateSeen are what accept should have been handed.
+		wantPrevSeen  string
+		wantStateSeen bool
+		// wantVal / wantExist describe the key's state after the call.
+		wantVal   string
+		wantExist bool
+	}{
+		{
+			name:      "Success: nil accept deletes an existing key",
+			existing:  "old",
+			useAccept: false,
+			wantPrev:  "old",
+			wantDel:   true,
+			wantExist: false,
+		},
+		{
+			name:      "Success: nil accept on a missing key reports not deleted",
+			useAccept: false,
+			wantPrev:  "",
+			wantDel:   false,
+			wantExist: false,
+		},
+		{
+			name:          "Success: accept returns true and keeps the deletion",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     true,
+			wantPrev:      "old",
+			wantDel:       true,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantExist:     false,
+		},
+		{
+			name:          "Success: accept rejects so the existing key is restored",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrev:      "",
+			wantDel:       false,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantVal:       "old",
+			wantExist:     true,
+		},
+		{
+			name:          "Success: accept rejects deleting a missing key leaves it absent",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrev:      "",
+			wantDel:       false,
+			wantPrevSeen:  "",
+			wantStateSeen: false,
+			wantExist:     false,
+		},
+	}
+
+	for _, test := range tests {
+		var m Map[string, string]
+		if test.existing != "" {
+			m.Set(key, test.existing)
+		}
+
+		var (
+			called   bool
+			gotPrev  string
+			gotState bool
+		)
+		var fn func(prev string, deleted bool) bool
+		if test.useAccept {
+			fn = func(prev string, deleted bool) bool {
+				called = true
+				gotPrev = prev
+				gotState = deleted
+				return test.acceptRet
+			}
+		}
+
+		prev, del := m.DeleteAccept(key, fn)
+		switch {
+		case prev != test.wantPrev:
+			t.Errorf("TestDeleteAccept(%s): got prev == %q, want %q", test.name, prev, test.wantPrev)
+		case del != test.wantDel:
+			t.Errorf("TestDeleteAccept(%s): got deleted == %v, want %v", test.name, del, test.wantDel)
+		}
+
+		if test.useAccept {
+			switch {
+			case !called:
+				t.Errorf("TestDeleteAccept(%s): accept was not called", test.name)
+			case gotPrev != test.wantPrevSeen:
+				t.Errorf("TestDeleteAccept(%s): accept saw prev == %q, want %q", test.name, gotPrev, test.wantPrevSeen)
+			case gotState != test.wantStateSeen:
+				t.Errorf("TestDeleteAccept(%s): accept saw deleted == %v, want %v", test.name, gotState, test.wantStateSeen)
+			}
+		}
+
+		got, ok := m.Get(key)
+		switch {
+		case ok != test.wantExist:
+			t.Errorf("TestDeleteAccept(%s): after call, key exists == %v, want %v", test.name, ok, test.wantExist)
+		case got != test.wantVal:
+			t.Errorf("TestDeleteAccept(%s): after call, value == %q, want %q", test.name, got, test.wantVal)
+		}
 	}
 }
 

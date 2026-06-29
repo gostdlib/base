@@ -57,6 +57,225 @@ func TestShardedMapConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestShardedMapSetAccept(t *testing.T) {
+	const key = "key"
+
+	tests := []struct {
+		name string
+		// existing, when non-empty, is set on the key before SetAccept is called.
+		existing      string
+		useAccept     bool
+		acceptRet     bool
+		wantPrev      string
+		wantRepl      bool
+		wantPrevSeen  string
+		wantStateSeen bool
+		wantVal       string
+		wantExist     bool
+	}{
+		{
+			name:      "Success: nil accept sets a new key",
+			wantVal:   "new",
+			wantExist: true,
+		},
+		{
+			name:      "Success: nil accept replaces an existing key",
+			existing:  "old",
+			wantPrev:  "old",
+			wantRepl:  true,
+			wantVal:   "new",
+			wantExist: true,
+		},
+		{
+			name:          "Success: accept returns true and keeps a replacement",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     true,
+			wantPrev:      "old",
+			wantRepl:      true,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantVal:       "new",
+			wantExist:     true,
+		},
+		{
+			name:          "Success: accept rejects a new key so it is deleted",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrevSeen:  "",
+			wantStateSeen: false,
+			wantExist:     false,
+		},
+		{
+			name:          "Success: accept rejects a replacement so the old value is restored",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantVal:       "old",
+			wantExist:     true,
+		},
+	}
+
+	for _, test := range tests {
+		m := ShardedMap[string, string]{}
+		if test.existing != "" {
+			m.Set(key, test.existing)
+		}
+
+		var (
+			called   bool
+			gotPrev  string
+			gotState bool
+		)
+		var fn func(prev string, replaced bool) bool
+		if test.useAccept {
+			fn = func(prev string, replaced bool) bool {
+				called = true
+				gotPrev = prev
+				gotState = replaced
+				return test.acceptRet
+			}
+		}
+
+		prev, repl := m.SetAccept(key, "new", fn)
+		switch {
+		case prev != test.wantPrev:
+			t.Errorf("TestShardedMapSetAccept(%s): got prev == %q, want %q", test.name, prev, test.wantPrev)
+		case repl != test.wantRepl:
+			t.Errorf("TestShardedMapSetAccept(%s): got replaced == %v, want %v", test.name, repl, test.wantRepl)
+		}
+
+		if test.useAccept {
+			switch {
+			case !called:
+				t.Errorf("TestShardedMapSetAccept(%s): accept was not called", test.name)
+			case gotPrev != test.wantPrevSeen:
+				t.Errorf("TestShardedMapSetAccept(%s): accept saw prev == %q, want %q", test.name, gotPrev, test.wantPrevSeen)
+			case gotState != test.wantStateSeen:
+				t.Errorf("TestShardedMapSetAccept(%s): accept saw replaced == %v, want %v", test.name, gotState, test.wantStateSeen)
+			}
+		}
+
+		got, ok := m.Get(key)
+		switch {
+		case ok != test.wantExist:
+			t.Errorf("TestShardedMapSetAccept(%s): after call, key exists == %v, want %v", test.name, ok, test.wantExist)
+		case got != test.wantVal:
+			t.Errorf("TestShardedMapSetAccept(%s): after call, value == %q, want %q", test.name, got, test.wantVal)
+		}
+	}
+}
+
+func TestShardedMapDeleteAccept(t *testing.T) {
+	const key = "key"
+
+	tests := []struct {
+		name string
+		// existing, when non-empty, is set on the key before DeleteAccept is called.
+		existing      string
+		useAccept     bool
+		acceptRet     bool
+		wantPrev      string
+		wantDel       bool
+		wantPrevSeen  string
+		wantStateSeen bool
+		wantVal       string
+		wantExist     bool
+	}{
+		{
+			name:      "Success: nil accept deletes an existing key",
+			existing:  "old",
+			wantPrev:  "old",
+			wantDel:   true,
+			wantExist: false,
+		},
+		{
+			name:      "Success: nil accept on a missing key reports not deleted",
+			wantExist: false,
+		},
+		{
+			name:          "Success: accept returns true and keeps the deletion",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     true,
+			wantPrev:      "old",
+			wantDel:       true,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantExist:     false,
+		},
+		{
+			name:          "Success: accept rejects so the existing key is restored",
+			existing:      "old",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrevSeen:  "old",
+			wantStateSeen: true,
+			wantVal:       "old",
+			wantExist:     true,
+		},
+		{
+			name:          "Success: accept rejects deleting a missing key leaves it absent",
+			useAccept:     true,
+			acceptRet:     false,
+			wantPrevSeen:  "",
+			wantStateSeen: false,
+			wantExist:     false,
+		},
+	}
+
+	for _, test := range tests {
+		m := ShardedMap[string, string]{}
+		if test.existing != "" {
+			m.Set(key, test.existing)
+		}
+
+		var (
+			called   bool
+			gotPrev  string
+			gotState bool
+		)
+		var fn func(prev string, deleted bool) bool
+		if test.useAccept {
+			fn = func(prev string, deleted bool) bool {
+				called = true
+				gotPrev = prev
+				gotState = deleted
+				return test.acceptRet
+			}
+		}
+
+		prev, del := m.DeleteAccept(key, fn)
+		switch {
+		case prev != test.wantPrev:
+			t.Errorf("TestShardedMapDeleteAccept(%s): got prev == %q, want %q", test.name, prev, test.wantPrev)
+		case del != test.wantDel:
+			t.Errorf("TestShardedMapDeleteAccept(%s): got deleted == %v, want %v", test.name, del, test.wantDel)
+		}
+
+		if test.useAccept {
+			switch {
+			case !called:
+				t.Errorf("TestShardedMapDeleteAccept(%s): accept was not called", test.name)
+			case gotPrev != test.wantPrevSeen:
+				t.Errorf("TestShardedMapDeleteAccept(%s): accept saw prev == %q, want %q", test.name, gotPrev, test.wantPrevSeen)
+			case gotState != test.wantStateSeen:
+				t.Errorf("TestShardedMapDeleteAccept(%s): accept saw deleted == %v, want %v", test.name, gotState, test.wantStateSeen)
+			}
+		}
+
+		got, ok := m.Get(key)
+		switch {
+		case ok != test.wantExist:
+			t.Errorf("TestShardedMapDeleteAccept(%s): after call, key exists == %v, want %v", test.name, ok, test.wantExist)
+		case got != test.wantVal:
+			t.Errorf("TestShardedMapDeleteAccept(%s): after call, value == %q, want %q", test.name, got, test.wantVal)
+		}
+	}
+}
+
 func TestShardedMapAllLocked(t *testing.T) {
 	m := ShardedMap[string, int]{}
 	const n = 1000
