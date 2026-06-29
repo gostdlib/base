@@ -122,6 +122,60 @@ func (m *Map[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 	return false
 }
 
+// SetAccept assigns a value to a key. The "accept" function can be used to
+// inspect the previous value, if any, and accept or reject the change.
+// It also provides a safe way to block other goroutines from writing to the
+// same shard while inspecting.
+// Returns the previous value, or false when no value was assigned.
+func (m *Map[K, V]) SetAccept(key K, value V, accept func(prev V, replaced bool) bool) (prev V, replaced bool) {
+	m.initDo()
+	shard := m.choose(key)
+	m.mus[shard].Lock()
+	defer m.mus[shard].Unlock()
+	prev, replaced = m.maps[shard].Set(key, value)
+	if accept != nil {
+		if !accept(prev, replaced) {
+			// revert unaccepted change
+			if !replaced {
+				// delete the newly set data
+				m.maps[shard].Delete(key)
+			} else {
+				// reset updated data
+				m.maps[shard].Set(key, prev)
+			}
+			var zero V
+			prev, replaced = zero, false
+		}
+	}
+	return prev, replaced
+}
+
+// DeleteAccept deletes a value for a key. The "accept" function can be used to
+// inspect the previous value, if any, and accept or reject the change.
+// It also provides a safe way to block other goroutines from writing to the
+// same shard while inspecting.
+// Returns the deleted value, or false when no value was assigned.
+func (m *Map[K, V]) DeleteAccept(key K, accept func(prev V, deleted bool) bool) (prev V, deleted bool) {
+	m.initDo()
+	shard := m.choose(key)
+	m.mus[shard].Lock()
+	defer m.mus[shard].Unlock()
+	prev, deleted = m.maps[shard].Delete(key)
+	if accept != nil {
+		if !accept(prev, deleted) {
+			// revert unaccepted change
+			if deleted {
+				// reset updated data
+				m.maps[shard].Set(key, prev)
+			}
+			var zero V
+			prev, deleted = zero, false
+		}
+	}
+
+	return prev, deleted
+}
+
 // Len returns the number of values in map.
 func (m *Map[K, V]) Len() int {
 	m.initDo()
