@@ -278,6 +278,14 @@ func Pool(ctx Context) *worker.Pool {
 	return p
 }
 
+// SetPool sets a custom pool on the returned Context. Pool() calls using this Context use that Pool.
+func SetPool(ctx Context, p *worker.Pool) Context {
+	if p == nil {
+		panic("cannot call SetPool() with nil Pool")
+	}
+	return WithValue(ctx, poolKey{}, p)
+}
+
 // Tasks returns a background.Tasks attached to the context. If not tasks are attached,
 // it returns background.Default().
 func Tasks(ctx Context) *background.Tasks {

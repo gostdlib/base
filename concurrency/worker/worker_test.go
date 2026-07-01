@@ -162,7 +162,7 @@ func TestSubPool(t *testing.T) {
 
 // TestSubPoolName is a regression test for Sub() dropping the pool name. Because Sub() built the
 // child pool without copying name, every Sub()/Limited() pool reported as "unnamed" in the
-// "waiting more than 30 seconds to acquire limited pool slot" warning (see limitedSubmit), making
+// "waited <duration> for a limited pool slot" warning (see limitedSubmit), making
 // it impossible to tell which limited pool was starving.
 func TestSubPoolName(t *testing.T) {
 	ctx := context.Background()
@@ -354,7 +354,7 @@ func TestLimitedPoolWarning(t *testing.T) {
 
 			// Verify warning was or wasn't logged
 			logOutput := buf.String()
-			hasWarning := strings.Contains(logOutput, "waiting more than 30 seconds")
+			hasWarning := strings.Contains(logOutput, "for a limited pool slot")
 
 			switch {
 			case test.wantWarn && !hasWarning:
