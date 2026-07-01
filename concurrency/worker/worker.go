@@ -167,7 +167,15 @@ type Pool struct {
 	running    atomic.Int64
 	goRoutines *atomic.Int64
 	metrics    *poolMetrics
-	limit      chan struct{}
+
+	// limits is the chain of semaphores a Submit() must acquire before a job can run, ordered from the
+	// outermost (root-most) Limited ancestor to this pool's own limit. A Sub() or Limited() pool inherits
+	// its ancestors' semaphores so work submitted through a child is still bounded by every parent Limited
+	// pool. Empty means this pool is unlimited.
+	limits []bSync.Semaphore
+	// limitN is the effective concurrency limit for this pool: the smallest capacity in limits. 0 means
+	// unlimited.
+	limitN int
 
 	// child indicates this pool is not a root pool but one that is created with .Sub().
 	child bool
@@ -353,13 +361,19 @@ func (p *Pool) StaticPool() int {
 	return int(p.opts.size)
 }
 
+// Limit returns the maximum number of jobs that can run concurrently in this pool. This is the size set by
+// Limited(), bounded by any parent Limited pool it was derived from. A return of 0 means the pool is unlimited.
+func (p *Pool) Limit() int {
+	return p.limitN
+}
+
 // Submit submits the function to be executed. If the context is canceled before the
 // function is enqueued, the function will not be executed. Once enqueued, the function
 // will run regardless of context cancellation; it is the responsibility of the function
 // to check the context and return if it is canceled. Submit returns true if the function was
 // accepted to run and false if it was declined (the context was canceled before enqueue).
 func (p *Pool) Submit(ctx context.Context, f func()) bool {
-	if p.limit != nil {
+	if len(p.limits) > 0 {
 		return p.limitedSubmit(ctx, f)
 	}
 	return p.submit(ctx, f)
@@ -374,65 +388,98 @@ func (p *Pool) limitedSubmit(ctx context.Context, f func()) bool {
 
 	t := time.Now()
 
-	// Fast-fail an already-cancelled context so we don't needlessly acquire/release a limit
-	// token (the actual no-run guarantee is enforced by submit()).
+	// Fast-fail an already-cancelled context so we don't needlessly acquire/release limit
+	// tokens (the actual no-run guarantee is enforced by submit()).
 	if ctx.Err() != nil {
 		return false
 	}
 
-	// Fast path: try non-blocking acquire to avoid timer allocation in the common case.
-	select {
-	case <-ctx.Done():
-		return false
-	case p.limit <- struct{}{}:
-		goto acquired
-	default:
-	}
-
-	// Slow path: slot is contended, need to wait.
-	if p.opts.disableLimitedWarn {
-		select {
-		case <-ctx.Done():
-			return false
-		case p.limit <- struct{}{}:
-		}
-	} else {
-		for {
-			timer := time.NewTimer(warnTimer)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return false
-			case <-timer.C:
-				name := p.name
-				if name == "" {
-					name = "unnamed"
-				}
-				log.Default().Warn(fmt.Sprintf("worker.Pool(%s): waiting more than 30 seconds to acquire limited pool slot", name))
-				continue
-			case p.limit <- struct{}{}:
+	// Acquire a token from every semaphore in the chain. A nested Limited/Sub pool inherits its ancestors'
+	// semaphores, so this bounds the job by this pool's limit and every parent Limited pool's limit.
+	//
+	// p.limits is ordered root-most first, so we acquire back-to-front: most-specific (narrowest) limit
+	// first, broadest parent last. This ensures a submit that blocks waiting for a slot only holds its own
+	// narrow tokens, never a broad parent token that a sibling pool needs. Acquiring parent-first would let
+	// a submit stalled on a small child limit hog parent capacity and starve siblings.
+	for i := len(p.limits) - 1; i >= 0; i-- {
+		if !p.acquire(ctx, p.limits[i], t) {
+			// Release only the tokens we already acquired (indices i+1..len-1); p.limits[i] was not.
+			for j := i + 1; j < len(p.limits); j++ {
+				p.limits[j].Release()
 			}
-			timer.Stop()
-			break
+			return false
 		}
 	}
-
-acquired:
 
 	spanner.Event(
 		"worker.Pool:Limited.Submit()",
 		attribute.Int64("block_duration_ns", int64(time.Since(t))),
 	)
 
+	// Reaching here means we hold a token in every p.limits semaphore, so releaseAll releases exactly what
+	// we hold. This avoids allocating a per-Submit slice and closure to track the acquired set.
 	wrap := func() {
 		f()
-		<-p.limit
+		p.releaseAll()
 	}
 	if !p.submit(ctx, wrap) {
-		<-p.limit // Release the token since wrap() will never run.
+		p.releaseAll() // Release the tokens since wrap() will never run.
 		return false
 	}
 	return true
+}
+
+// releaseAll releases one token to every semaphore in p.limits. It must be called only on the limitedSubmit
+// success path, where a token is held in each of them.
+func (p *Pool) releaseAll() {
+	for i := 0; i < len(p.limits); i++ {
+		p.limits[i].Release()
+	}
+}
+
+// logName returns p.name for use in log messages, or "unnamed" if the pool has no name.
+func (p *Pool) logName() string {
+	if p.name == "" {
+		return "unnamed"
+	}
+	return p.name
+}
+
+// acquire blocks until a token is acquired from lim or ctx is cancelled, returning true if a token was
+// acquired. start is when the enclosing Submit began waiting; unless disableLimitedWarn is set, acquire logs a
+// warning at each warnTimer boundary of that total wait, so a submit blocked across several semaphores in the
+// chain warns on its cumulative wait rather than resetting the clock per semaphore. Each warning reports the
+// total time waited so far.
+func (p *Pool) acquire(ctx context.Context, lim bSync.Semaphore, start time.Time) bool {
+	// Fast path: try non-blocking acquire to avoid timer allocation in the common case.
+	if ctx.Err() != nil {
+		return false
+	}
+	if lim.TryAcquire() {
+		return true
+	}
+
+	// Slow path: slot is contended, need to wait.
+	if p.opts.disableLimitedWarn {
+		return lim.AcquireContext(ctx)
+	}
+
+	for {
+		// Wait until the next warnTimer boundary of total wait since start. A timeout (ctx still live) means
+		// the submit has crossed another warnTimer of cumulative wait, so we warn and keep waiting; a
+		// cancelled ctx means give up.
+		next := warnTimer - time.Since(start)%warnTimer
+		tctx, cancel := context.WithTimeout(ctx, next)
+		acquired := lim.AcquireContext(tctx)
+		cancel()
+		if acquired {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		log.Default().Warn(fmt.Sprintf("worker.Pool(%s): waited %v for a limited pool slot", p.logName(), time.Since(start).Round(time.Second)))
+	}
 }
 
 // submit submits the function to be executed. If the context is canceled before the
@@ -506,13 +553,28 @@ func init() {
 // If the size is less than 1, it will be set to GOMAXPROCS if that value is less than NumCPU. Otherwise
 // NumCPU will be used. If name is not empty, it will be used for its own metrics. The Limited pool will share
 // the same underlying queue and goroutines as the parent Pool, but will limit the number of concurrent
-// goroutines that can execute at the same time.
+// goroutines that can execute at the same time. If the parent is itself a Limited pool, the new pool is also
+// bounded by the parent's limit; if the requested size exceeds the parent's limit, a warning is logged and the
+// parent's limit is used.
 func (p *Pool) Limited(ctx context.Context, name string, size int) *Pool {
 	if size < 1 {
 		size = numCPU
 	}
-	s := p.Sub(ctx, name)
-	s.limit = make(chan struct{}, size)
+	s := p.Sub(ctx, name) // Inherits the parent's limits chain and limitN.
+
+	// A Limited pool derived from a Limited parent is bounded by the parent. If the requested size is larger
+	// than the parent's limit, the parent's limit is the real ceiling, so we warn and adopt it rather than
+	// adding a wider semaphore that could never bind.
+	if p.limitN > 0 && size > p.limitN {
+		log.Default().Warn(fmt.Sprintf("worker.Pool(%s): Limited() size %d exceeds parent limit %d; using parent limit %d", s.logName(), size, p.limitN, p.limitN))
+		return s
+	}
+
+	sem := bSync.NewSemaphore(size)
+	limits := make([]bSync.Semaphore, len(p.limits), len(p.limits)+1)
+	copy(limits, p.limits)
+	s.limits = append(limits, sem)
+	s.limitN = size
 	return s
 }
 
@@ -553,6 +615,10 @@ func (p *Pool) Sub(ctx context.Context, name string) *Pool {
 		wg:         sync.WaitGroup{},
 		goRoutines: p.goRoutines,
 		child:      true,
+		// Inherit the parent's limit chain so a Sub() of a Limited pool stays bounded by the parent's
+		// limit. Limited() may extend this chain with its own semaphore.
+		limits: p.limits,
+		limitN: p.limitN,
 	}
 
 	return pool
