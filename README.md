@@ -20,7 +20,8 @@ This is a set of foundational packages for building Go services. These packages 
 - **Worker Pools** - Goroutine reuse with metrics, limited pools, and safe group primitives
 - **Background Tasks** - Tracked background goroutines with automatic restart and metrics
 - **Telemetry** - Integrated logging, OTEL metrics, and distributed tracing
-- **Concurrency Primitives** - Type-safe `sync.Pool`, sharded maps, fan-out/fan-in patterns
+- **Concurrency Primitives** - Type-safe `sync.Pool`, sharded maps, groups, and write-protected values
+- **Generic Values** - Sets, queues, result/promise types, and code generators for immutable, tuple, and union types
 
 The philosophy is simple: **logs are for errors, traces are for debugging, metrics are for counting**.
 
@@ -124,7 +125,7 @@ While we know this isn't 100% true, in most cases we can simply emit an error on
 In your generated `errors/` package:
 
 ```go
-//go:generate stringer -type=Category -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Category -linecomment
 
 type Category uint32
 
@@ -135,7 +136,7 @@ const (
     CatUpstream  Category = 3 // Upstream
 )
 
-//go:generate stringer -type=Type -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Type -linecomment
 
 type Type uint16
 
@@ -390,31 +391,6 @@ m.Set("user:123", user)
 user, ok := m.Get("user:123")
 ```
 
-### Fan-Out/Fan-In Pattern
-
-```go
-fan := patterns.NewFan[Input, Output](ctx, 10, // 10 workers
-    func(ctx context.Context, in Input) (Output, error) {
-        return transform(in)
-    },
-)
-
-// Send inputs (thread-safe)
-for _, input := range inputs {
-    fan.Send(input)
-}
-fan.Close()
-
-// Collect outputs
-for resp := range fan.Output() {
-    if resp.Err != nil {
-        // Handle error
-        continue
-    }
-    results = append(results, resp.V)
-}
-```
-
 ## Immutable Types
 
 There are general immutable types around slices and maps:
@@ -446,6 +422,43 @@ This generates `ImConfig` with:
 - Setters that return new copies (no mutation)
 - `Mutable()` to get a mutable copy
 - Slices wrapped in `immutable.Slice`, maps in `immutable.Map`
+
+## Tuple Generator - Small Named Tuple Types
+
+`tuple` generates small, stack-friendly named tuple types. The main use case is
+building composite map keys without nested maps (`map[string]map[string]V`):
+
+```go
+//go:generate tuple lastFirst last:string, first:string
+
+// Generates a lastFirst value type with a constructor and accessors:
+lookup := map[lastFirst]User{}
+lookup[NewlastFirst("Doak", "John")] = user
+name := key.Last() // named accessor; positional would be V0()
+```
+
+The generated type is a `struct` (not heap allocated), and access is type-safe
+without using `any`. Name the type with an exported case (`LastFirst`) to export
+it. This is an experimental package.
+
+## Union Generator - Type-Safe Sum Types
+
+`union` generates a value that holds exactly one of a fixed set of member types,
+with a discriminator enum, typed setters, and typed accessors:
+
+```go
+//go:generate union -n Candy -t Twix,ThreeMuskateers
+
+var c Candy
+c.SetTwix(Twix{String: "hello"})
+
+switch c.Type() {
+case CandyTypeTwix:
+    fmt.Println(c.Twix().String)
+case CandyTypeThreeMuskateers:
+    fmt.Println(c.ThreeMuskateers().String)
+}
+```
 
 ## Isset - Avoid Pointer Madness
 
@@ -508,13 +521,22 @@ func main() {
 | `concurrency/worker` | Worker pool with goroutine reuse and metrics |
 | `concurrency/background` | Tracked background tasks with auto-restart |
 | `concurrency/sync` | Group, typed Pool, ShardedMap, WProtect |
-| `concurrency/patterns` | Fan-out/fan-in, concurrent slice ops |
 | `telemetry/log` | Slog-based structured logging |
 | `telemetry/otel/metrics` | OTEL Prometheus metrics |
 | `telemetry/otel/trace` | Distributed tracing with spans |
+| `values/immutable` | Immutable slice/map types |
 | `values/isset` | Zero-allocation "was this set?" types |
-| `values/immutable` | Immutable type generator |
+| `values/sizes` | Constants for common data sizes |
+| `values/generics/sets` | Generic set type |
+| `values/generics/queue` | Generic, thread-safe OTEL-integrated queue |
+| `values/generics/result` | Result type for eventual outcomes |
+| `values/generics/promises` | Promise/response types for channeled results |
+| `values/generators/immutable` | Immutable struct (`Im<Type>`) generator |
+| `values/generators/tuple` | Named tuple type generator |
+| `values/generators/union` | Type-safe union (sum) type generator |
+| `values/generators/stringer` | `String()`/JSON generator for enum types |
 | `retry/exponential` | Exponential backoff retries |
+| `rpc/grpc` | gRPC client/server helpers |
 | `statemachine` | State machine with OTEL integration |
 | `genproject` | Project scaffolding tool |
 

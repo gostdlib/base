@@ -9,8 +9,6 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2
 	github.com/gofiber/fiber/v2 v2.52.13
 	github.com/google/uuid v1.6.0
-	github.com/gostdlib/concurrency v0.0.0-20241230205952-55ea9e292314
-	github.com/gostdlib/db v0.0.0-20260620062003-edece78954cd
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1
 	github.com/kylelemons/godebug v1.1.0
