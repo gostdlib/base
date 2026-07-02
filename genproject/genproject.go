@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"go/format"
 	"os"
+	"os/exec"
+	"strings"
 	"text/template"
 )
 
@@ -53,7 +55,40 @@ func main() {
 	defer f.Close()
 	formatWrite(f, tmpls, "main.tmpl")
 
-	fmt.Println("Finished. Remember to run `go generate ./...` before trying to compile.")
+	if !haveGoMod() {
+		fmt.Println("Files generated. No go.mod was found, so before compiling you must run:")
+		fmt.Println("\tgo mod init <your module path>")
+		fmt.Println("\tgo get -tool github.com/gostdlib/base/values/generators/stringer")
+		fmt.Println("\tgo generate ./...")
+		fmt.Println("\tgo mod tidy")
+		return
+	}
+
+	run("go", "get", "-tool", "github.com/gostdlib/base/values/generators/stringer")
+	run("go", "generate", "./...")
+	run("go", "mod", "tidy")
+	fmt.Println("Finished.")
+}
+
+// haveGoMod reports if the current directory is inside a Go module.
+func haveGoMod() bool {
+	out, err := exec.Command("go", "env", "GOMOD").Output()
+	if err != nil {
+		return false
+	}
+	p := strings.TrimSpace(string(out))
+	return p != "" && p != os.DevNull
+}
+
+// run executes the command, streaming its output, and panics if it fails.
+func run(args ...string) {
+	fmt.Println("Running:", strings.Join(args, " "))
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		panic(fmt.Sprintf("%s: %v", strings.Join(args, " "), err))
+	}
 }
 
 func formatWrite(f *os.File, tmpls *template.Template, tmpl string) {

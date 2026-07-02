@@ -10,7 +10,7 @@ import (
 	"github.com/gostdlib/base/errors"
 )
 
-//go:generate stringer -type=Category -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Category -linecomment
 
 // Category represents the category of the error.
 type Category uint32
@@ -41,7 +41,7 @@ var catToCode = map[Category]codes.Code{
 }
 */
 
-//go:generate stringer -type=Type -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Type -linecomment
 
 // Type represents the type of the error.
 type Type uint16
@@ -67,6 +67,11 @@ type TraceAttrer = errors.TraceAttrer
 
 // Error is the error type for this service. Error implements github.com/gostdlib/base/errors.E .
 type Error = errors.Error
+
+// ErrPermanent indicates an error is permanent and cannot be retried. It should not be used directly,
+// but wrapped in another error (fmt.Errorf("%w: %w", err, ErrPermanent)). You can determine if an error
+// is permanent with Is(err, ErrPermanent).
+var ErrPermanent = errors.ErrPermanent
 
 type EOption = errors.EOption
 
@@ -97,6 +102,14 @@ func WithAttrs(attrs ...slog.Attr) EOption {
     return errors.WithAttrs(attrs...)
 }
 
+// WithLogLevel sets the log level that should be used when logging this error. By default this is slog.LevelError,
+// but in some cases you may want to log at a different level, such as slog.LevelWarn for a retryable error.
+// Note that this does not affect the trace status, which will still be recorded as an error unless
+// WithSuppressTraceErr() is used.
+func WithLogLevel(level slog.Level) EOption {
+    return errors.WithLogLevel(level)
+}
+
 // E creates a new Error with the given parameters.
 /* YOU CAN REPLACE this with your own base error constructor. See github.com/gostdlib/base/errors for more info. */
 func E(ctx context.Context, c errors.Category, t errors.Type, msg error, options ...errors.EOption) Error {
@@ -112,6 +125,21 @@ func E(ctx context.Context, c errors.Category, t errors.Type, msg error, options
 
 // Everything below here is a wrapper around the stdlib errors package.
 // We do this to prevent having to import the stdlib errors package in every file that needs it.
+
+// ErrUnsupported indicates that a requested operation cannot be performed,
+// because it is unsupported. For example, a call to [os.Link] when using a
+// file system that does not support hard links.
+//
+// Functions and methods should not return this error but should instead
+// return an error including appropriate context that satisfies
+//
+//	errors.Is(err, errors.ErrUnsupported)
+//
+// either by directly wrapping ErrUnsupported or by implementing an [Is] method.
+//
+// Functions and methods should document the cases in which an error
+// wrapping this will be returned.
+var ErrUnsupported = errors.ErrUnsupported
 
 // New returns an error that formats as the given text.
 func New(text string) error {
@@ -134,6 +162,23 @@ func Is(err, target error) bool {
 // target to that error value and returns true.
 func As(err error, target any) bool {
 	return errors.As(err, target)
+}
+
+// AsType finds the first error in err's tree that matches the type E, and
+// if one is found, returns that error value and true. Otherwise, it
+// returns the zero value of E and false.
+//
+// The tree consists of err itself, followed by the errors obtained by
+// repeatedly calling its Unwrap() error or Unwrap() []error method. When
+// err wraps multiple errors, AsType examines err followed by a
+// depth-first traversal of its children.
+//
+// An error err matches the type E if the type assertion err.(E) holds,
+// or if the error has a method As(any) bool such that err.As(target)
+// returns true when target is a non-nil *E. In the latter case, the As
+// method is responsible for setting target.
+func AsType[E error](err error) (E, bool) {
+	return errors.AsType[E](err)
 }
 
 // Join returns an error that wraps the given errors. Any nil error values are discarded.

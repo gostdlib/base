@@ -124,6 +124,11 @@ func init() {
 // Error is our base error type.
 type Error = errors.Error
 
+// ErrPermanent indicates an error is permanent and cannot be retried. It should not be used directly,
+// but wrapped in another error (fmt.Errorf("%w: %w", err, ErrPermanent)). You can determine if an error
+// is permanent with Is(err, ErrPermanent).
+var ErrPermanent = errors.ErrPermanent
+
 type newOptions struct {
 	disableSecretDetection bool
 }
