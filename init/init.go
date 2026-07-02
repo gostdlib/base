@@ -127,7 +127,6 @@ Example RegisterClose:
 package init
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -136,6 +135,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"context"
 
 	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
@@ -146,7 +147,6 @@ import (
 	"github.com/gostdlib/base/telemetry/otel/trace"
 
 	"github.com/google/uuid"
-	"github.com/gostdlib/concurrency/prim/wait"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -559,7 +559,7 @@ func (s setup) poolInit() (stateFn, error) {
 // returned if any of the initializations fail.
 func (s setup) customInits() (stateFn, error) {
 	ctx := context.Background()
-	g := wait.Group{}
+	g := bctx.Pool(ctx).Group()
 	for _, f := range s.inits {
 		g.Go(
 			ctx,
@@ -627,7 +627,7 @@ type closer struct {
 
 func (c closer) callClosers(args InitArgs) {
 	ctx := context.Background()
-	g := wait.Group{}
+	g := bctx.Pool(ctx).Group()
 
 	when := 30 * time.Second
 
