@@ -4,63 +4,11 @@ the base/ set of packages. This error type can be used to automatically handle e
 
 This package should be used to build a service specific error package and not used directly.
 
-Services should create their own errors packages. This can be achieved for new projects using
-the genproject tool. Otherwise, you can copy the following and fill it in. Remember that
-you must use "go generate" for everything to work.
-
-	package errors
-
-	import (
-	    "github.com/gostdlib/base/context"
-		"github.com/gostdlib/base/errors"
-	)
-
-	//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Category -linecomment
-
-	// Category represents the category of the error.
-	type Category uint32
-
-	func (c Category) Category() string {
-		return c.String()
-	}
-
-	const (
-		// CatUnknown represents an unknown category. This should not be used.
-		CatUnknown Category = Category(0) // Unknown
-		// ADD YOUR OWN CATEGORIES HERE
-	)
-
-	//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Type -linecomment
-
-	// Type represents the type of the error.
-	type Type uint16
-
-	func (t Type) Type() string {
-		return t.String()
-	}
-
-	const (
-		// TypeUnknown represents an unknown type.
-		TypeUnknown Type = Type(0) // Unknown
-
-		// ADD YOUR OWN TYPES HERE
-	)
-
-	// LogAttrer is an interface that can be implemented by an error to return a list of attributes
-	// used in logging.
-	type LogAttrer = errors.LogAttrer
-
-	// Error is the error type for this service. Error implements github.com/gostdlib/base/errors.E .
-	type Error = errors.Error
-
-	// E creates a new Error with the given parameters.
-	// YOU CAN REPLACE this with your own base error constructor. See github.com/gostdlib/base/errors for more info.
-	func E(ctx context.Context, c errors.Category, t errors.Type, msg error, options ...errors.EOption) Error {
-	    return errors.E(ctx, c, t, msg, options...)
-	}
-
-You should include a file for your package called stdlib.go that is a copy of base/errors/stdlib/stdlib.go .
-This will prevent needing to import multiple "errors" packages with renaming.
+Services should create their own errors packages. For new projects this is done with the genproject
+tool, which scaffolds the package for you. For an existing project, copy genproject/tmpls/errors.tmpl
+(it is a complete Go file) and fill in your own categories and types. Remember that you must run
+"go generate" for everything to work. The template includes wrappers for the stdlib errors functions,
+which prevents needing to import multiple "errors" packages with renaming.
 
 This package is meant to allow extended errors that add additional attributes to our "Error" type.
 For example, you could create a SQLQueryErr like so:
@@ -185,6 +133,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/Azure/retry/exponential"
 	goctx "github.com/gostdlib/base/context"
 	ictx "github.com/gostdlib/base/internal/context"
 	ierr "github.com/gostdlib/base/internal/errors"
@@ -274,6 +223,12 @@ type Error struct {
 	attrs []slog.Attr
 }
 
+// ErrPermanent indicates an error is permanent and cannot be retried. It should not be used directly,
+// but wrapped in another error (fmt.Errorf("%w: %w", err, ErrPermanent)). You can determine if an error
+// is permanent with Is(err, ErrPermanent). This is the same sentinel used by the retry/exponential
+// package, which stops retrying when it sees a permanent error.
+var ErrPermanent = exponential.ErrPermanent
+
 // EOption is an optional argument for E().
 type EOption = ierr.EOption
 
@@ -316,9 +271,10 @@ func WithAttrs(attrs ...slog.Attr) EOption {
 	}
 }
 
-// WithLogLevel sets the log level that should be used when logging this error. By default this is
-// slog.LevelError, but in some cases you may want to log at a different level, such as slog.LevelWarn for a retryable error.
-// Note that this does not affect the trace status, which will still be recorded as an error unless WithSuppressTraceErr() is used.
+// WithLogLevel sets the log level that should be used when logging this error. By default this is slog.LevelError,
+// but in some cases you may want to log at a different level, such as slog.LevelWarn for a retryable error.
+// Note that this does not affect the trace status, which will still be recorded as an error unless
+// WithSuppressTraceErr() is used.
 func WithLogLevel(level slog.Level) EOption {
 	return func(e ierr.EOpts) ierr.EOpts {
 		e.LogLevel = level
