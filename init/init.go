@@ -136,9 +136,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"context"
+
 	"github.com/gostdlib/base/concurrency/background"
 	"github.com/gostdlib/base/concurrency/worker"
-	"github.com/gostdlib/base/context"
 	bctx "github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/env/detect"
 	"github.com/gostdlib/base/telemetry/log"
@@ -558,7 +559,7 @@ func (s setup) poolInit() (stateFn, error) {
 // returned if any of the initializations fail.
 func (s setup) customInits() (stateFn, error) {
 	ctx := context.Background()
-	g := context.Pool(ctx).Group()
+	g := bctx.Pool(ctx).Group()
 	for _, f := range s.inits {
 		g.Go(
 			ctx,
@@ -626,7 +627,7 @@ type closer struct {
 
 func (c closer) callClosers(args InitArgs) {
 	ctx := context.Background()
-	g := context.Pool(ctx).Group()
+	g := bctx.Pool(ctx).Group()
 
 	when := 30 * time.Second
 
