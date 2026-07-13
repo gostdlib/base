@@ -2,7 +2,9 @@ package weak
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -429,48 +431,293 @@ func TestTTLContextCancellation(t *testing.T) {
 
 // MaxTTL Tests
 
-func TestMaxTTLForcesDeletion(t *testing.T) {
+// TestFillerDelNoStaleHold hammers concurrent filler Gets and Dels on a single key while a monitor goroutine samples,
+// under ttlLock, the invariant that a key held in ttlMap is present in the shard map. In a pure filler-Get + Del
+// workload that state is uniquely the race signature: getOrFill makes the entry visible in the shard map before it
+// writes the ttlMap hold, and Del removes the ttlMap hold before the shard entry, so neither ordering produces
+// "in ttlMap but not in the shard map" on its own. Only a Del landing between getOrFill's shard store and its ttlMap
+// hold write leaves that state behind: a stale strong reference for a key no longer in the cache. The window is a
+// semantic ordering gap, not a data race, so -race cannot flag it; detection is statistical, but a hit is definitive.
+func TestFillerDelNoStaleHold(t *testing.T) {
 	tests := []struct {
-		name string
+		name          string
+		numGoroutines int
+		iterations    int
 	}{
 		{
-			name: "Success: entries forcibly deleted after maxTTL even with strong references",
+			name:          "Success: concurrent filler Get and Del never leave a ttlMap hold for a key absent from the shard map",
+			numGoroutines: 32,
+			iterations:    20000,
 		},
 	}
 
 	for _, test := range tests {
 		ctx := t.Context()
-		// ttl=1s (min hold time), maxTTL=3s (force delete time), interval=1s
-		cache, err := New[string, testValue](ctx, "test", WithTTL(1*time.Second, 3*time.Second, 1*time.Second))
+		filler := func(ctx context.Context, k string) (*testValue, bool, error) {
+			return &testValue{data: "filled", num: 1}, true, nil
+		}
+		// The long TTL and interval keep ttlExpire from touching holds during the test, so any hold the monitor sees
+		// without a shard entry is the race, not cleanup timing.
+		cache, err := New[string, testValue](ctx, "test", WithFiller(filler), WithTTL(1*time.Hour, 0, 1*time.Hour))
+		if err != nil {
+			t.Fatalf("TestFillerDelNoStaleHold(%s): failed to create cache: %v", test.name, err)
+		}
+
+		key := "hot"
+		var stop atomic.Bool
+		var staleObserved atomic.Int64
+
+		var monitor sync.Group
+		monitor.Go(ctx, func(ctx context.Context) error {
+			for !stop.Load() {
+				// Sample both maps under ttlLock. Once getOrFill holds ttlLock across its shard store + hold write
+				// and Del holds it across both of its steps, the intermediate state can never be observed here.
+				cache.ttlLock.Lock()
+				_, inTTL := cache.ttlMap.Get(key)
+				inShard := false
+				if inTTL {
+					_, inShard = cache.m.Get(key)
+				}
+				cache.ttlLock.Unlock()
+				if inTTL && !inShard {
+					staleObserved.Add(1)
+				}
+			}
+			return nil
+		})
+
+		var wg sync.Group
+		for g := 0; g < test.numGoroutines; g++ {
+			wg.Go(ctx, func(ctx context.Context) error {
+				for i := 0; i < test.iterations; i++ {
+					if i%2 == 0 {
+						_, _, _ = cache.Get(t.Context(), key)
+					} else {
+						_, _, _ = cache.Del(t.Context(), key)
+					}
+				}
+				return nil
+			})
+		}
+		wg.Wait(ctx)
+		stop.Store(true)
+		monitor.Wait(ctx)
+
+		if got := staleObserved.Load(); got != 0 {
+			t.Errorf("TestFillerDelNoStaleHold(%s): got %d ttlMap hold(s) for a key absent from the shard map, want 0", test.name, got)
+		}
+	}
+}
+
+// TestSetDelNoMissingHold hammers concurrent explicit Set and Del on a single key while a monitor goroutine samples,
+// under ttlLock, the invariant that a key present in the shard map is also present in ttlMap. In a pure Set + Del
+// workload that state is uniquely the race signature: set() writes the ttlMap hold before the shard entry, and Del
+// removes the ttlMap hold before the shard entry, so neither ordering produces "in the shard map but not in ttlMap"
+// on its own. Only a Del landing between set()'s ttlMap write and its shard store leaves that state behind: the Del
+// deletes the just-written ttlMap hold and finds no shard entry, then set() stores the shard entry with no hold, so
+// the entry never receives the min-TTL strong hold or maxTTL eviction scheduling. This is the mirror of the filler
+// stale-hold bug (a missing hold instead of a stale one). A strong reference to the value is held for the whole test
+// so the shard weak pointer always resolves and the monitor can observe the residue. The window is a semantic
+// ordering gap, not a data race, so -race cannot flag it; detection is statistical, but a hit is definitive.
+func TestSetDelNoMissingHold(t *testing.T) {
+	tests := []struct {
+		name          string
+		numGoroutines int
+		iterations    int
+	}{
+		{
+			name:          "Success: concurrent Set and Del never leave a shard entry without its ttlMap hold",
+			numGoroutines: 32,
+			iterations:    20000,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		// The long TTL and interval keep ttlExpire from touching holds during the test, so any shard entry the monitor
+		// sees without a ttlMap hold is the race, not cleanup timing.
+		cache, err := New[string, testValue](ctx, "test", WithTTL(1*time.Hour, 0, 1*time.Hour))
+		if err != nil {
+			t.Fatalf("TestSetDelNoMissingHold(%s): failed to create cache: %v", test.name, err)
+		}
+
+		key := "hot"
+		// Keep a strong reference for the whole test so the shard weak pointer always resolves and DeleteIfNil never
+		// fires; the shard entry then only disappears via an explicit Del, making the missing-hold residue observable.
+		val := &testValue{data: "held", num: 1}
+
+		var stop atomic.Bool
+		var missingObserved atomic.Int64
+
+		var monitor sync.Group
+		monitor.Go(ctx, func(ctx context.Context) error {
+			for !stop.Load() {
+				// Sample both maps under ttlLock. Once set() holds ttlLock across its shard store + hold write and Del
+				// holds it across both of its steps, the intermediate state can never be observed here.
+				cache.ttlLock.Lock()
+				_, inShard := cache.m.Get(key)
+				inTTL := false
+				if inShard {
+					_, inTTL = cache.ttlMap.Get(key)
+				}
+				cache.ttlLock.Unlock()
+				if inShard && !inTTL {
+					missingObserved.Add(1)
+				}
+			}
+			return nil
+		})
+
+		var wg sync.Group
+		for g := 0; g < test.numGoroutines; g++ {
+			wg.Go(ctx, func(ctx context.Context) error {
+				for i := 0; i < test.iterations; i++ {
+					if i%2 == 0 {
+						_, _, _ = cache.Set(t.Context(), key, val)
+					} else {
+						_, _, _ = cache.Del(t.Context(), key)
+					}
+				}
+				return nil
+			})
+		}
+		wg.Wait(ctx)
+		stop.Store(true)
+		monitor.Wait(ctx)
+
+		if got := missingObserved.Load(); got != 0 {
+			t.Errorf("TestSetDelNoMissingHold(%s): got %d observation(s) of a shard entry with no ttlMap hold, want 0", test.name, got)
+		}
+
+		runtime.KeepAlive(val)
+	}
+}
+
+func TestMaxTTLForcesDeletion(t *testing.T) {
+	tests := []struct {
+		name      string
+		ttl       time.Duration
+		maxTTL    time.Duration
+		interval  time.Duration
+		useFiller bool
+	}{
+		{
+			name:      "Success: explicitly Set entry is forcibly evicted after maxTTL while a strong reference is held",
+			ttl:       1 * time.Second,
+			maxTTL:    3 * time.Second,
+			interval:  1 * time.Second,
+			useFiller: false,
+		},
+		{
+			name:      "Success: filler-loaded entry is forcibly evicted after maxTTL while a strong reference is held",
+			ttl:       1 * time.Second,
+			maxTTL:    3 * time.Second,
+			interval:  1 * time.Second,
+			useFiller: true,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+
+		// Hold a strong reference to val for the whole test so only forced maxTTL eviction (not GC) can remove it.
+		val := &testValue{data: "test", num: 42}
+
+		options := []Option{WithTTL(test.ttl, test.maxTTL, test.interval)}
+		if test.useFiller {
+			options = append(options, WithFiller(func(ctx context.Context, k string) (*testValue, bool, error) {
+				return val, true, nil
+			}))
+		}
+		cache, err := New[string, testValue](ctx, "test", options...)
 		if err != nil {
 			t.Fatalf("TestMaxTTLForcesDeletion(%s): failed to create cache: %v", test.name, err)
 		}
 
+		// Filler rows load the entry through Get (exercising the filler bookkeeping path); Set rows load it directly.
+		if test.useFiller {
+			_, ok, err := cache.Get(t.Context(), "key")
+			if err != nil {
+				t.Fatalf("TestMaxTTLForcesDeletion(%s): failed to fill value: %v", test.name, err)
+			}
+			if !ok {
+				t.Fatalf("TestMaxTTLForcesDeletion(%s): filler did not load value", test.name)
+			}
+		} else {
+			if _, _, err := cache.Set(t.Context(), "key", val); err != nil {
+				t.Fatalf("TestMaxTTLForcesDeletion(%s): failed to set value: %v", test.name, err)
+			}
+		}
+
+		// Poll until forced eviction empties the cache or the deadline passes. Len()==0 is the assertion that
+		// catches a dead-eviction bug: the entry must leave the count even though a strong reference remains.
+		deadline := time.Now().Add(test.maxTTL + 3*test.interval + 2*time.Second)
+		for time.Now().Before(deadline) && cache.Len() != 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if got := cache.Len(); got != 0 {
+			t.Errorf("TestMaxTTLForcesDeletion(%s): got Len()=%d, want Len()==0 after maxTTL forced eviction", test.name, got)
+		}
+
+		runtime.KeepAlive(val)
+	}
+}
+
+// TestDeleterMaxTTLEviction verifies that a forced maxTTL eviction invokes the deleter with the evicted key. A
+// strong reference to the value is held for the whole test so only forced eviction (not GC reclamation) can remove
+// the entry, which pins the deleter call to the eviction path.
+func TestDeleterMaxTTLEviction(t *testing.T) {
+	tests := []struct {
+		name      string
+		ttl       time.Duration
+		maxTTL    time.Duration
+		interval  time.Duration
+		wantCalls int64
+	}{
+		{
+			name:      "Success: deleter called exactly once on maxTTL forced eviction",
+			ttl:       1 * time.Second,
+			maxTTL:    3 * time.Second,
+			interval:  1 * time.Second,
+			wantCalls: 1,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		var calls atomic.Int64
+		var gotKey atomic.Value
+		deleter := func(ctx context.Context, k string) error {
+			calls.Add(1)
+			gotKey.Store(k)
+			return nil
+		}
+
+		cache, err := New[string, testValue](ctx, "test", WithTTL(test.ttl, test.maxTTL, test.interval), WithDeleter(deleter))
+		if err != nil {
+			t.Fatalf("TestDeleterMaxTTLEviction(%s): failed to create cache: %v", test.name, err)
+		}
+
 		val := &testValue{data: "test", num: 42}
-		_, _, err = cache.Set(t.Context(), "key", val)
-		if err != nil {
-			t.Fatalf("TestMaxTTLForcesDeletion(%s): failed to set value: %v", test.name, err)
+		if _, _, err := cache.Set(t.Context(), "key", val); err != nil {
+			t.Fatalf("TestDeleterMaxTTLEviction(%s): failed to set value: %v", test.name, err)
 		}
 
-		// Value should exist initially
-		_, ok, err := cache.Get(t.Context(), "key")
-		if err != nil {
-			t.Fatalf("TestMaxTTLForcesDeletion(%s): failed to get value: %v", test.name, err)
-		}
-		if !ok {
-			t.Errorf("TestMaxTTLForcesDeletion(%s): value not found after Set", test.name)
+		// Poll until forced eviction empties the cache or the deadline passes.
+		deadline := time.Now().Add(test.maxTTL + 3*test.interval + 2*time.Second)
+		for time.Now().Before(deadline) && cache.Len() != 0 {
+			time.Sleep(100 * time.Millisecond)
 		}
 
-		// Wait for maxTTL + cleanup interval + buffer
-		time.Sleep(3*time.Second + 1*time.Second + 500*time.Millisecond)
-
-		// Value should be gone even though we have a strong reference
-		_, ok, err = cache.Get(t.Context(), "key")
-		if err != nil {
-			t.Fatalf("TestMaxTTLForcesDeletion(%s): failed to get value: %v", test.name, err)
+		if got := cache.Len(); got != 0 {
+			t.Fatalf("TestDeleterMaxTTLEviction(%s): got Len()=%d, want Len()==0 after maxTTL forced eviction", test.name, got)
 		}
-		if ok {
-			t.Errorf("TestMaxTTLForcesDeletion(%s): value still exists after maxTTL", test.name)
+		if got := calls.Load(); got != test.wantCalls {
+			t.Errorf("TestDeleterMaxTTLEviction(%s): got %d deleter call(s), want %d", test.name, got, test.wantCalls)
+		}
+		if got, _ := gotKey.Load().(string); got != "key" {
+			t.Errorf("TestDeleterMaxTTLEviction(%s): got deleter key == %q, want %q", test.name, got, "key")
 		}
 
 		runtime.KeepAlive(val)
@@ -873,6 +1120,68 @@ func TestMaxTTLWithFiller(t *testing.T) {
 	}
 }
 
+func TestMaxTTLConcurrentGetExpired(t *testing.T) {
+	tests := []struct {
+		name          string
+		numKeys       int
+		numGoroutines int
+	}{
+		{
+			name:          "Success: concurrent Gets of maxTTL-expired keys are race free",
+			numKeys:       100,
+			numGoroutines: 50,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		cache, err := New[int, testValue](ctx, "test", WithTTL(1*time.Second, 2*time.Second, 1*time.Second))
+		if err != nil {
+			t.Fatalf("TestMaxTTLConcurrentGetExpired(%s): failed to create cache: %v", test.name, err)
+		}
+
+		// Hold strong references so values are only removable via maxTTL forced eviction, keeping the per-entry
+		// maxTTL populated in the shard map so an expired Get exercises the expiry branch.
+		values := make([]*testValue, test.numKeys)
+		for i := 0; i < test.numKeys; i++ {
+			v := &testValue{data: "test", num: i}
+			values[i] = v
+			_, _, _ = cache.Set(t.Context(), i, v)
+		}
+
+		// Poll until an entry reads as expired (its per-bucket maxTTL is in the past) rather than sleeping a fixed
+		// duration. Once maxTTL has passed, Get treats the entry as a miss, which is the branch we want the
+		// concurrent readers to race on.
+		deadline := time.Now().Add(2*time.Second + 3*time.Second)
+		expired := false
+		for time.Now().Before(deadline) {
+			if _, ok, _ := cache.Get(t.Context(), 0); !ok {
+				expired = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if !expired {
+			t.Fatalf("TestMaxTTLConcurrentGetExpired(%s): never observed expired state, cannot exercise concurrent expired-Get path", test.name)
+		}
+
+		var wg sync.Group
+		for g := 0; g < test.numGoroutines; g++ {
+			wg.Go(ctx, func(ctx context.Context) error {
+				for i := 0; i < test.numKeys; i++ {
+					_, _, _ = cache.Get(t.Context(), i)
+				}
+				return nil
+			})
+		}
+		wg.Wait(ctx)
+
+		for i := range values {
+			runtime.KeepAlive(values[i])
+		}
+	}
+}
+
 func TestMaxTTLContextCancellation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -909,6 +1218,66 @@ func TestMaxTTLContextCancellation(t *testing.T) {
 		}
 		if !ok || got == nil {
 			t.Errorf("TestMaxTTLContextCancellation(%s): cache not functional after cancel", test.name)
+		}
+
+		runtime.KeepAlive(val)
+	}
+}
+
+// TestDeleterMaxTTLEvictionRetriesAfterFailure pins the stranded-eviction bug: when the deleter fails on a forced
+// maxTTL eviction, the entry must be retried on the next cleanup tick rather than being dropped from both TTL
+// structures and stranded. The deleter fails on its first call and succeeds afterward; a strong reference is held so
+// only forced eviction (not GC) can remove the entry. Pre-fix the eviction callback always removed the entry from the
+// expireAfter tree, so after the first failure it lived in neither the ttlMap nor the tree and Len() never reached 0.
+func TestDeleterMaxTTLEvictionRetriesAfterFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		ttl      time.Duration
+		maxTTL   time.Duration
+		interval time.Duration
+	}{
+		{
+			name:     "Success: a deleter that fails once then succeeds retries on a later tick",
+			ttl:      1 * time.Second,
+			maxTTL:   1 * time.Second,
+			interval: 1 * time.Second,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		var calls atomic.Int64
+		deleter := func(ctx context.Context, k string) error {
+			if calls.Add(1) == 1 {
+				return fmt.Errorf("transient deleter failure")
+			}
+			return nil
+		}
+
+		cache, err := New[string, testValue](ctx, "test", WithTTL(test.ttl, test.maxTTL, test.interval), WithDeleter(deleter))
+		if err != nil {
+			t.Fatalf("TestDeleterMaxTTLEvictionRetriesAfterFailure(%s): failed to create cache: %v", test.name, err)
+		}
+
+		// Hold a strong reference so only forced maxTTL eviction (not GC reclamation) can remove the entry.
+		val := &testValue{data: "test", num: 42}
+		if _, _, err := cache.Set(ctx, "key", val); err != nil {
+			t.Fatalf("TestDeleterMaxTTLEvictionRetriesAfterFailure(%s): failed to set value: %v", test.name, err)
+		}
+
+		// Poll until the retry succeeds and empties the cache, or the deadline passes. The deadline allows for the
+		// first (failing) tick plus later retry ticks.
+		deadline := time.Now().Add(test.maxTTL + 6*test.interval + 2*time.Second)
+		for time.Now().Before(deadline) && cache.Len() != 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if got := cache.Len(); got != 0 {
+			t.Errorf("TestDeleterMaxTTLEvictionRetriesAfterFailure(%s): got Len()=%d, want 0 after retry eviction", test.name, got)
+		}
+		// At least two calls proves the eviction was retried after the first failure rather than stranded.
+		if got := calls.Load(); got < 2 {
+			t.Errorf("TestDeleterMaxTTLEvictionRetriesAfterFailure(%s): got %d deleter call(s), want >= 2 (retry)", test.name, got)
 		}
 
 		runtime.KeepAlive(val)
