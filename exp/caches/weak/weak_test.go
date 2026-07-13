@@ -4,16 +4,52 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/gostdlib/base/concurrency/sync"
+	internalctx "github.com/gostdlib/base/internal/context"
 	"github.com/kylelemons/godebug/pretty"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type testValue struct {
 	data string
 	num  int
+}
+
+// metricReader wires a context to a fresh ManualReader-backed MeterProvider so a test can read the cache's emitted
+// metrics. It returns the context to pass to the cache and the reader to collect from.
+func metricReader(t *testing.T) (context.Context, *sdkmetric.ManualReader) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	return context.WithValue(t.Context(), internalctx.MetricsKey{}, mp), reader
+}
+
+// gcUntilFor forces a GC and polls cond 5ms apart until cond returns true or d elapses, returning whether cond became
+// true. It is the deadline-bounded variant of gcUntil for collections that can take longer than gcUntil's fixed budget.
+func gcUntilFor(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for {
+		runtime.GC()
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// gcUntil forces a GC and polls cond, 5ms apart for up to one second, returning whether cond became true. Callers issue
+// their own t.Fatalf so the failure message follows each test's convention.
+func gcUntil(cond func() bool) bool {
+	return gcUntilFor(1*time.Second, cond)
 }
 
 func TestNew(t *testing.T) {
@@ -909,6 +945,300 @@ func TestFiller(t *testing.T) {
 	}
 }
 
+// TestFillerNilValueNoPanic pins fix 2: a filler that reports a hit with a nil value must not panic the process.
+// Pre-fix getOrFill stored the nil-valued pointer and recordStore's runtime.AddCleanup(nil,...) panicked (and under
+// WithSingleFlight the leader's panic took down every follower). Post-fix getOrFill skips the store and returns the
+// pre-refactor result (nil, true, nil). Both the default path and the singleflight path are exercised.
+func TestFillerNilValueNoPanic(t *testing.T) {
+	nilFiller := func(ctx context.Context, k string) (*testValue, bool, error) { return nil, true, nil }
+	tests := []struct {
+		name    string
+		options []Option
+	}{
+		{
+			name:    "Success: nil-value fill returns without panic on the default path",
+			options: []Option{WithFiller(nilFiller)},
+		},
+		{
+			name:    "Success: nil-value fill returns without panic on the singleflight path",
+			options: []Option{WithFiller(nilFiller), WithSingleFlight()},
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		cache, err := New[string, testValue](ctx, "test", test.options...)
+		if err != nil {
+			t.Fatalf("TestFillerNilValueNoPanic(%s): failed to create cache: %v", test.name, err)
+		}
+
+		got, ok, err := cache.Get(ctx, "key")
+		if err != nil {
+			t.Errorf("TestFillerNilValueNoPanic(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		}
+		if got != nil {
+			t.Errorf("TestFillerNilValueNoPanic(%s): got value == %v, want nil", test.name, got)
+		}
+		if !ok {
+			t.Errorf("TestFillerNilValueNoPanic(%s): got ok == false, want true (pre-refactor returned (nil, true, nil))", test.name)
+		}
+		if got := cache.Len(); got != 0 {
+			t.Errorf("TestFillerNilValueNoPanic(%s): got Len() == %d, want 0 (nil fill must not be stored)", test.name, got)
+		}
+	}
+}
+
+// TestFillerCacheItemsMetric verifies that a value loaded through the filler increments the cache_items metric,
+// so the up/down counter stays symmetric with the decrement paths (Del and maxTTL forced eviction).
+func TestFillerCacheItemsMetric(t *testing.T) {
+	tests := []struct {
+		name           string
+		wantCacheItems int64
+	}{
+		{
+			name:           "Success: filler-loaded entry increments cache_items",
+			wantCacheItems: 1,
+		},
+	}
+
+	for _, test := range tests {
+		ctx, reader := metricReader(t)
+
+		filler := func(ctx context.Context, k string) (*testValue, bool, error) {
+			return &testValue{data: "filled", num: 1}, true, nil
+		}
+		cache, err := New[string, testValue](ctx, "test", WithFiller(filler))
+		if err != nil {
+			t.Fatalf("TestFillerCacheItemsMetric(%s): failed to create cache: %v", test.name, err)
+		}
+
+		got, ok, err := cache.Get(ctx, "key")
+		if err != nil {
+			t.Fatalf("TestFillerCacheItemsMetric(%s): Get failed: %v", test.name, err)
+		}
+		if !ok {
+			t.Fatalf("TestFillerCacheItemsMetric(%s): filler did not load value", test.name)
+		}
+
+		gotItems := cacheItemsValue(t, ctx, reader, "TestFillerCacheItemsMetric", test.name)
+		if gotItems != test.wantCacheItems {
+			t.Errorf("TestFillerCacheItemsMetric(%s): got cache_items == %d, want cache_items == %d", test.name, gotItems, test.wantCacheItems)
+		}
+
+		runtime.KeepAlive(got)
+	}
+}
+
+// TestFillerRefillCacheItemsMetric verifies that a filler refill over a bucket whose weak pointer was collected but
+// whose GC cleanup has not yet removed it does not increment cache_items again: the bucket is one logical entry and
+// refilling it must not double-count. The bucket is seeded through the shard map directly (not Cache.Set) so no
+// runtime.AddCleanup is registered and the collected-but-not-cleaned bucket is stable, making the test deterministic.
+// The seed path never touches cache_items, so after the refill the counter must still read 0.
+func TestFillerRefillCacheItemsMetric(t *testing.T) {
+	tests := []struct {
+		name           string
+		wantCacheItems int64
+	}{
+		{
+			name:           "Success: refill of a collected-but-not-cleaned bucket does not increment cache_items",
+			wantCacheItems: 0,
+		},
+	}
+
+	for _, test := range tests {
+		ctx, reader := metricReader(t)
+
+		filler := func(ctx context.Context, k string) (*testValue, bool, error) {
+			return &testValue{data: "refilled", num: 2}, true, nil
+		}
+		cache, err := New[string, testValue](ctx, "test", WithFiller(filler))
+		if err != nil {
+			t.Fatalf("TestFillerRefillCacheItemsMetric(%s): failed to create cache: %v", test.name, err)
+		}
+
+		// Seed the bucket through the shard map so the weak layer registers no cleanup for it: once the value is
+		// collected the bucket stays in place with a nil weak pointer, the collected-but-not-yet-cleaned state.
+		func() {
+			v := &testValue{data: "seed", num: 1}
+			if _, err := cache.m.Set(ctx, "key", v, nil, time.Time{}); err != nil {
+				t.Fatalf("TestFillerRefillCacheItemsMetric(%s): failed to seed shard map: %v", test.name, err)
+			}
+		}()
+
+		// Poll until the GC collects the seeded value; the bucket itself remains because nothing deletes it.
+		collected := gcUntil(func() bool { _, ok := cache.m.Get("key"); return !ok })
+		if !collected {
+			t.Fatalf("TestFillerRefillCacheItemsMetric(%s): seeded value never collected, cannot exercise refill path", test.name)
+		}
+		if got := cache.m.Len(); got != 1 {
+			t.Fatalf("TestFillerRefillCacheItemsMetric(%s): got shard map Len() == %d, want 1 (nil bucket must persist)", test.name, got)
+		}
+
+		// The Get misses on the nil weak pointer and refills the existing bucket through the filler.
+		got, ok, err := cache.Get(ctx, "key")
+		if err != nil {
+			t.Fatalf("TestFillerRefillCacheItemsMetric(%s): Get failed: %v", test.name, err)
+		}
+		if !ok {
+			t.Fatalf("TestFillerRefillCacheItemsMetric(%s): filler did not load value", test.name)
+		}
+
+		gotItems := cacheItemsValue(t, ctx, reader, "TestFillerRefillCacheItemsMetric", test.name)
+		if gotItems != test.wantCacheItems {
+			t.Errorf("TestFillerRefillCacheItemsMetric(%s): got cache_items == %d, want cache_items == %d", test.name, gotItems, test.wantCacheItems)
+		}
+
+		runtime.KeepAlive(got)
+	}
+}
+
+// cacheItemsValue collects the current cumulative value of the cache_items up/down counter from reader.
+func cacheItemsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, testFunc, name string) int64 {
+	t.Helper()
+	return sumValue(t, ctx, reader, testFunc, name, "cache_items")
+}
+
+// sumValue collects the current cumulative value of the named int64 sum metric (counter or up/down counter)
+// from reader.
+func sumValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, testFunc, name, metricName string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("%s(%s): failed to collect metrics: %v", testFunc, name, err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, metricItem := range sm.Metrics {
+			if metricItem.Name != metricName {
+				continue
+			}
+			sum, ok := metricItem.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			var total int64
+			for _, dp := range sum.DataPoints {
+				total += dp.Value
+			}
+			return total
+		}
+	}
+	return 0
+}
+
+// TestDeDupeDedupsMetric verifies that when the dedup btree already holds an equal value, storing a second key with
+// that value increments the dedups counter exactly once.
+func TestDeDupeDedupsMetric(t *testing.T) {
+	tests := []struct {
+		name       string
+		wantDedups int64
+	}{
+		{
+			name:       "Success: second key with an equal value increments dedups once",
+			wantDedups: 1,
+		},
+	}
+
+	for _, test := range tests {
+		ctx, reader := metricReader(t)
+
+		// The less function must tolerate weak pointers whose Value() is nil, per the WithDeDupe contract.
+		less := func(a, b weak.Pointer[testValue]) bool {
+			av, bv := a.Value(), b.Value()
+			switch {
+			case av == nil && bv == nil:
+				return false
+			case av == nil:
+				return true
+			case bv == nil:
+				return false
+			case av.data != bv.data:
+				return av.data < bv.data
+			default:
+				return av.num < bv.num
+			}
+		}
+
+		cache, err := New[string, testValue](ctx, "test", WithDeDupe(less))
+		if err != nil {
+			t.Fatalf("TestDeDupeDedupsMetric(%s): failed to create cache: %v", test.name, err)
+		}
+
+		// Two distinct pointers with equal contents: the second Set must find the first in the dedup btree.
+		v1 := &testValue{data: "same", num: 42}
+		v2 := &testValue{data: "same", num: 42}
+		if _, _, err := cache.Set(ctx, "key1", v1); err != nil {
+			t.Fatalf("TestDeDupeDedupsMetric(%s): failed to set key1: %v", test.name, err)
+		}
+		if _, _, err := cache.Set(ctx, "key2", v2); err != nil {
+			t.Fatalf("TestDeDupeDedupsMetric(%s): failed to set key2: %v", test.name, err)
+		}
+
+		gotDedups := sumValue(t, ctx, reader, "TestDeDupeDedupsMetric", test.name, "dedups")
+		if gotDedups != test.wantDedups {
+			t.Errorf("TestDeDupeDedupsMetric(%s): got dedups == %d, want dedups == %d", test.name, gotDedups, test.wantDedups)
+		}
+
+		runtime.KeepAlive(v1)
+		runtime.KeepAlive(v2)
+	}
+}
+
+// TestGCReclamationCacheItemsMetric verifies that when the GC reclaims values and the AddCleanup path removes their
+// buckets (DeleteIfNil), the cache_items up/down counter is decremented back to zero. Without the decrement the
+// dominant eviction path of a weak cache would leave the gauge drifting upward forever.
+func TestGCReclamationCacheItemsMetric(t *testing.T) {
+	tests := []struct {
+		name           string
+		numEntries     int
+		wantCacheItems int64
+	}{
+		{
+			name:           "Success: GC reclamation of all entries returns cache_items to zero",
+			numEntries:     5,
+			wantCacheItems: 0,
+		},
+	}
+
+	for _, test := range tests {
+		ctx, reader := metricReader(t)
+
+		cache, err := New[int, testValue](ctx, "test")
+		if err != nil {
+			t.Fatalf("TestGCReclamationCacheItemsMetric(%s): failed to create cache: %v", test.name, err)
+		}
+
+		// Set entries inside a closure so no strong references survive it; only the GC cleanup path can remove them.
+		func() {
+			for i := 0; i < test.numEntries; i++ {
+				v := &testValue{data: "reclaim", num: i}
+				if _, _, err := cache.Set(ctx, i, v); err != nil {
+					t.Fatalf("TestGCReclamationCacheItemsMetric(%s): failed to set value %d: %v", test.name, i, err)
+				}
+			}
+		}()
+
+		// Poll until the GC has collected the values and the AddCleanup closures have removed every bucket.
+		reclaimed := false
+		for i := 0; i < 400; i++ {
+			runtime.GC()
+			if cache.Len() == 0 {
+				reclaimed = true
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !reclaimed {
+			t.Fatalf("TestGCReclamationCacheItemsMetric(%s): entries never reclaimed by GC, cannot exercise cleanup path", test.name)
+		}
+
+		gotItems := cacheItemsValue(t, ctx, reader, "TestGCReclamationCacheItemsMetric", test.name)
+		if gotItems != test.wantCacheItems {
+			t.Errorf("TestGCReclamationCacheItemsMetric(%s): got cache_items == %d, want == %d", test.name, gotItems, test.wantCacheItems)
+		}
+	}
+}
+
 func TestSetter(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1012,6 +1342,151 @@ func TestSetter(t *testing.T) {
 	}
 }
 
+func TestDeleter(t *testing.T) {
+	tests := []struct {
+		name         string
+		seed         bool // Set the key before Del so a live entry exists.
+		deleterFails bool
+		wantErr      bool
+		wantDeleted  bool
+		wantCalls    int64
+	}{
+		{
+			name:        "Success: deleter called exactly once on Del and the entry is removed",
+			seed:        true,
+			wantDeleted: true,
+			wantCalls:   1,
+		},
+		{
+			name:      "Success: deleter called on Del of a key with no live entry",
+			seed:      false,
+			wantCalls: 1,
+		},
+		{
+			name:         "Error: deleter error aborts Del and the entry remains",
+			seed:         true,
+			deleterFails: true,
+			wantErr:      true,
+			wantCalls:    1,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		var calls atomic.Int64
+		var gotKey atomic.Value
+		deleter := func(ctx context.Context, k string) error {
+			calls.Add(1)
+			gotKey.Store(k)
+			if test.deleterFails {
+				return fmt.Errorf("deleter error")
+			}
+			return nil
+		}
+
+		cache, err := New[string, testValue](ctx, "test", WithDeleter(deleter))
+		if err != nil {
+			t.Fatalf("TestDeleter(%s): failed to create cache: %v", test.name, err)
+		}
+
+		val := &testValue{data: "test", num: 42}
+		if test.seed {
+			if _, _, err := cache.Set(ctx, "key", val); err != nil {
+				t.Fatalf("TestDeleter(%s): failed to set value: %v", test.name, err)
+			}
+		}
+
+		_, deleted, err := cache.Del(ctx, "key")
+
+		if got := calls.Load(); got != test.wantCalls {
+			t.Errorf("TestDeleter(%s): got %d deleter call(s), want %d", test.name, got, test.wantCalls)
+		}
+		if got, _ := gotKey.Load().(string); got != "key" {
+			t.Errorf("TestDeleter(%s): got deleter key == %q, want %q", test.name, got, "key")
+		}
+
+		switch {
+		case err == nil && test.wantErr:
+			t.Errorf("TestDeleter(%s): got err == nil, want err != nil", test.name)
+			continue
+		case err != nil && !test.wantErr:
+			t.Errorf("TestDeleter(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case err != nil:
+			// The delete was aborted, so the entry must remain readable. KeepAlive here because continue skips the
+			// one at the bottom of the loop, and val must stay live through the Get.
+			if _, ok, _ := cache.Get(ctx, "key"); !ok {
+				t.Errorf("TestDeleter(%s): entry removed despite deleter error, want entry retained", test.name)
+			}
+			runtime.KeepAlive(val)
+			continue
+		}
+
+		if deleted != test.wantDeleted {
+			t.Errorf("TestDeleter(%s): got deleted == %v, want deleted == %v", test.name, deleted, test.wantDeleted)
+		}
+		if _, ok, _ := cache.Get(ctx, "key"); ok {
+			t.Errorf("TestDeleter(%s): entry still readable after successful Del, want it removed", test.name)
+		}
+
+		runtime.KeepAlive(val)
+	}
+}
+
+// TestDeleterNotCalledOnGCReclamation verifies that the deleter does not run when the GC reclaims a value and the
+// AddCleanup path removes its bucket: the value is already gone from memory and the durable copy must stay untouched.
+// The assertion only fires after Len()==0 has been observed, so the DeleteIfNil path has definitely run.
+func TestDeleterNotCalledOnGCReclamation(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantCalls int64
+	}{
+		{
+			name:      "Success: GC reclamation removes the entry without calling the deleter",
+			wantCalls: 0,
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		var calls atomic.Int64
+		deleter := func(ctx context.Context, k string) error {
+			calls.Add(1)
+			return nil
+		}
+
+		cache, err := New[string, testValue](ctx, "test", WithDeleter(deleter))
+		if err != nil {
+			t.Fatalf("TestDeleterNotCalledOnGCReclamation(%s): failed to create cache: %v", test.name, err)
+		}
+
+		// Set inside a closure so no strong reference survives; only the GC cleanup path can remove the entry.
+		func() {
+			v := &testValue{data: "reclaim", num: 1}
+			if _, _, err := cache.Set(ctx, "key", v); err != nil {
+				t.Fatalf("TestDeleterNotCalledOnGCReclamation(%s): failed to set value: %v", test.name, err)
+			}
+		}()
+
+		reclaimed := false
+		for i := 0; i < 400; i++ {
+			runtime.GC()
+			if cache.Len() == 0 {
+				reclaimed = true
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !reclaimed {
+			t.Fatalf("TestDeleterNotCalledOnGCReclamation(%s): entry never reclaimed by GC, cannot exercise cleanup path", test.name)
+		}
+
+		if got := calls.Load(); got != test.wantCalls {
+			t.Errorf("TestDeleterNotCalledOnGCReclamation(%s): got %d deleter call(s), want %d", test.name, got, test.wantCalls)
+		}
+	}
+}
+
 func TestFillerConcurrent(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1019,27 +1494,24 @@ func TestFillerConcurrent(t *testing.T) {
 		useFlight     bool
 	}{
 		{
-			name:          "Success: concurrent filler calls without singleflight",
-			numGoroutines: 10,
+			name:          "Success: concurrent filler calls without singleflight each receive the value",
+			numGoroutines: 50,
 			useFlight:     false,
 		},
 		{
-			name:          "Success: concurrent filler calls with singleflight",
-			numGoroutines: 10,
+			name:          "Success: concurrent filler calls with singleflight collapse to a single fill",
+			numGoroutines: 50,
 			useFlight:     true,
 		},
 	}
 
 	for _, test := range tests {
 		ctx := t.Context()
-		callCount := 0
-		var callCountMu sync.Mutex
+		var callCount atomic.Int64
 
 		filler := func(ctx context.Context, k string) (*testValue, bool, error) {
-			callCountMu.Lock()
-			callCount++
-			callCountMu.Unlock()
-			time.Sleep(10 * time.Millisecond) // Simulate slow load
+			callCount.Add(1)
+			time.Sleep(50 * time.Millisecond) // Hold the fill open so concurrent callers pile onto the leader.
 			return &testValue{data: "filled", num: 100}, true, nil
 		}
 
@@ -1054,38 +1526,403 @@ func TestFillerConcurrent(t *testing.T) {
 			t.Fatalf("TestFillerConcurrent(%s): failed to create cache: %v", test.name, err)
 		}
 
+		type result struct {
+			value *testValue
+			ok    bool
+			err   error
+		}
+		results := make([]result, test.numGoroutines)
+
 		var wg sync.Group
 		for i := 0; i < test.numGoroutines; i++ {
-			wg.Go(
-				ctx,
-				func(ctx context.Context) error {
-					got, ok, err := cache.Get(t.Context(), "concurrent-key")
-					if err != nil {
-						return err
-					}
-					if !ok {
-						return fmt.Errorf("Get returned ok=false")
-					}
-					if got == nil {
-						return fmt.Errorf("Get returned nil value")
-					}
-					return nil
-				},
-			)
+			wg.Go(ctx, func(ctx context.Context) error {
+				v, ok, err := cache.Get(t.Context(), "concurrent-key")
+				results[i] = result{value: v, ok: ok, err: err}
+				return nil
+			})
 		}
-
 		wg.Wait(ctx)
 
-		callCountMu.Lock()
-		finalCount := callCount
-		callCountMu.Unlock()
+		// Every caller must receive the loaded value regardless of which goroutine ran the filler.
+		for i, r := range results {
+			switch {
+			case r.err != nil:
+				t.Errorf("TestFillerConcurrent(%s): caller %d got err == %s, want err == nil", test.name, i, r.err)
+			case !r.ok:
+				t.Errorf("TestFillerConcurrent(%s): caller %d got ok == false, want ok == true", test.name, i)
+			case r.value == nil:
+				t.Errorf("TestFillerConcurrent(%s): caller %d got nil value, want non-nil", test.name, i)
+			}
+		}
 
-		// With singleflight, we expect exactly 1 call
-		// Without singleflight, we expect multiple calls
-		if test.useFlight && finalCount != 1 {
+		// With singleflight exactly one fill happens; without it at least one (usually more).
+		finalCount := callCount.Load()
+		switch {
+		case test.useFlight && finalCount != 1:
 			t.Errorf("TestFillerConcurrent(%s): with singleflight got %d filler calls, want 1", test.name, finalCount)
-		} else if !test.useFlight && finalCount < 1 {
+		case !test.useFlight && finalCount < 1:
 			t.Errorf("TestFillerConcurrent(%s): without singleflight got %d filler calls, want >= 1", test.name, finalCount)
+		}
+	}
+}
+
+// TestCollectedBucketCacheItemsMetric verifies that operations on a key whose bucket persists but whose weak pointer
+// was collected keep cache_items symmetric with the physical buckets. Each case seeds a bucket through the shard map
+// (no runtime.AddCleanup, so the collected-but-not-cleaned state is stable) and bumps cache_items by one by hand to
+// stand in for the increment the seeded entry would have received through the public Set, establishing the baseline of
+// one. The op then runs through the public API over the collected bucket and cache_items is compared to want.
+//
+//   - re-Set (was TestSetReSetCollectedBucketCacheItemsMetric): re-Setting the key must not increment cache_items a
+//     second time, since the bucket is one logical entry; post-fix the gauge stays at 1, pre-fix it drifts to 2.
+//   - Del (was TestDelCollectedBucketCacheItemsMetric): Del of the key must decrement cache_items, since the bucket is
+//     still physically present and counted; post-fix the gauge returns to 0, pre-fix Del reports deleted=false on the
+//     nil value and it strands at 1.
+func TestCollectedBucketCacheItemsMetric(t *testing.T) {
+	tests := []struct {
+		name           string
+		op             func(ctx context.Context, cache *Cache[string, testValue]) (keepAlive any, err error)
+		wantCacheItems int64
+	}{
+		{
+			name: "Success: re-Set of a collected-but-not-cleaned bucket does not increment cache_items",
+			op: func(ctx context.Context, cache *Cache[string, testValue]) (any, error) {
+				// A strong reference keeps the new value (and its cleanup) from firing during the test, so only the
+				// re-Set path affects the metric.
+				v2 := &testValue{data: "reset", num: 2}
+				_, _, err := cache.Set(ctx, "key", v2)
+				return v2, err
+			},
+			wantCacheItems: 1,
+		},
+		{
+			name: "Success: Del of a collected-but-not-cleaned bucket returns cache_items to zero",
+			op: func(ctx context.Context, cache *Cache[string, testValue]) (any, error) {
+				_, _, err := cache.Del(ctx, "key")
+				return nil, err
+			},
+			wantCacheItems: 0,
+		},
+	}
+
+	for _, test := range tests {
+		ctx, reader := metricReader(t)
+
+		cache, err := New[string, testValue](ctx, "test")
+		if err != nil {
+			t.Fatalf("TestCollectedBucketCacheItemsMetric(%s): failed to create cache: %v", test.name, err)
+		}
+
+		func() {
+			v := &testValue{data: "seed", num: 1}
+			if _, err := cache.m.Set(ctx, "key", v, nil, time.Time{}); err != nil {
+				t.Fatalf("TestCollectedBucketCacheItemsMetric(%s): failed to seed shard map: %v", test.name, err)
+			}
+		}()
+		cache.metrics.CacheItems.Add(ctx, 1)
+
+		collected := gcUntil(func() bool { _, ok := cache.m.Get("key"); return !ok })
+		if !collected {
+			t.Fatalf("TestCollectedBucketCacheItemsMetric(%s): seeded value never collected, cannot exercise op path", test.name)
+		}
+		if got := cache.m.Len(); got != 1 {
+			t.Fatalf("TestCollectedBucketCacheItemsMetric(%s): got shard map Len() == %d, want 1 (nil bucket must persist)", test.name, got)
+		}
+
+		keepAlive, err := test.op(ctx, cache)
+		if err != nil {
+			t.Fatalf("TestCollectedBucketCacheItemsMetric(%s): op failed: %v", test.name, err)
+		}
+
+		gotItems := cacheItemsValue(t, ctx, reader, "TestCollectedBucketCacheItemsMetric", test.name)
+		if gotItems != test.wantCacheItems {
+			t.Errorf("TestCollectedBucketCacheItemsMetric(%s): got cache_items == %d, want == %d", test.name, gotItems, test.wantCacheItems)
+		}
+
+		runtime.KeepAlive(keepAlive)
+	}
+}
+
+// dedupLess is a WithDeDupe comparator over testValue that tolerates weak pointers whose Value() is nil, ordering a
+// nil-valued pointer as the least element, as the WithDeDupe contract requires.
+func dedupLess(a, b weak.Pointer[testValue]) bool {
+	av, bv := a.Value(), b.Value()
+	switch {
+	case av == nil && bv == nil:
+		return false
+	case av == nil:
+		return true
+	case bv == nil:
+		return false
+	case av.data != bv.data:
+		return av.data < bv.data
+	default:
+		return av.num < bv.num
+	}
+}
+
+// TestDeDupeCleanupTargetsRepresentative pins fix 1's leak: under WithDeDupe a deduped key's bucket stores the tree
+// representative, so the GC cleanup and the min-TTL hold must be attached to that representative, not the caller's
+// discarded duplicate. Pre-fix the deduped key's cleanup is attached to the duplicate and no-ops when the duplicate is
+// collected (the bucket still references the live representative), so the bucket leaks and Len never returns to zero.
+func TestDeDupeCleanupTargetsRepresentative(t *testing.T) {
+	ctx := t.Context()
+	cache, err := New[string, testValue](ctx, "test", WithDeDupe(dedupLess))
+	if err != nil {
+		t.Fatalf("TestDeDupeCleanupTargetsRepresentative: failed to create cache: %v", err)
+	}
+
+	v1 := &testValue{data: "same", num: 7}
+	v2 := &testValue{data: "same", num: 7}
+	if _, _, err := cache.Set(ctx, "k1", v1); err != nil {
+		t.Fatalf("TestDeDupeCleanupTargetsRepresentative: set k1: %v", err)
+	}
+	if _, _, err := cache.Set(ctx, "k2", v2); err != nil {
+		t.Fatalf("TestDeDupeCleanupTargetsRepresentative: set k2: %v", err)
+	}
+
+	// Observe the duplicate's collection through our own weak pointer, then drop it. k2's bucket references the
+	// representative (v1), not v2, so collecting v2 fires k2's cleanup as a no-op pre-fix and leaks the bucket.
+	wp2 := weak.Make(v2)
+	v2 = nil
+	if !gcUntil(func() bool { return wp2.Value() == nil }) {
+		t.Fatalf("TestDeDupeCleanupTargetsRepresentative: duplicate v2 never collected")
+	}
+	// Keep the representative alive across the duplicate's collection so k2's cleanup fires while the representative is
+	// still live (the leak we are pinning). Without this the representative would be collected here too and mask it.
+	runtime.KeepAlive(v1)
+
+	// Drop the representative. Post-fix both k1's and k2's cleanups are attached to it, so collecting it removes both
+	// buckets and Len reaches zero. Pre-fix k2's bucket leaks and Len sticks at 1.
+	v1 = nil
+	if !gcUntil(func() bool { return cache.Len() == 0 }) {
+		t.Errorf("TestDeDupeCleanupTargetsRepresentative: got Len() == %d, want Len() == 0 (deduped key leaked)", cache.Len())
+	}
+}
+
+// TestDeDupeMinTTLHoldsRepresentative pins fix 1's min-TTL break: under WithDeDupe the min-TTL strong hold for a
+// deduped key must pin the stored representative, not the caller's discarded duplicate. Pre-fix the hold pins the
+// duplicate, so once the caller drops its reference the representative can be collected mid-hold and a Get on the
+// deduped key misses inside its own TTL window.
+func TestDeDupeMinTTLHoldsRepresentative(t *testing.T) {
+	ctx := t.Context()
+	cache, err := New[string, testValue](ctx, "test", WithDeDupe(dedupLess), WithTTL(1*time.Second, 0, 1*time.Second))
+	if err != nil {
+		t.Fatalf("TestDeDupeMinTTLHoldsRepresentative: failed to create cache: %v", err)
+	}
+
+	v1 := &testValue{data: "same", num: 7}
+	if _, _, err := cache.Set(ctx, "k1", v1); err != nil {
+		t.Fatalf("TestDeDupeMinTTLHoldsRepresentative: set k1: %v", err)
+	}
+
+	// Wait past k1's hold so its ttlMap strong reference is released; only the caller's v1 now keeps the
+	// representative alive.
+	time.Sleep(2500 * time.Millisecond)
+
+	// Store an equal duplicate at a new key: it dedups onto the representative and takes a fresh min-TTL hold.
+	v2 := &testValue{data: "same", num: 7}
+	if _, _, err := cache.Set(ctx, "k2", v2); err != nil {
+		t.Fatalf("TestDeDupeMinTTLHoldsRepresentative: set k2: %v", err)
+	}
+	// The caller kept v1 alive across the sleep and the dedup, so k2 genuinely dedups onto the live representative.
+	runtime.KeepAlive(v1)
+
+	// Drop the caller's reference, then force GC. Pre-fix nothing pins the representative (the hold pins the discarded
+	// duplicate) so it is collected; post-fix k2's hold pins the representative. The burst is bounded well inside k2's
+	// 1s hold so the following Get lands during the hold window.
+	v1 = nil
+	for i := 0; i < 50; i++ {
+		runtime.GC()
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	got, ok, err := cache.Get(ctx, "k2")
+	if err != nil {
+		t.Fatalf("TestDeDupeMinTTLHoldsRepresentative: Get(k2): %v", err)
+	}
+	if !ok {
+		t.Errorf("TestDeDupeMinTTLHoldsRepresentative: got Get(k2) miss, want hit within k2's hold (representative collected mid-hold)")
+	}
+	_ = got
+	runtime.KeepAlive(v2)
+}
+
+// TestDeleterFailureReleasesValue pins fix 2: a permanently failing deleter must not pin the value in the expireAfter
+// tree forever. The failed eviction keeps the schedule (so it keeps retrying) but drops the strong value, making the
+// WithDeleter doc's "or the GC reclaims the value" exit reachable. Pre-fix the tree retains the strong value, so the
+// value is never collected.
+func TestDeleterFailureReleasesValue(t *testing.T) {
+	ctx := t.Context()
+	var calls atomic.Int64
+	deleter := func(ctx context.Context, k string) error {
+		calls.Add(1)
+		return fmt.Errorf("permanent deleter failure")
+	}
+	cache, err := New[string, testValue](ctx, "test", WithTTL(1*time.Second, 2*time.Second, 1*time.Second), WithDeleter(deleter))
+	if err != nil {
+		t.Fatalf("TestDeleterFailureReleasesValue: failed to create cache: %v", err)
+	}
+
+	v := &testValue{data: "poison", num: 1}
+	wp := weak.Make(v)
+	if _, _, err := cache.Set(ctx, "key", v); err != nil {
+		t.Fatalf("TestDeleterFailureReleasesValue: set: %v", err)
+	}
+
+	// Hold v strong so only forced maxTTL eviction can act on it. The deleter fails every tick; the schedule must
+	// survive each failure and keep retrying, so the call counter climbs past one.
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) && calls.Load() < 2 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("TestDeleterFailureReleasesValue: got %d deleter calls, want >= 2 (eviction not retried after failure)", got)
+	}
+	// The caller kept v strong across the retry window, so only the forced eviction (not the GC) could have acted.
+	runtime.KeepAlive(v)
+
+	// Drop the caller's reference and force GC. Post-fix the failed eviction already dropped the tree's strong value,
+	// so the GC reclaims v; pre-fix the tree pins v and this never observes collection.
+	v = nil
+	if !gcUntilFor(15*time.Second, func() bool { return wp.Value() == nil }) {
+		t.Errorf("TestDeleterFailureReleasesValue: value never collected; the failing deleter pinned it in the expireAfter tree")
+	}
+}
+
+// TestPoisonBucketReclaimedStopsDeleter pins fix 1: once a permanently-failing deleter's value is GC-reclaimed, the
+// GC-cleanup path (DeleteIfNil) must remove the now-nil, past-maxTTL bucket so the forced-eviction schedule stops
+// re-running the failing deleter. Pre-fix DeleteIfNil routed its liveness lookup through hashmap.Get, which hides a
+// past-maxTTL bucket, so the bucket was never removed: Len() stuck at 1 and the deadline-only GetIfMaxTTL kept calling
+// the failing deleter every tick forever. Post-fix DeleteIfNil peeks the raw bucket (GetAny), removes it, and the next
+// tick's GetIfMaxTTL misses so the deleter is no longer called.
+func TestPoisonBucketReclaimedStopsDeleter(t *testing.T) {
+	ctx := t.Context()
+	var calls atomic.Int64
+	deleter := func(ctx context.Context, k string) error {
+		calls.Add(1)
+		return fmt.Errorf("permanent deleter failure")
+	}
+	cache, err := New[string, testValue](ctx, "test", WithTTL(1*time.Second, 2*time.Second, 1*time.Second), WithDeleter(deleter))
+	if err != nil {
+		t.Fatalf("TestPoisonBucketReclaimedStopsDeleter: failed to create cache: %v", err)
+	}
+
+	v := &testValue{data: "poison", num: 1}
+	wp := weak.Make(v)
+	if _, _, err := cache.Set(ctx, "key", v); err != nil {
+		t.Fatalf("TestPoisonBucketReclaimedStopsDeleter: set: %v", err)
+	}
+
+	// The deleter fails every tick. The entry migrates into the expireAfter tree after its hold, its forced eviction
+	// fails and drops the strong value, so once the caller's reference is gone the GC can reclaim it. Wait for the
+	// first failed eviction (calls climbing) before dropping the reference.
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) && calls.Load() < 1 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	runtime.KeepAlive(v)
+	v = nil
+
+	// The failed eviction dropped the tree's strong value, so the GC reclaims it. Its cleanup fires DeleteIfNil, which
+	// must remove the now-nil, past-maxTTL bucket.
+	if !gcUntil(func() bool { return wp.Value() == nil }) {
+		t.Fatalf("TestPoisonBucketReclaimedStopsDeleter: value never collected; the failing deleter pinned it")
+	}
+	if !gcUntilFor(8*time.Second, func() bool { return cache.Len() == 0 }) {
+		t.Fatalf("TestPoisonBucketReclaimedStopsDeleter: got Len()=%d, want 0; DeleteIfNil never removed the poison bucket", cache.Len())
+	}
+
+	// With the bucket gone, the next tick's GetIfMaxTTL misses, so the deleter must stop being called. Record the count
+	// and confirm it does not climb across several intervals.
+	before := calls.Load()
+	time.Sleep(4 * time.Second)
+	if after := calls.Load(); after != before {
+		t.Errorf("TestPoisonBucketReclaimedStopsDeleter: deleter still called after bucket removed: before=%d after=%d", before, after)
+	}
+}
+
+// TestPrunesMigratedExpireNode pins the expireAfter-tree pruning regressions: once an entry's hold expires and it
+// migrates from the ttlMap into the expireAfter tree, the tree node holds the value strong until the far-off maxTTL
+// tick, so an operation that removes or overwrites the key must prune that node or the value is pinned until the tick.
+// Each case sets v1, waits for it to migrate, runs the operation under test, then requires v1 to be GC-collected within
+// a bounded window. Consolidates three former standalone regressions (Del, re-Set, double-migration) that shared this
+// setup and assertion and differed only in the post-migration action.
+func TestPrunesMigratedExpireNode(t *testing.T) {
+	tests := []struct {
+		name string
+		// action runs after v1 has migrated into the expireAfter tree. It performs the operation under test on "key"
+		// and returns a value that must be kept alive across the collection window (nil when none), so only v1 is
+		// eligible for collection.
+		action func(ctx context.Context, cache *Cache[string, testValue]) (*testValue, error)
+	}{
+		{
+			// was TestDelPrunesMigratedExpireNode: Del must prune the migrated tree node so its strong value stops
+			// pinning memory; pre-fix Del only deletes the ttlMap hold and the tree pins the value until the maxTTL tick.
+			name: "Success: Del prunes the migrated expire node",
+			action: func(ctx context.Context, cache *Cache[string, testValue]) (*testValue, error) {
+				_, _, err := cache.Del(ctx, "key")
+				return nil, err
+			},
+		},
+		{
+			// was TestReSetPrunesMigratedExpireNode: overwriting the migrated key with a new Set must prune the old
+			// node so the old value stops pinning memory. A public Set is the only path that can overwrite a still-
+			// migrated key (the tree pins the value strong, so the shard's weak pointer never goes nil and the filler
+			// never runs), so this single Set case covers the pruning set() and getOrFill() share through recordStore.
+			name: "Success: re-Set prunes the old migrated expire node",
+			action: func(ctx context.Context, cache *Cache[string, testValue]) (*testValue, error) {
+				v2 := &testValue{data: "new", num: 2}
+				_, _, err := cache.Set(ctx, "key", v2)
+				return v2, err
+			},
+		},
+		{
+			// was TestDoubleMigrationDoesNotOrphanExpireNode: re-Set the migrated key and let the new hold migrate too.
+			// The second migration overwrites expireIndex[key]; the first node must already be gone (recordStore prunes
+			// on the re-Set, backed by the migration-site guard) or the orphaned first node keeps v1 pinned until its
+			// own maxTTL tick with Del unable to find it.
+			name: "Success: a second migration does not orphan the first expire node",
+			action: func(ctx context.Context, cache *Cache[string, testValue]) (*testValue, error) {
+				v2 := &testValue{data: "new", num: 2}
+				if _, _, err := cache.Set(ctx, "key", v2); err != nil {
+					return nil, err
+				}
+				// Let v2's hold expire and migrate too; the first node must already be gone or v1 stays pinned.
+				time.Sleep(2500 * time.Millisecond)
+				return v2, nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		ctx := t.Context()
+		cache, err := New[string, testValue](ctx, "test", WithTTL(1*time.Second, 60*time.Second, 1*time.Second))
+		if err != nil {
+			t.Fatalf("TestPrunesMigratedExpireNode(%s): failed to create cache: %v", test.name, err)
+		}
+
+		v1 := &testValue{data: "old", num: 1}
+		wp1 := weak.Make(v1)
+		if _, _, err := cache.Set(ctx, "key", v1); err != nil {
+			t.Fatalf("TestPrunesMigratedExpireNode(%s): set v1: %v", test.name, err)
+		}
+		// Wait past the hold so the entry migrates from the ttlMap into the expireAfter tree, which then holds v1 strong
+		// until the far-off 60s maxTTL tick.
+		time.Sleep(2500 * time.Millisecond)
+
+		keepAlive, err := test.action(ctx, cache)
+		if err != nil {
+			t.Fatalf("TestPrunesMigratedExpireNode(%s): action: %v", test.name, err)
+		}
+
+		// Drop the caller's reference to v1, keeping any action-produced value alive so only v1 can be collected. Post-fix
+		// the migrated node pinning v1 is pruned, so the GC reclaims v1; pre-fix the node pins v1 until the 60s maxTTL
+		// tick and this times out.
+		v1 = nil
+		collected := gcUntilFor(8*time.Second, func() bool { return wp1.Value() == nil })
+		runtime.KeepAlive(keepAlive)
+		if !collected {
+			t.Errorf("TestPrunesMigratedExpireNode(%s): v1 never collected; the migrated node still pins it in the expireAfter tree", test.name)
 		}
 	}
 }

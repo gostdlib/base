@@ -24,7 +24,7 @@ func TestTTLExpiration(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "Success: expired entry should be deleted on Get",
+			name:    "Success: expired entry is treated as a miss without deletion on Get",
 			wantErr: false,
 		},
 	}
@@ -56,8 +56,9 @@ func TestTTLExpiration(t *testing.T) {
 					if ok {
 						return fmt.Errorf("TestTTLExpiration(%s): expected expired entry to not be retrievable, got value %d", test.name, val)
 					}
-					if m.Len() != 0 {
-						return fmt.Errorf("TestTTLExpiration(%s): expected expired entry to be removed from map, length is %d", test.name, m.Len())
+					// Get treats an expired entry as a plain miss without mutating; the entry remains until eviction.
+					if m.Len() != 1 {
+						return fmt.Errorf("TestTTLExpiration(%s): expected expired entry to remain in map after Get, length is %d", test.name, m.Len())
 					}
 					return nil
 
@@ -75,7 +76,7 @@ func TestTTLExpiration(t *testing.T) {
 					}
 					return nil
 
-				case "Success: expired entry should be deleted on Get":
+				case "Success: expired entry is treated as a miss without deletion on Get":
 					m := New[string, int](10)
 					past := time.Now().Add(-1 * time.Second)
 					m.Set("key1", 100, past)
@@ -84,10 +85,13 @@ func TestTTLExpiration(t *testing.T) {
 						return fmt.Errorf("TestTTLExpiration(%s): expected map to have 1 entry before Get, got %d", test.name, m.Len())
 					}
 
-					m.Get("key1")
+					if _, ok := m.Get("key1"); ok {
+						return fmt.Errorf("TestTTLExpiration(%s): expected expired entry to be a miss on Get", test.name)
+					}
 
-					if m.Len() != 0 {
-						return fmt.Errorf("TestTTLExpiration(%s): expected expired entry to be deleted after Get, length is %d", test.name, m.Len())
+					// Get must not mutate under the caller's read lock, so the entry remains until eviction.
+					if m.Len() != 1 {
+						return fmt.Errorf("TestTTLExpiration(%s): expected expired entry to remain after Get, length is %d", test.name, m.Len())
 					}
 					return nil
 				}
@@ -178,7 +182,7 @@ func TestDeleteIfMaxTTL(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "Success: do not delete entry when maxTTL does not match",
+			name:    "Success: do not delete entry when stored deadline is after the requested deadline",
 			wantErr: false,
 		},
 		{
@@ -186,7 +190,7 @@ func TestDeleteIfMaxTTL(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "Success: delete entry with zero maxTTL when both are zero",
+			name:    "Success: do not delete entry when stored maxTTL is zero",
 			wantErr: false,
 		},
 	}
@@ -212,15 +216,17 @@ func TestDeleteIfMaxTTL(t *testing.T) {
 					}
 					return nil
 
-				case "Success: do not delete entry when maxTTL does not match":
+				case "Success: do not delete entry when stored deadline is after the requested deadline":
 					m := New[string, int](10)
 					ttl1 := time.Now().Add(1 * time.Hour)
 					ttl2 := time.Now().Add(2 * time.Hour)
-					m.Set("key1", 100, ttl1)
+					// The stored deadline (ttl2) is later than the eviction request (ttl1), so the entry was
+					// effectively re-Set with a later deadline and must be skipped.
+					m.Set("key1", 100, ttl2)
 
-					_, deleted := m.DeleteIfMaxTTL("key1", ttl2)
+					_, deleted := m.DeleteIfMaxTTL("key1", ttl1)
 					if deleted {
-						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected entry to not be deleted when maxTTL does not match", test.name)
+						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected entry to not be deleted when stored deadline is later", test.name)
 					}
 					if m.Len() != 1 {
 						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected map to still have 1 entry", test.name)
@@ -242,16 +248,17 @@ func TestDeleteIfMaxTTL(t *testing.T) {
 					}
 					return nil
 
-				case "Success: delete entry with zero maxTTL when both are zero":
+				case "Success: do not delete entry when stored maxTTL is zero":
 					m := New[string, int](10)
+					// A zero stored deadline means the entry has no maxTTL and must never be force-evicted.
 					m.Set("key1", 100, time.Time{})
 
-					val, deleted := m.DeleteIfMaxTTL("key1", time.Time{})
-					if !deleted {
-						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected entry to be deleted when both maxTTL are zero", test.name)
+					_, deleted := m.DeleteIfMaxTTL("key1", time.Now())
+					if deleted {
+						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected entry with zero stored maxTTL to not be deleted", test.name)
 					}
-					if val != 100 {
-						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected value 100, got %d", test.name, val)
+					if m.Len() != 1 {
+						return fmt.Errorf("TestDeleteIfMaxTTL(%s): expected map to still have 1 entry", test.name)
 					}
 					return nil
 				}
@@ -391,16 +398,21 @@ func TestTTLWithCopy(t *testing.T) {
 
 					m2 := m1.Copy()
 
-					_, ok := m2.Get("key1")
-					if ok {
+					// Get treats the expired entry as a miss in both maps without mutating either.
+					if _, ok := m2.Get("key1"); ok {
 						return fmt.Errorf("TestTTLWithCopy(%s): expected expired entry in copied map to not be retrievable", test.name)
 					}
+					if m1.Len() != 1 || m2.Len() != 1 {
+						return fmt.Errorf("TestTTLWithCopy(%s): expected Get to not mutate either map, got m1=%d m2=%d", test.name, m1.Len(), m2.Len())
+					}
 
+					// Deleting from the copy must not affect the original, proving the copy is independent.
+					m2.Delete("key1")
 					if m1.Len() != 1 {
-						return fmt.Errorf("TestTTLWithCopy(%s): expected original map to still have expired entry until accessed", test.name)
+						return fmt.Errorf("TestTTLWithCopy(%s): expected delete on copy to not affect original", test.name)
 					}
 					if m2.Len() != 0 {
-						return fmt.Errorf("TestTTLWithCopy(%s): expected copied map to have removed expired entry", test.name)
+						return fmt.Errorf("TestTTLWithCopy(%s): expected delete to remove entry from copy", test.name)
 					}
 					return nil
 				}

@@ -133,10 +133,35 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 			return value, false
 		}
 		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
+			// An entry past its maxTTL is treated as a plain miss without mutating the map. Get is called under a
+			// read lock, so it must not delete. The bucket is reclaimed later by DeleteIfMaxTTL (the forced maxTTL
+			// eviction) or by Delete/DeleteIfNil once the value is GC'd. The weak.Cache registers every entry it
+			// stores, whether written through Set or loaded through a filler, so both removal paths reach them.
 			if !m.buckets[i].maxTTL.IsZero() && time.Now().After(m.buckets[i].maxTTL) {
-				m.Delete(key)
 				return value, false
 			}
+			return m.buckets[i].value, true
+		}
+		i = (i + 1) & m.mask
+	}
+}
+
+// GetAny returns a value for a key without applying the maxTTL expiry filter that Get uses. Get treats a bucket past
+// its maxTTL deadline as a miss so read paths do not observe an entry due for forced eviction; GetAny instead reports
+// the bucket whenever it physically exists. A liveness-only caller (such as the GC-reclaim DeleteIfNil path) needs this
+// raw view: hiding a past-maxTTL bucket the way Get does would make that caller believe the key is absent and leave the
+// bucket (and everything scheduled against it) stranded rather than removing it once its weak value has been collected.
+func (m *Map[K, V]) GetAny(key K) (value V, ok bool) {
+	if len(m.buckets) == 0 {
+		return value, false
+	}
+	hash := m.hash(key)
+	i := hash & m.mask
+	for {
+		if m.buckets[i].dib() == 0 {
+			return value, false
+		}
+		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
 			return m.buckets[i].value, true
 		}
 		i = (i + 1) & m.mask
@@ -169,8 +194,10 @@ func (m *Map[K, V]) Delete(key K) (prev V, deleted bool) {
 	}
 }
 
-// DeleteIfMaxTTL deletes a value for a key only if its maxTTL matches the provided maxTTL.
-// Returns the deleted value, or false when no value was assigned or maxTTL did not match.
+// DeleteIfMaxTTL deletes a value for a key only if the stored maxTTL deadline is set (non-zero) and is not after
+// the passed maxTTL (i.e. storedDeadline <= maxTTL). An entry that was re-Set with a later deadline than the one
+// requested for eviction is therefore skipped, so a refreshed entry is not incorrectly deleted.
+// Returns the deleted value, or false when no value was assigned or the stored deadline should be kept.
 func (m *Map[K, V]) DeleteIfMaxTTL(key K, maxTTL time.Time) (prev V, deleted bool) {
 	if len(m.buckets) == 0 {
 		return prev, false
@@ -182,12 +209,42 @@ func (m *Map[K, V]) DeleteIfMaxTTL(key K, maxTTL time.Time) (prev V, deleted boo
 			return prev, false
 		}
 		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
-			if m.buckets[i].maxTTL != maxTTL {
+			stored := m.buckets[i].maxTTL
+			if stored.IsZero() || stored.After(maxTTL) {
 				return prev, false
 			}
+			// We delete when stored <= maxTTL. In production per-key deadlines only ever increase (each re-Set
+			// pushes the deadline later), so the stored deadline equal to the requested one is the expected case;
+			// a stored deadline strictly before the requested one cannot arise there and this branch just handles
+			// it defensively rather than leaving a stale entry.
 			prev = m.buckets[i].value
 			m.remove(i)
 			return prev, true
+		}
+		i = (i + 1) & m.mask
+	}
+}
+
+// GetIfMaxTTL returns the value for key only if the stored maxTTL deadline is set (non-zero) and is not after the
+// passed maxTTL (storedDeadline <= maxTTL), without removing the entry. It mirrors DeleteIfMaxTTL's selection
+// condition so a caller can peek before running side effects and then delete. Returns false when the key is absent or
+// the stored deadline should be kept.
+func (m *Map[K, V]) GetIfMaxTTL(key K, maxTTL time.Time) (value V, ok bool) {
+	if len(m.buckets) == 0 {
+		return value, false
+	}
+	hash := m.hash(key)
+	i := hash & m.mask
+	for {
+		if m.buckets[i].dib() == 0 {
+			return value, false
+		}
+		if m.buckets[i].hash() == hash && m.buckets[i].key == key {
+			stored := m.buckets[i].maxTTL
+			if stored.IsZero() || stored.After(maxTTL) {
+				return value, false
+			}
+			return m.buckets[i].value, true
 		}
 		i = (i + 1) & m.mask
 	}

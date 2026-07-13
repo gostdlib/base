@@ -39,8 +39,9 @@ func TestMemoryReclamationAfterTTL(t *testing.T) {
 		runtime.ReadMemStats(&initialMem)
 		initialAlloc := initialMem.Alloc
 
-		// Create cache with 1 minute TTL
-		cache, err := New[int, largeValue](ctx, "memory-test", WithTTL(30*time.Second, 10*time.Second))
+		// Create cache with a 30s TTL and a 10s cleanup interval (no maxTTL); the 1 minute sleep below covers
+		// ttl + several cleanup intervals so the holds are released well before the GC assertions run.
+		cache, err := New[int, largeValue](ctx, "memory-test", WithTTL(30*time.Second, 0, 10*time.Second))
 		if err != nil {
 			t.Fatalf("TestMemoryReclamationAfterTTL(%s): failed to create cache: %v", test.name, err)
 		}
