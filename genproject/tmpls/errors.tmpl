@@ -99,28 +99,49 @@ func WithStackTrace() EOption {
 // WithAttrs adds the given attributes to the error. These attributes will be included
 // in logging output. This is in addition to any attributes that are in the Context.
 func WithAttrs(attrs ...slog.Attr) EOption {
-    return errors.WithAttrs(attrs...)
+	return errors.WithAttrs(attrs...)
 }
 
 // WithLogLevel sets the log level that should be used when logging this error. By default this is slog.LevelError,
 // but in some cases you may want to log at a different level, such as slog.LevelWarn for a retryable error.
 // Note that this does not affect the trace status, which will still be recorded as an error unless
 // WithSuppressTraceErr() is used.
-func WithLogLevel(level slog.Level) EOption {
-    return errors.WithLogLevel(level)
+func WithLogLevel(level Level) EOption {
+	return errors.WithLogLevel(level)
 }
+
+// Level is the importance or severity of a log event. The higher the level, the more important
+// or severe the event.
+type Level = errors.Level
+
+// Names for common levels.
+const (
+	LevelDebug = errors.LevelDebug
+	LevelInfo  = errors.LevelInfo
+	LevelWarn  = errors.LevelWarn
+	LevelError = errors.LevelError
+)
+
+// LevelVar is a [Level] variable, to allow a log handler's level to change dynamically.
+// It implements [Leveler] as well as a Set method, and it is safe for use by multiple goroutines.
+// The zero LevelVar corresponds to [LevelInfo].
+type LevelVar = errors.LevelVar
+
+// Leveler provides a [Level] value. As Level itself implements Leveler, clients typically supply
+// a Level value wherever a Leveler is needed.
+type Leveler = errors.Leveler
 
 // E creates a new Error with the given parameters.
 /* YOU CAN REPLACE this with your own base error constructor. See github.com/gostdlib/base/errors for more info. */
 func E(ctx context.Context, c errors.Category, t errors.Type, msg error, options ...errors.EOption) Error {
-    // Because we are wrapping errors.E(), we need to change which stack frame we get our line number from.
-    // However, we still want to honor the user's request for a different call number. This will set the call number
-    // unless the user has already set it.
-    opts := make([]errors.EOption, 0, len(options)+1)
+	// Because we are wrapping errors.E(), we need to change which stack frame we get our line number from.
+	// However, we still want to honor the user's request for a different call number. This will set the call number
+	// unless the user has already set it.
+	opts := make([]errors.EOption, 0, len(options)+1)
 	opts = append(opts, WithCallNum(2))
 	opts = append(opts, options...)
 
-    return errors.E(ctx, c, t, msg, opts...)
+	return errors.E(ctx, c, t, msg, opts...)
 }
 
 // Everything below here is a wrapper around the stdlib errors package.
