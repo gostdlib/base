@@ -29,7 +29,7 @@ Using a promise is simple:
 
 	maker := Maker[int, string]{PoolOptions: []sync.Option{sync.WithBuffer(10)}
 
-	promises := make([]Promise[int, string], 10) // Track our promises
+	promises := make([]Value[int, string], 10) // Track our promises
 
 	// Create a promise and sent it to some channel to get processed.
 	for i := 0; i < 10; i++ {
@@ -93,11 +93,11 @@ type Response[T any] struct {
 	Err error
 }
 
-// Promise is a promise that can be used to return a value from a goroutine. It is a simple wrapper around a channel
+// Value is a promise that can be used to return a value from a goroutine. It is a simple wrapper around a channel
 // that can be used to return a value from a goroutine. This is designed to be used with the
 // base/concurrency/sync.Pool type. It will automatically call Reset() when put back in the pool and should save
-// memory by not allocation a new Promise or channel.
-type Promise[I, O any] struct {
+// memory by not allocation a new Value or channel.
+type Value[I, O any] struct {
 	// In is the value being sent.
 	In I
 
@@ -123,7 +123,7 @@ type opts struct{}
 type Option func(o opts) opts
 
 // New creates a new Promise.
-func (m *Maker[I, O]) New(ctx context.Context, in I, options ...Option) Promise[I, O] {
+func (m *Maker[I, O]) New(ctx context.Context, in I, options ...Option) Value[I, O] {
 	m.once.Do(
 		func() {
 			m.pool = sync.NewPool(ctx, "", func() chan Response[O] { return make(chan Response[O], 1) }, m.PoolOptions...)
@@ -133,25 +133,25 @@ func (m *Maker[I, O]) New(ctx context.Context, in I, options ...Option) Promise[
 }
 
 // New creates a new Promise.
-func New[I, O any](ctx context.Context, in I, options ...Option) Promise[I, O] {
+func New[I, O any](ctx context.Context, in I, options ...Option) Value[I, O] {
 	resp := make(chan Response[O], 1)
 	return newPromise[I, O](in, resp, options...)
 }
 
-func newPromise[I, O any](in I, resp chan Response[O], options ...Option) Promise[I, O] {
+func newPromise[I, O any](in I, resp chan Response[O], options ...Option) Value[I, O] {
 	opts := opts{}
 
 	for _, o := range options {
 		opts = o(opts)
 	}
 
-	return Promise[I, O]{In: in, v: resp}
+	return Value[I, O]{In: in, v: resp}
 }
 
 // Get returns the value from the promise. If the promise has not been resolved, it will block until it is or
 // the context is done. Get should only be called once per promise. It will only error if the context is
 // cancelled or timed out. In that case only can Get() be called again.
-func (p *Promise[I, O]) Get(ctx context.Context) (Response[O], error) {
+func (p *Value[I, O]) Get(ctx context.Context) (Response[O], error) {
 	if p.v == nil {
 		panic("promise was not created with NewPromise or Maker.New()")
 	}
@@ -168,7 +168,7 @@ func (p *Promise[I, O]) Get(ctx context.Context) (Response[O], error) {
 
 // Set sets the value of the promise. If the promise has already had Set() called and the value is not read,
 // this will panic. You should never call Set() more than once on a promise.
-func (p *Promise[I, O]) Set(ctx context.Context, v O, err error) {
+func (p *Value[I, O]) Set(ctx context.Context, v O, err error) {
 	if p.v == nil {
 		panic("promise was not created with New() or Maker{}.New()")
 	}
