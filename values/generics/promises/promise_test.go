@@ -16,7 +16,7 @@ import (
 func TestNewPromise(t *testing.T) {
 	t.Parallel()
 
-	input := make(chan Promise[int, string], 1)
+	input := make(chan Value[int, string], 1)
 
 	ctx := context.Background()
 	wg := syncLib.WaitGroup{}
@@ -62,7 +62,7 @@ func TestNewPromise(t *testing.T) {
 func TestMaker(t *testing.T) {
 	t.Parallel()
 
-	input := make(chan Promise[int, string], 1)
+	input := make(chan Value[int, string], 1)
 
 	ctx := context.Background()
 	wg := syncLib.WaitGroup{}
@@ -109,7 +109,7 @@ func TestMaker(t *testing.T) {
 func BenchmarkNew(b *testing.B) {
 	b.ReportAllocs()
 
-	input := make(chan Promise[int, string], 1)
+	input := make(chan Value[int, string], 1)
 
 	ctx := context.Background()
 	wg := syncLib.WaitGroup{}
@@ -154,7 +154,7 @@ func BenchmarkNew(b *testing.B) {
 func BenchmarkMaker(b *testing.B) {
 	b.ReportAllocs()
 
-	input := make(chan Promise[int, string], 1)
+	input := make(chan Value[int, string], 1)
 	ctx := context.Background()
 	wg := syncLib.WaitGroup{}
 	maker := Maker[int, string]{PoolOptions: []sync.Option{sync.WithBuffer(10)}}
