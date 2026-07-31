@@ -250,6 +250,17 @@ func MeterProvider(ctx Context) metric.MeterProvider {
 	return internalCtx.MeterProvider(ctx)
 }
 
+// SetMeterProvider sets a custom meter provider on the returned Context. MeterProvider(), Meter() and
+// MeterWithStackFrame() calls using this Context use that provider instead of metrics.Default(). This is
+// mostly useful in tests that want to capture metrics with a reader-backed provider without mutating the
+// process-global default that every other goroutine reads.
+func SetMeterProvider(ctx Context, p metric.MeterProvider) Context {
+	if p == nil {
+		panic("cannot call SetMeterProvider() with nil MeterProvider")
+	}
+	return WithValue(ctx, metricsKey{}, p)
+}
+
 // NewSpan creates a new child span object from the span stored in Context. If that Span is
 // a noOp, the child span will be a noop too. If you pass a nil Context, this will return
 // the background Context with a noop span. If an option is passed that is not valid,

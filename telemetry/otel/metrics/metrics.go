@@ -28,24 +28,41 @@ import (
 
 const defaultPort uint16 = 2223
 
-var defaultProvider metric.MeterProvider
+// defaultProvider is atomic because Set() can run (from tests or before init.Service()) while other
+// goroutines read Default().
+var defaultProvider atomic.Pointer[provider]
+
+// provider boxes a metric.MeterProvider so providers with differing concrete types can be stored in the
+// same atomic.Pointer.
+type provider struct {
+	p metric.MeterProvider
+}
 
 // Default returns the default meter provider. If the default provider is currently nil,
 // this will return a noop provider. That should only happen if you call Default() before
 // calling init.Service(). If you want to disable metrics, you can use SetDefault()
 // with a noop.NewMeterProvider().
 func Default() metric.MeterProvider {
-	if defaultProvider == nil {
-		return noop.NewMeterProvider()
+	if p := loadDefault(); p != nil {
+		return p
 	}
-	return defaultProvider
+	return noop.NewMeterProvider()
+}
+
+// loadDefault returns the stored provider without the noop fallback, which is nil until Set() first runs.
+func loadDefault() metric.MeterProvider {
+	b := defaultProvider.Load()
+	if b == nil {
+		return nil
+	}
+	return b.p
 }
 
 // Set sets the default meter provider. This is only used if trying to use a custom meter provider
 // before calling init.Service(). You can use noop.NewMeterProvider() to disable metrics.
 // "go.opentelemetry.io/otel/metric/noop".
 func Set(p metric.MeterProvider) {
-	defaultProvider = p
+	defaultProvider.Store(&provider{p: p})
 	otel.SetMeterProvider(p)
 }
 

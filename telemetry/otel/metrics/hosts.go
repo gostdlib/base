@@ -18,8 +18,9 @@ import (
 )
 
 func initer(meta *resource.Resource, port uint16) error {
-	if fmt.Sprintf("%T", defaultProvider) == fmt.Sprintf("%T", noop.NewMeterProvider()) {
-		otel.SetMeterProvider(defaultProvider)
+	dp := loadDefault()
+	if fmt.Sprintf("%T", dp) == fmt.Sprintf("%T", noop.NewMeterProvider()) {
+		otel.SetMeterProvider(dp)
 		return nil
 	}
 
@@ -49,7 +50,7 @@ func initer(meta *resource.Resource, port uint16) error {
 
 	var meterProvider metric.MeterProvider
 
-	if defaultProvider == nil {
+	if dp == nil {
 		metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(prometheus.DefaultRegisterer))
 		if err != nil {
 			return fmt.Errorf("failed to create metrics exporter: %w", err)
@@ -59,12 +60,11 @@ func initer(meta *resource.Resource, port uint16) error {
 			sdkmetric.WithResource(meta),
 		)
 	} else {
-		meterProvider = defaultProvider
+		meterProvider = dp
 	}
 
 	// use global meter provider
-	otel.SetMeterProvider(meterProvider)
-	defaultProvider = meterProvider
+	Set(meterProvider)
 
 	// Setup runtime metrics.
 	if err := otelruntime.Start(otelruntime.WithMinimumReadMemStatsInterval(10 * time.Second)); err != nil {
