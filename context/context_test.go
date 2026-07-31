@@ -12,6 +12,7 @@ import (
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 func TestBackground(t *testing.T) {
@@ -103,6 +104,22 @@ func TestMetrics(t *testing.T) {
 			t.Errorf("TestMetrics(%s): MeterProvider() = %v, want %v", test.name, got, test.want)
 		}
 	}
+}
+
+func TestSetMeterProvider(t *testing.T) {
+	mp := sdkmetric.NewMeterProvider()
+
+	ctx := SetMeterProvider(context.Background(), mp)
+	if got := MeterProvider(ctx); got != metric.MeterProvider(mp) {
+		t.Errorf("TestSetMeterProvider: MeterProvider() = %v, want the provider that was set", got)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Errorf("TestSetMeterProvider: SetMeterProvider(nil) did not panic")
+		}
+	}()
+	SetMeterProvider(context.Background(), nil)
 }
 
 func TestTasks(t *testing.T) {

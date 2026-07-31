@@ -28,7 +28,7 @@ import (
 func TestIniterServe(t *testing.T) {
 	const targetInfo = "testing"
 
-	origDefault := defaultProvider
+	origDefault := loadDefault()
 	t.Cleanup(func() { Set(origDefault) })
 	origOtel := otel.GetMeterProvider()
 	t.Cleanup(func() { otel.SetMeterProvider(origOtel) })
@@ -117,7 +117,7 @@ func TestIniterServe(t *testing.T) {
 func TestIniterServeWithOtherProvider(t *testing.T) {
 	const targetInfo = "testing"
 
-	origDefault := defaultProvider
+	origDefault := loadDefault()
 	t.Cleanup(func() { Set(origDefault) })
 	origOtel := otel.GetMeterProvider()
 	t.Cleanup(func() { otel.SetMeterProvider(origOtel) })
@@ -193,9 +193,9 @@ func TestIniter(t *testing.T) {
 	t.Cleanup(
 		func() { otel.SetMeterProvider(orig) },
 	)
-	dpOrig := defaultProvider
+	dpOrig := loadDefault()
 	t.Cleanup(
-		func() { defaultProvider = dpOrig },
+		func() { defaultProvider.Store(&provider{p: dpOrig}) },
 	)
 
 	promExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(prometheus.DefaultRegisterer))
@@ -289,7 +289,7 @@ func TestIniter(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		defaultProvider = test.defaultProvider
+		defaultProvider.Store(&provider{p: test.defaultProvider})
 
 		err := initer(test.meta, 0)
 		switch {
