@@ -363,9 +363,13 @@ func WithMetricsPort(p uint16) Option {
 // WithPool sets the worker pool to use for the service. If not provided, then this defaults to
 // a worker.Pool with runtime.NumCPUs() workers (this number is based on the Uber gomaxprocs package).
 // The pool grows and shrinks with use. See package worker documentation for more.  If you provide a pool,
-// this will set the default pool to this pool unless you set noDefault to true.
+// this will set the default pool to this pool unless you set noDefault to true. The pool cannot be a
+// Limited pool; passing one is an error.
 func WithPool(p *worker.Pool, noDefault bool) Option {
 	return func(opts *initOpts) error {
+		if p != nil && p.Limit() != 0 {
+			return fmt.Errorf("WithPool cannot be passed a Limited pool as the default pool")
+		}
 		opts.pool = p
 		opts.noDefault = noDefault
 		return nil
