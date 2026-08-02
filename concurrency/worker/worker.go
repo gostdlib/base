@@ -578,6 +578,12 @@ func (p *Pool) Limited(ctx context.Context, name string, size int) *Pool {
 	return s
 }
 
+// Default returns the package-level default pool. This is useful when you hold a Limited pool from a Context but
+// need a feeder goroutine that runs outside that limit, without coming directly to the worker package to access it.
+func (p *Pool) Default() *Pool {
+	return Default()
+}
+
 // Group returns a sync.Group that can be used to spin off goroutines and then wait for them to finish.
 // This will use the Pool. Safer than a sync.Group.
 func (p *Pool) Group() bSync.Group {

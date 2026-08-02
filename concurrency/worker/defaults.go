@@ -24,7 +24,13 @@ func Default() *Pool {
 
 // Set sets the default pool to the given pool. This can be used to override the default pool.
 // However, this is usually used only internally. If using init.Service(), use the appropriate call option
-// to set the default pool.
+// to set the default pool. Call this in main before you use the pool. Panics if p is nil or a Limited pool.
 func Set(p *Pool) {
+	if p == nil {
+		panic("Set cannot be called with a nil Pool")
+	}
+	if p.Limit() != 0 {
+		panic("Set cannot be called on a Limited pool")
+	}
 	defaultPool.Store(p)
 }
