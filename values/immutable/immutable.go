@@ -138,6 +138,14 @@ func NewSlice[T any](s []T) Slice[T] {
 	return immutable.NewSlice(s)
 }
 
+// Set provides a read-only set as long as the values are not pointers or references.
+type Set[T comparable] = immutable.Set[T]
+
+// NewSet returns a new immutable set built from the values in s. Duplicate values are collapsed.
+func NewSet[T comparable](s []T) Set[T] {
+	return immutable.NewSet(s)
+}
+
 // Copier is an interface that allows a type to be copied. This is useful when the value stored
 // in the immutable type is a pointer or reference. This allows a deep copy to be made if the
 // type implements this interface.

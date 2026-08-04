@@ -124,6 +124,7 @@ require (
 tool (
 	github.com/element-of-surprise/bufme
 	github.com/gostdlib/base/values/generators/immutable
+	github.com/gostdlib/base/values/generators/sets
 	github.com/gostdlib/base/values/generators/stringer
 	github.com/gostdlib/base/values/generators/tuple
 	github.com/gostdlib/base/values/generators/union
