@@ -1,6 +1,7 @@
 package immutable
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/kylelemons/godebug/pretty"
@@ -363,5 +364,296 @@ func TestCopyMapCopier(t *testing.T) {
 	want := map[string]copierInt{"a": 1, "b": 2}
 	if diff := pretty.Compare(want, got); diff != "" {
 		t.Errorf("TestCopyMapCopier: -want/+got:\n%s", diff)
+	}
+}
+
+func TestNewSet(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "Success: nil slice",
+			in:   nil,
+			want: nil,
+		},
+		{
+			name: "Success: populated slice",
+			in:   []string{"a", "b", "c"},
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "Success: duplicate values are collapsed",
+			in:   []string{"a", "b", "a", "b"},
+			want: []string{"a", "b"},
+		},
+	}
+
+	for _, test := range tests {
+		s := NewSet(test.in)
+		got := s.Members()
+		slices.Sort(got)
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestNewSet(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
+func TestSetLen(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want int
+	}{
+		{
+			name: "Success: empty set",
+			in:   nil,
+			want: 0,
+		},
+		{
+			name: "Success: duplicates only count once",
+			in:   []string{"a", "b", "a"},
+			want: 2,
+		},
+	}
+
+	for _, test := range tests {
+		s := NewSet(test.in)
+		if got := s.Len(); got != test.want {
+			t.Errorf("TestSetLen(%s): got %d, want %d", test.name, got, test.want)
+		}
+	}
+}
+
+func TestSetContains(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		v    string
+		want bool
+	}{
+		{
+			name: "Success: present value",
+			in:   []string{"a", "b"},
+			v:    "a",
+			want: true,
+		},
+		{
+			name: "Success: absent value",
+			in:   []string{"a", "b"},
+			v:    "c",
+			want: false,
+		},
+		{
+			name: "Success: empty set contains nothing",
+			in:   nil,
+			v:    "a",
+			want: false,
+		},
+	}
+
+	for _, test := range tests {
+		s := NewSet(test.in)
+		if got := s.Contains(test.v); got != test.want {
+			t.Errorf("TestSetContains(%s): got %t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
+func TestSetAll(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "Success: empty set yields nothing",
+			in:   nil,
+			want: []string{},
+		},
+		{
+			name: "Success: yields every member",
+			in:   []string{"a", "b", "c"},
+			want: []string{"a", "b", "c"},
+		},
+	}
+
+	for _, test := range tests {
+		s := NewSet(test.in)
+		got := []string{}
+		for v := range s.All() {
+			got = append(got, v)
+		}
+		slices.Sort(got)
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestSetAll(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
+func TestSetMembers(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "Success: empty set returns nil",
+			in:   nil,
+			want: nil,
+		},
+		{
+			name: "Success: all members returned",
+			in:   []string{"a", "b", "c"},
+			want: []string{"a", "b", "c"},
+		},
+	}
+
+	for _, test := range tests {
+		s := NewSet(test.in)
+		got := s.Members()
+		slices.Sort(got)
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestSetMembers(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+
+	// Members returns a copy, so mutating it must not affect the Set.
+	s := NewSet([]string{"a"})
+	members := s.Members()
+	members[0] = "z"
+	if !s.Contains("a") || s.Contains("z") {
+		t.Errorf("TestSetMembers: mutating the returned slice affected the Set")
+	}
+}
+
+func TestSetString(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{
+			name: "Success: empty set",
+			in:   nil,
+			want: "[]",
+		},
+		{
+			name: "Success: single member",
+			in:   []string{"a"},
+			want: "[a]",
+		},
+	}
+
+	for _, test := range tests {
+		s := NewSet(test.in)
+		if got := s.String(); got != test.want {
+			t.Errorf("TestSetString(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestSetUnion(t *testing.T) {
+	tests := []struct {
+		name string
+		a    []string
+		b    []string
+		want []string
+	}{
+		{
+			name: "Success: disjoint sets",
+			a:    []string{"a", "b"},
+			b:    []string{"c", "d"},
+			want: []string{"a", "b", "c", "d"},
+		},
+		{
+			name: "Success: overlapping sets",
+			a:    []string{"a", "b"},
+			b:    []string{"b", "c"},
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "Success: union with empty set",
+			a:    []string{"a"},
+			b:    nil,
+			want: []string{"a"},
+		},
+	}
+
+	for _, test := range tests {
+		a := NewSet(test.a)
+		b := NewSet(test.b)
+		got := a.Union(b).Members()
+		slices.Sort(got)
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestSetUnion(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+
+	// Union must not modify its operands.
+	a := NewSet([]string{"a"})
+	b := NewSet([]string{"b"})
+	a.Union(b)
+	switch {
+	case a.Len() != 1 || a.Contains("b"):
+		t.Errorf("TestSetUnion: Union modified the receiver")
+	case b.Len() != 1 || b.Contains("a"):
+		t.Errorf("TestSetUnion: Union modified the argument")
+	}
+}
+
+func TestSetIntersection(t *testing.T) {
+	tests := []struct {
+		name string
+		a    []string
+		b    []string
+		want []string
+	}{
+		{
+			name: "Success: overlapping sets",
+			a:    []string{"a", "b", "c"},
+			b:    []string{"b", "c", "d"},
+			want: []string{"b", "c"},
+		},
+		{
+			name: "Success: disjoint sets yield empty set",
+			a:    []string{"a"},
+			b:    []string{"b"},
+			want: nil,
+		},
+		{
+			name: "Success: intersection with empty set",
+			a:    []string{"a"},
+			b:    nil,
+			want: nil,
+		},
+		{
+			name: "Success: larger set as receiver",
+			a:    []string{"a", "b", "c", "d"},
+			b:    []string{"b"},
+			want: []string{"b"},
+		},
+	}
+
+	for _, test := range tests {
+		a := NewSet(test.a)
+		b := NewSet(test.b)
+		got := a.Intersection(b).Members()
+		slices.Sort(got)
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestSetIntersection(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+
+	// Intersection must not modify its operands.
+	a := NewSet([]string{"a", "b"})
+	b := NewSet([]string{"b"})
+	a.Intersection(b)
+	switch {
+	case a.Len() != 2:
+		t.Errorf("TestSetIntersection: Intersection modified the receiver")
+	case b.Len() != 1 || b.Contains("a"):
+		t.Errorf("TestSetIntersection: Intersection modified the argument")
 	}
 }

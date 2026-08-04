@@ -1,6 +1,7 @@
 package immutable
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/gostdlib/base/values/immutable/unsafe"
@@ -99,5 +100,37 @@ func TestCopyMap(t *testing.T) {
 	m["key1"] = "modified"
 	if diff := pretty.Compare(m, copied); diff == "" {
 		t.Errorf("TestCopyMap: both maps should not be equal after modification")
+	}
+}
+
+func TestSetLen(t *testing.T) {
+	s := NewSet([]string{"a", "b", "a"})
+	if s.Len() != 2 {
+		t.Errorf("TestSetLen: got %v, want 2", s.Len())
+	}
+}
+
+func TestSetContains(t *testing.T) {
+	s := NewSet([]string{"a", "b"})
+	if !s.Contains("a") {
+		t.Errorf("TestSetContains: got Contains(a) == false, want true")
+	}
+	if s.Contains("c") {
+		t.Errorf("TestSetContains: got Contains(c) == true, want false")
+	}
+}
+
+func TestSetUnion(t *testing.T) {
+	got := NewSet([]string{"a"}).Union(NewSet([]string{"b"})).Members()
+	slices.Sort(got)
+	if diff := pretty.Compare([]string{"a", "b"}, got); diff != "" {
+		t.Errorf("TestSetUnion: -want/+got:\n%s", diff)
+	}
+}
+
+func TestSetIntersection(t *testing.T) {
+	got := NewSet([]string{"a", "b"}).Intersection(NewSet([]string{"b", "c"})).Members()
+	if diff := pretty.Compare([]string{"b"}, got); diff != "" {
+		t.Errorf("TestSetIntersection: -want/+got:\n%s", diff)
 	}
 }

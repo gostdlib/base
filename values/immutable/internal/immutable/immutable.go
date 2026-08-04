@@ -4,6 +4,7 @@
 package immutable
 
 import (
+	"fmt"
 	"iter"
 	"maps"
 	"slices"
@@ -78,6 +79,78 @@ func (s Slice[T]) All() iter.Seq2[int, T] {
 // unsafeSlice returns the underlying slice. This is unsafe because it allows the caller to modify the slice.
 func UnsafeSlice[T any](s Slice[T]) []T {
 	return s.s
+}
+
+// Set provides a read-only set as long as the values are not pointers or references.
+type Set[T comparable] struct {
+	m map[T]struct{}
+}
+
+// NewSet returns a new immutable set built from the values in s. Duplicate values are collapsed.
+func NewSet[T comparable](s []T) Set[T] {
+	m := make(map[T]struct{}, len(s))
+	for _, v := range s {
+		m[v] = struct{}{}
+	}
+	return Set[T]{m: m}
+}
+
+// Len returns the number of elements in the Set.
+func (s Set[T]) Len() int {
+	return len(s.m)
+}
+
+// Contains returns true if the Set contains the given value.
+func (s Set[T]) Contains(v T) bool {
+	_, ok := s.m[v]
+	return ok
+}
+
+// All returns an iterator over the members of the Set. Order is random.
+func (s Set[T]) All() iter.Seq[T] {
+	return maps.Keys(s.m)
+}
+
+// Members returns all the members of the Set in random order. This is a new slice and can be modified
+// without affecting the Set, but modifying the elements themselves will affect the Set if they are
+// reference types.
+func (s Set[T]) Members() []T {
+	if len(s.m) == 0 {
+		return nil
+	}
+	return slices.Collect(maps.Keys(s.m))
+}
+
+// String returns a string representation of the Set. This implements the fmt.Stringer interface.
+func (s Set[T]) String() string {
+	return fmt.Sprintf("%v", s.Members())
+}
+
+// Union returns a new Set that is the union of the two Sets.
+func (s Set[T]) Union(s2 Set[T]) Set[T] {
+	m := make(map[T]struct{}, len(s.m)+len(s2.m))
+	for k := range s.m {
+		m[k] = struct{}{}
+	}
+	for k := range s2.m {
+		m[k] = struct{}{}
+	}
+	return Set[T]{m: m}
+}
+
+// Intersection returns a new Set that is the intersection of the two Sets.
+func (s Set[T]) Intersection(s2 Set[T]) Set[T] {
+	small, large := s.m, s2.m
+	if len(large) < len(small) {
+		small, large = large, small
+	}
+	m := make(map[T]struct{}, len(small))
+	for k := range small {
+		if _, ok := large[k]; ok {
+			m[k] = struct{}{}
+		}
+	}
+	return Set[T]{m: m}
 }
 
 // Copier is an interface that allows a type to be copied. This is useful when the value stored
