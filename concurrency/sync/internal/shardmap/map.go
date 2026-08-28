@@ -67,9 +67,15 @@ func (m *Map[K, V]) CompareAndSwap(k K, old, new V) (swapped bool) {
 	m.mus[shard].Lock()
 	defer m.mus[shard].Unlock()
 
-	prev, _ := m.maps[shard].Set(k, new)
+	prev, replaced := m.maps[shard].Set(k, new)
 	if m.IsEqual(prev, old) {
 		return true
+	}
+	// Undo the speculative Set. When the key was absent, prev is the zero value and writing it back would
+	// invent an entry that was never there and inflate Len(), so the undo has to be a Delete.
+	if !replaced {
+		m.maps[shard].Delete(k)
+		return false
 	}
 	m.maps[shard].Set(k, prev)
 	return false
@@ -97,29 +103,32 @@ func (m *Map[K, V]) Delete(key K) (prev V, deleted bool) {
 	return prev, deleted
 }
 
-// CompareAndDelete deletes a key/value if the value is equal to
-// old. If the key doesn't exist this will return true. Must have set Map.IsEqual
-// or this will panic.
+// CompareAndDelete deletes a key/value if the value is equal to old, reporting whether it deleted.
+// A missing key reports false: the caller did not remove anything, so a caller using this to claim
+// ownership of an entry does not get told it won. A value that exists but is not equal is left in
+// place and also reports false. Must have set Map.IsEqual or this will panic.
 func (m *Map[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 	m.initDo()
 	if m.IsEqual == nil {
-		panic("shardmap.Map.IsEqual must be set to use CompareAndSwap")
+		panic("shardmap.Map.IsEqual must be set to use CompareAndDelete")
 	}
 
 	shard := m.choose(k)
 	m.mus[shard].Lock()
 	defer m.mus[shard].Unlock()
 
-	prev, deleted := m.maps[shard].Delete(k)
-	if !deleted { // This means it didn't exist.
-		return true
+	// Look before deleting rather than deleting and putting back. The restore version can trigger a shrink
+	// resize on the Delete and a grow resize on the Set, so a mismatch costs two full rehashes under the shard
+	// write lock, which is the wrong price to pay on the failure path of an ownership claim.
+	prev, ok := m.maps[shard].Get(k)
+	if !ok { // This means it didn't exist.
+		return false
 	}
-	if m.IsEqual(prev, old) {
-		return true
+	if !m.IsEqual(prev, old) {
+		return false
 	}
-	// It wasn't equal, so we need to put it back.
-	m.maps[shard].Set(k, prev)
-	return false
+	m.maps[shard].Delete(k)
+	return true
 }
 
 // SetAccept assigns a value to a key. The "accept" function can be used to

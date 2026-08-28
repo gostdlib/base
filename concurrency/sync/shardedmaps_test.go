@@ -3,12 +3,16 @@ package sync
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestShardedMap(t *testing.T) {
 	m := ShardedMap[string, int]{}
+
+	// Writers assert what they wrote. A concurrent reader wave runs against them so the race detector sees
+	// readers and writers overlapping; the readers cannot assert, because their key may not be written yet.
 	var wg sync.WaitGroup
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
@@ -17,8 +21,15 @@ func TestShardedMap(t *testing.T) {
 			key := fmt.Sprintf("key%d", i)
 			m.Set(key, i)
 			if val, ok := m.Get(key); !ok || val != i {
-				t.Errorf("expected %d, got %d", i, val)
+				t.Errorf("TestShardedMap: got %d, want %d", val, i)
 			}
+		}(i)
+	}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			m.Get(fmt.Sprintf("key%d", i))
 		}(i)
 	}
 	wg.Wait()
@@ -28,33 +39,8 @@ func TestShardedMap(t *testing.T) {
 		n++
 	}
 	if n != 1000 {
-		t.Errorf("expected map size 1000, got %d", n)
+		t.Errorf("TestShardedMap: got map size %d, want 1000", n)
 	}
-}
-
-func TestShardedMapConcurrentAccess(t *testing.T) {
-	m := ShardedMap[string, int]{}
-
-	var wg sync.WaitGroup
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			key := fmt.Sprintf("key%d", i)
-			m.Set(key, i)
-		}(i)
-	}
-
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			key := fmt.Sprintf("key%d", i)
-			m.Get(key)
-		}(i)
-	}
-
-	wg.Wait()
 }
 
 func TestShardedMapSetAccept(t *testing.T) {
@@ -276,6 +262,100 @@ func TestShardedMapDeleteAccept(t *testing.T) {
 	}
 }
 
+// TestShardedMapCompareAndDelete pins the contract callers rely on to claim ownership of a key:
+// exactly one caller may win a delete, and losing must be reported as losing. The missing-key case
+// is a regression guard — it used to report success, which inverts the primitive for precisely the
+// situation it exists for. A caller doing "delete my entry, and only act if I removed it" would be
+// told it won every time the entry was already gone, so every late caller would act too. When the
+// action is not idempotent, that is a correctness bug the caller cannot defend against.
+func TestShardedMapCompareAndDelete(t *testing.T) {
+	const key = "key"
+
+	tests := []struct {
+		name string
+		// existing, when non-empty, is set on the key before the call.
+		existing string
+		old      string
+		wantDel  bool
+		// wantVal and wantExist describe the key after the call.
+		wantVal   string
+		wantExist bool
+	}{
+		{
+			name:     "Success: a matching value is deleted",
+			existing: "old",
+			old:      "old",
+			wantDel:  true,
+		},
+		{
+			name:    "Success: a missing key reports not deleted",
+			old:     "old",
+			wantDel: false,
+		},
+		{
+			name:      "Success: a mismatched value is left in place",
+			existing:  "other",
+			old:       "old",
+			wantDel:   false,
+			wantVal:   "other",
+			wantExist: true,
+		},
+	}
+
+	for _, test := range tests {
+		m := ShardedMap[string, string]{IsEqual: func(a, b string) bool { return a == b }}
+		if test.existing != "" {
+			m.Set(key, test.existing)
+		}
+
+		if got := m.CompareAndDelete(key, test.old); got != test.wantDel {
+			t.Errorf("TestShardedMapCompareAndDelete(%s): got deleted == %v, want %v", test.name, got, test.wantDel)
+		}
+
+		got, ok := m.Get(key)
+		switch {
+		case ok != test.wantExist:
+			t.Errorf("TestShardedMapCompareAndDelete(%s): after call, key exists == %v, want %v", test.name, ok, test.wantExist)
+		case got != test.wantVal:
+			t.Errorf("TestShardedMapCompareAndDelete(%s): after call, value == %q, want %q", test.name, got, test.wantVal)
+		}
+	}
+}
+
+// TestShardedMapCompareAndDeleteOnlyOneWinner is the property the missing-key case protects: with
+// many goroutines racing to delete the same entry, exactly one may be told it won.
+func TestShardedMapCompareAndDeleteOnlyOneWinner(t *testing.T) {
+	const (
+		key      = "key"
+		val      = "val"
+		builders = 50
+	)
+
+	m := ShardedMap[string, string]{IsEqual: func(a, b string) bool { return a == b }}
+	m.Set(key, val)
+
+	var wins atomic.Int64
+	start := make(chan struct{})
+	done := make(chan struct{})
+	for i := 0; i < builders; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			<-start
+			if m.CompareAndDelete(key, val) {
+				wins.Add(1)
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < builders; i++ {
+		<-done
+	}
+
+	if got := wins.Load(); got != 1 {
+		t.Errorf("TestShardedMapCompareAndDeleteOnlyOneWinner: %d goroutines were told they won the delete, want 1", got)
+	}
+}
+
 func TestShardedMapAllLocked(t *testing.T) {
 	m := ShardedMap[string, int]{}
 	const n = 1000
@@ -353,5 +433,48 @@ func TestShardedMapAllLockedReleasesLock(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Errorf("TestShardedMapAllLockedReleasesLock(%s): writes deadlocked; the iteration leaked a shard lock", test.name)
 		}
+	}
+}
+
+// TestShardedMapCompareAndDeleteLateIsEqual is the regression test for the shared sync.Once freezing IsEqual.
+// SetAccept and DeleteAccept do not need IsEqual, but they used to run the same once.Do, so calling either before
+// assigning IsEqual permanently cached nil and every later compare operation panicked even though IsEqual was set.
+func TestShardedMapCompareAndDeleteLateIsEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		burn func(m *ShardedMap[string, string])
+	}{
+		{
+			name: "Success: IsEqual assigned before any other call",
+			burn: func(m *ShardedMap[string, string]) {},
+		},
+		{
+			name: "Success: IsEqual assigned after SetAccept",
+			burn: func(m *ShardedMap[string, string]) { m.SetAccept("hello", "world", nil) },
+		},
+		{
+			name: "Success: IsEqual assigned after DeleteAccept",
+			burn: func(m *ShardedMap[string, string]) { m.DeleteAccept("nothing", nil) },
+		},
+	}
+
+	for _, test := range tests {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("TestShardedMapCompareAndDeleteLateIsEqual(%s): got panic == %v, want no panic", test.name, r)
+				}
+			}()
+
+			m := &ShardedMap[string, string]{}
+			test.burn(m)
+
+			m.IsEqual = func(a, b string) bool { return a == b }
+			m.Set("hello", "world")
+
+			if !m.CompareAndDelete("hello", "world") {
+				t.Errorf("TestShardedMapCompareAndDeleteLateIsEqual(%s): got deleted == false, want true", test.name)
+			}
+		}()
 	}
 }

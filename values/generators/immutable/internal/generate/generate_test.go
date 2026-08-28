@@ -21,6 +21,7 @@ const (
 	goodData        = "testdata/data/good"
 	unnamedReceiver = "testdata/data/unnamedReceiver"
 	valueRecvMulti  = "testdata/data/valueRecvMultiParam"
+	multiLine       = "testdata/data/multiLineComment"
 )
 
 func TestGenerate(t *testing.T) {
@@ -60,44 +61,51 @@ func TestGenerate(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:       "Good type",
+			name:       "Success: generic struct with two type params",
 			structName: "Generic",
 			pkgLoc:     goodData,
 			wantFound:  true,
 			wantErr:    false,
 		},
 		{
-			name:       "Good type",
+			name:       "Success: generic struct with one type param",
 			structName: "GenericOneType",
 			pkgLoc:     goodData,
 			wantFound:  true,
 			wantErr:    false,
 		},
 		{
-			name:       "Good type",
+			name:       "Success: non-generic struct",
 			structName: "NonGeneric",
 			pkgLoc:     goodData,
 			wantFound:  true,
 			wantErr:    false,
 		},
 		{
-			name:       "Good type, scalar-only struct must not import immutable package",
+			name:       "Success: scalar-only struct must not import immutable package",
 			structName: "ScalarOnly",
 			pkgLoc:     goodData,
 			wantFound:  true,
 			wantErr:    false,
 		},
 		{
-			name:       "Good type, method with unnamed receiver is skipped without panicking",
+			name:       "Success: method with unnamed receiver is skipped without panicking",
 			structName: "Unnamed",
 			pkgLoc:     unnamedReceiver,
 			wantFound:  true,
 			wantErr:    false,
 		},
 		{
-			name:       "Good type, value receiver with multiple type params is copied so its import is consumed",
+			name:       "Success: value receiver with multiple type params is copied so its import is consumed",
 			structName: "Pair",
 			pkgLoc:     valueRecvMulti,
+			wantFound:  true,
+			wantErr:    false,
+		},
+		{
+			name:       "Success: multi-line struct and field comments stay valid Go",
+			structName: "MultiLine",
+			pkgLoc:     multiLine,
 			wantFound:  true,
 			wantErr:    false,
 		},
@@ -113,6 +121,7 @@ func TestGenerate(t *testing.T) {
 
 		// Process each Go file until the target struct is found
 		found := false
+		var genErr error
 		for _, file := range goFiles {
 			if strings.HasSuffix(file, ImmutableSuffix) || strings.HasSuffix(file, ImmutableTestSuffix) {
 				continue
@@ -127,9 +136,7 @@ func TestGenerate(t *testing.T) {
 
 			found, err = Generate(fileAst, fs, &builder, test.structName)
 			if err != nil {
-				if !test.wantErr {
-					t.Fatalf("TestGenerate: got err == %s, want err == nil", err)
-				}
+				genErr = err
 				break
 			}
 			if found {
@@ -137,8 +144,20 @@ func TestGenerate(t *testing.T) {
 			}
 		}
 
+		switch {
+		case genErr == nil && test.wantErr:
+			t.Errorf("TestGenerate(%s): got err == nil, want err != nil", test.name)
+			continue
+		case genErr != nil && !test.wantErr:
+			t.Errorf("TestGenerate(%s): got err == %s, want err == nil", test.name, genErr)
+			continue
+		case genErr != nil:
+			continue
+		}
+
 		if found != test.wantFound {
-			t.Fatalf("TestGenerate: got found == %t, want found == %t", found, test.wantFound)
+			t.Errorf("TestGenerate(%s): got found == %t, want found == %t", test.name, found, test.wantFound)
+			continue
 		}
 
 		if !found {
@@ -174,7 +193,7 @@ func TestGenerate(t *testing.T) {
 
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("TestGenerate(go build): got err == %s, want err == nil, output from command:\n%s", err, string(out))
+			t.Errorf("TestGenerate(%s): go build: got err == %s, want err == nil, output:\n%s", test.name, err, string(out))
 		}
 	}
 }
