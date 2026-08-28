@@ -16,7 +16,7 @@ var methodTemplate = template.Must(template.New("methods").Funcs(funcMap).Parse(
 {{- if .WasPublic }}
 // Get{{.PublicName}} retrieves the content of the field {{.PublicName}}.
 {{- if .Comment }}
-// {{.Comment}}
+{{ docComment .Comment }}
 {{- end }}
 func (r *{{$.Name}}{{$.GenericUsage}}) Get{{.PublicName}}() {{.Type}} {
 	return r.{{.PrivateName}}
@@ -24,7 +24,7 @@ func (r *{{$.Name}}{{$.GenericUsage}}) Get{{.PublicName}}() {{.Type}} {
 
 // Set{{.PublicName}} returns a copy of the struct with the field {{.PublicName}} set to the new value.
 {{- if .Comment }}
-// {{.Comment}}
+{{ docComment .Comment }}
 {{- end }}
 func (r *{{$.Name}}{{$.GenericUsage}}) Set{{.PublicName}}(value {{.Type}}) {{$.Name}}{{$.GenericUsage}} {
 	n := copy{{$.Name}}{{$.GenericUsage}}(*r)
@@ -119,14 +119,6 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 		}
 		body := statementsBuf.String()
 
-		// Convert funcDecl.Doc.List to []*ast.CommentGroup for joinComments
-		var comments []*ast.CommentGroup
-		if funcDecl.Doc != nil {
-			comments = []*ast.CommentGroup{
-				{List: funcDecl.Doc.List},
-			}
-		}
-
 		var newReceiver = fullReceiver
 		if _, ok := recvNode.(*ast.StarExpr); ok {
 			newReceiver = "*" + "Im" + newReceiver[1:]
@@ -144,11 +136,10 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 		}
 
 		methods = append(methods, Method{
-			Name:            funcDecl.Name.Name,
-			Params:          params,
-			Results:         results,
-			Body:            body,
-			ReceiverComment: joinComments(comments),
+			Name:    funcDecl.Name.Name,
+			Params:  params,
+			Results: results,
+			Body:    body,
 
 			// Fill the new field with the entire receiver
 			FullReceiver: fullReceiver,

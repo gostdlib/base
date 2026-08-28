@@ -15,7 +15,9 @@ import (
 // is not thread safe.
 type ShardedMap[K comparable, V any] struct {
 	// IsEqual is a function that is used to compare two values for equality. This is not required
-	// unless using CompareAndSwap or CompareAndDelete.
+	// unless using CompareAndSwap or CompareAndDelete. It is latched on the first call to either of those,
+	// so it must be assigned before then and must not be changed afterwards; a later assignment is ignored
+	// and a concurrent one is a data race.
 	IsEqual func(a, b V) bool
 	once    sync.Once
 	sm      shardmap.Map[K, V]
@@ -42,9 +44,7 @@ func (s *ShardedMap[K, V]) Set(k K, v V) (prev V, ok bool) {
 // and set it to new. This will return true if the value was set, false otherwise.
 func (s *ShardedMap[K, V]) CompareAndSwap(k K, old, new V) (swapped bool) {
 	s.once.Do(func() {
-		if s.sm.IsEqual == nil {
-			s.sm.IsEqual = s.IsEqual
-		}
+		s.sm.IsEqual = s.IsEqual
 	})
 	return s.sm.CompareAndSwap(k, old, new)
 }
@@ -55,13 +55,13 @@ func (s *ShardedMap[K, V]) Del(k K) (prev V, ok bool) {
 	return s.sm.Delete(k)
 }
 
-// CompareAndDelete deletes the value for the given key if the current value is equal to the old value.
-// If the key does not exist, this returns true.
+// CompareAndDelete deletes the value for the given key if the current value is equal to the old
+// value, reporting whether it deleted. A missing key reports false, as does a key whose value is
+// not equal (that value is left in place). This makes the call usable as an ownership claim: at
+// most one caller is ever told it removed a given entry.
 func (s *ShardedMap[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 	s.once.Do(func() {
-		if s.sm.IsEqual == nil {
-			s.sm.IsEqual = s.IsEqual
-		}
+		s.sm.IsEqual = s.IsEqual
 	})
 	return s.sm.CompareAndDelete(k, old)
 }
@@ -70,11 +70,8 @@ func (s *ShardedMap[K, V]) CompareAndDelete(k K, old V) (deleted bool) {
 // and accept or reject the change. It also provides a safe way to block other goroutines from writing to the
 // same shard while inspecting. Returns the previous value, or false when no value was assigned.
 func (s *ShardedMap[K, V]) SetAccept(key K, value V, accept func(prev V, replaced bool) bool) (prev V, replaced bool) {
-	s.once.Do(func() {
-		if s.sm.IsEqual == nil {
-			s.sm.IsEqual = s.IsEqual
-		}
-	})
+	// No once.Do here: SetAccept never uses IsEqual, and running the shared once would latch whatever IsEqual
+	// happened to be at this moment, making a later assignment silently ignored by CompareAndSwap/Delete.
 	return s.sm.SetAccept(key, value, accept)
 }
 
@@ -82,11 +79,7 @@ func (s *ShardedMap[K, V]) SetAccept(key K, value V, accept func(prev V, replace
 // if any, and accept or reject the change. It also provides a safe way to block other goroutines from writing to the
 // same shard while inspecting. Returns the deleted value, or false when no value was assigned.
 func (s *ShardedMap[K, V]) DeleteAccept(key K, accept func(prev V, deleted bool) bool) (prev V, deleted bool) {
-	s.once.Do(func() {
-		if s.sm.IsEqual == nil {
-			s.sm.IsEqual = s.IsEqual
-		}
-	})
+	// No once.Do here, for the same reason as SetAccept: DeleteAccept never uses IsEqual.
 	return s.sm.DeleteAccept(key, accept)
 }
 

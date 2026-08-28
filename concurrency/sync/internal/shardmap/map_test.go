@@ -182,53 +182,145 @@ func TestRandomData(t *testing.T) {
 }
 
 func TestCompareAndSwap(t *testing.T) {
-	var m Map[string, string]
-	m.IsEqual = func(old, new string) bool {
-		return old == new
+	// Baseline is an existing "hello"/"world" entry swapped with a matching old value. Each failing row breaks
+	// exactly one input off that: either the key is absent, or old does not match.
+	tests := []struct {
+		name        string
+		setExisting bool
+		existing    string
+		old         string
+		new         string
+		wantSwapped bool
+		wantVal     string
+		wantExists  bool
+	}{
+		{
+			name:        "Success: swap an existing key whose value matches old",
+			setExisting: true,
+			existing:    "world",
+			old:         "world",
+			new:         "planet",
+			wantSwapped: true,
+			wantVal:     "planet",
+			wantExists:  true,
+		},
+		{
+			name:        "Success: a missing key with a zero old value is created",
+			new:         "world",
+			wantSwapped: true,
+			wantVal:     "world",
+			wantExists:  true,
+		},
+		{
+			name:        "Error: an existing key whose value does not match old is left alone",
+			setExisting: true,
+			existing:    "world",
+			old:         "planet",
+			new:         "moon",
+			wantVal:     "world",
+			wantExists:  true,
+		},
+		{
+			// Regression: the failed swap used to "restore" by writing back the zero value it had just
+			// read, inventing an entry that was never there and inflating Len().
+			name: "Error: a missing key with a non-zero old value is not created",
+			old:  "planet",
+			new:  "moon",
+		},
 	}
 
-	if !m.CompareAndSwap("hello", "", "world") {
-		t.Fatal("TestCompareAndSwap: expected the first swap to succeed")
-	}
-	if v, ok := m.Get("hello"); !ok || v != "world" {
-		t.Fatalf("TestCompareAndSwap: got %q, want %q", v, "world")
-	}
+	for _, test := range tests {
+		var m Map[string, string]
+		m.IsEqual = func(old, new string) bool {
+			return old == new
+		}
+		if test.setExisting {
+			m.Set("hello", test.existing)
+		}
 
-	if !m.CompareAndSwap("hello", "world", "planet") {
-		t.Fatal("TestCompareAndSwap: expected the second swap to succeed")
-	}
+		swapped := m.CompareAndSwap("hello", test.old, test.new)
+		if swapped != test.wantSwapped {
+			t.Errorf("TestCompareAndSwap(%s): got swapped == %t, want %t", test.name, swapped, test.wantSwapped)
+			continue
+		}
 
-	if v, ok := m.Get("hello"); !ok || v != "planet" {
-		t.Fatalf("TestCompareAndSwap: got %q, want %q", v, "planet")
-	}
+		v, ok := m.Get("hello")
+		if ok != test.wantExists {
+			t.Errorf("TestCompareAndSwap(%s): got exists == %t, want %t", test.name, ok, test.wantExists)
+		}
+		if v != test.wantVal {
+			t.Errorf("TestCompareAndSwap(%s): got value == %q, want %q", test.name, v, test.wantVal)
+		}
 
-	if m.CompareAndSwap("hello", "world", "planet") {
-		t.Fatal("TestCompareAndSwap: expected the third swap to fail")
+		wantLen := 0
+		if test.wantExists {
+			wantLen = 1
+		}
+		if m.Len() != wantLen {
+			t.Errorf("TestCompareAndSwap(%s): got Len() == %d, want %d", test.name, m.Len(), wantLen)
+		}
 	}
 }
 
 func TestCompareAndDelete(t *testing.T) {
-	var m Map[string, string]
-	m.IsEqual = func(old, new string) bool {
-		return old == new
+	// Baseline is an existing "hello"/"world" entry deleted with a matching old value. Each failing row breaks
+	// exactly one input off that: either the key is absent, or old does not match.
+	tests := []struct {
+		name        string
+		setExisting bool
+		existing    string
+		old         string
+		wantDeleted bool
+		wantVal     string
+		wantExists  bool
+	}{
+		{
+			name:        "Success: delete an existing key whose value matches old",
+			setExisting: true,
+			existing:    "world",
+			old:         "world",
+			wantDeleted: true,
+		},
+		{
+			// A missing key removed nothing, so it must not report a deletion. Reporting success here
+			// would tell every late caller it won a race it never entered.
+			name: "Error: a missing key reports false",
+			old:  "world",
+		},
+		{
+			name:        "Error: an existing key whose value does not match old is left in place",
+			setExisting: true,
+			existing:    "world",
+			old:         "planet",
+			wantVal:     "world",
+			wantExists:  true,
+		},
 	}
 
-	if !m.CompareAndDelete("hello", "world") {
-		t.Fatal("TestCompareAndDelete: expected the first delete to succeed")
-	}
+	for _, test := range tests {
+		var m Map[string, string]
+		m.IsEqual = func(old, new string) bool {
+			return old == new
+		}
+		if test.setExisting {
+			m.Set("hello", test.existing)
+		}
 
-	m.Set("hello", "world")
-	if swapped := m.CompareAndDelete("hello", "world"); !swapped {
-		t.Fatal("TestCompareAndDelete: expected the second delete to succeed")
-	}
+		deleted := m.CompareAndDelete("hello", test.old)
+		if deleted != test.wantDeleted {
+			t.Errorf("TestCompareAndDelete(%s): got deleted == %t, want %t", test.name, deleted, test.wantDeleted)
+			continue
+		}
 
-	if v, ok := m.Get("hello"); ok || v != "" {
-		t.Fatalf("TestCompareAndDelete: got %q, want %q", v, "")
-	}
-
-	m.Set("hello", "world")
-	if m.CompareAndDelete("hello", "planet") {
-		t.Fatal("TestCompareAndDelete: expected the third delete to fail")
+		// The mismatch path must leave the value intact. This is the one path where a bug silently drops
+		// the caller's data, so assert the post-state and not just the return value.
+		v, ok := m.Get("hello")
+		if ok != test.wantExists {
+			t.Errorf("TestCompareAndDelete(%s): got exists == %t, want %t", test.name, ok, test.wantExists)
+		}
+		if v != test.wantVal {
+			t.Errorf("TestCompareAndDelete(%s): got value == %q, want %q", test.name, v, test.wantVal)
+		}
 	}
 }
 

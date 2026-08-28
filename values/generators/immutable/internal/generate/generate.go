@@ -44,7 +44,6 @@ type Method struct {
 	StructName      string  // Original struct name
 	ImmutableStruct string  // Immutable struct name
 	GenericUsage    string  // Generic usage (e.g., [T])
-	ReceiverComment string  // Comment associated with the receiver
 	StructFields    []Field // Fields of the struct
 }
 
@@ -68,8 +67,33 @@ type StructData struct {
 }
 
 var funcMap = template.FuncMap{
-	"hasPrefix": strings.HasPrefix,
-	"trimSpace": strings.TrimSpace,
+	"hasPrefix":     strings.HasPrefix,
+	"trimSpace":     strings.TrimSpace,
+	"docComment":    docComment,
+	"inlineComment": inlineComment,
+	"multiline":     multiline,
+}
+
+// multiline reports whether a comment body spans more than one line.
+func multiline(s string) bool {
+	return strings.Contains(strings.TrimSpace(s), "\n")
+}
+
+// docComment renders a comment body in a documentation comment position, returning the complete "//" prefixed
+// lines. ast.CommentGroup.Text() strips the "//" markers but keeps the line breaks, so a template that prefixes
+// only the first line emits bare Go source for every line after it and the generated file does not parse.
+func docComment(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight("// "+strings.TrimSpace(line), " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// inlineComment renders a comment body in a trailing comment position, where a line break cannot be represented.
+// The lines are collapsed into one.
+func inlineComment(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // structTemplate provides a template for the immutable struct we are generating.
@@ -89,11 +113,16 @@ import (
 
 // {{.Name}}{{.GenericParams}} is an immutable version of {{.OriginalName}}{{.GenericParams}}.
 {{- if .Comment }}
-// {{ .Comment }}
+{{ docComment .Comment }}
 {{- end }}
 type {{.Name}}{{.GenericParams}} struct {
 {{- range .Fields }}
-	{{.PrivateName}} {{ .Type }} {{ if .Comment }}// {{ .Comment }}{{ end }}
+{{- if and .Comment (multiline .Comment) }}
+{{ docComment .Comment }}
+	{{.PrivateName}} {{ .Type }}
+{{- else }}
+	{{.PrivateName}} {{ .Type }} {{ if .Comment }}// {{ inlineComment .Comment }}{{ end }}
+{{- end }}
 {{- end }}
 }
 `))
@@ -472,13 +501,4 @@ func toLowerCamelCase(s string) string {
 	}
 
 	return string(runes)
-}
-
-// joinComments helper function to join comments from AST nodes
-func joinComments(comments []*ast.CommentGroup) string {
-	var lines []string
-	for _, group := range comments {
-		lines = append(lines, strings.TrimSpace(group.Text()))
-	}
-	return strings.Join(lines, "\n")
 }
