@@ -243,8 +243,10 @@ func New[T any](options ...Option) (*Select[T], error) {
 	s.snap.Store(&empty)
 
 	s.scratch = make([]reflect.SelectCase, fixedCases, fixedCases+o.prealloc)
-	// An explicit Dir with an invalid Chan is never ready, which is what we want until Select() supplies a ctx.
-	// The zero SelectCase would have Dir == reflect.SelectSend, which only works by accident.
+	// Setting Dir here is required, not tidiness. reflect.SelectDir counts from one (SelectSend is 1), so a zero
+	// SelectCase has Dir == 0, which reflect.Select rejects outright with "invalid Dir". A valid Dir paired with
+	// an invalid Chan is the shape we want: reflect.Select skips it, so the slot is simply never ready until
+	// Select() supplies a real ctx.Done().
 	s.scratch[ctxIndex] = reflect.SelectCase{Dir: reflect.SelectRecv}
 	s.scratch[wakeIndex] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: s.wakeVal}
 	return s, nil
