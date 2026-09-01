@@ -3,6 +3,7 @@ package dynamic
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -238,8 +239,18 @@ func TestSelect(t *testing.T) {
 		if got.Value != test.wantValue {
 			t.Errorf("TestSelect(%s): got Value == %d, want %d", test.name, got.Value, test.wantValue)
 		}
-		if got.Ch != wantCh {
-			t.Errorf("TestSelect(%s): got Ch == %v, want %v", test.name, got.Ch, wantCh)
+		// Received and Closed report RecvCh; Sent reports SendCh. wantCh is bidirectional, so convert it to the
+		// direction under test. A nil wantCh converts to a nil directional channel, which is what CtxDone and
+		// Defaulted report.
+		switch got.Kind {
+		case Sent:
+			if got.SendCh != (chan<- int)(wantCh) {
+				t.Errorf("TestSelect(%s): got SendCh == %v, want %v", test.name, got.SendCh, wantCh)
+			}
+		default:
+			if got.RecvCh != (<-chan int)(wantCh) {
+				t.Errorf("TestSelect(%s): got RecvCh == %v, want %v", test.name, got.RecvCh, wantCh)
+			}
 		}
 		if s.Len() != test.wantLen {
 			t.Errorf("TestSelect(%s): got Len() == %d, want %d", test.name, s.Len(), test.wantLen)
@@ -954,5 +965,289 @@ func TestNewErrorIdentity(t *testing.T) {
 	}
 	if !errors.Is(err, exponential.ErrPermanent) {
 		t.Errorf("TestNewErrorIdentity: got err == %v, want it wrapped with ErrPermanent", err)
+	}
+}
+
+// events exercises Remove against a defined channel type, which a type switch on the concrete channel types would
+// miss even though AddRecv accepts it.
+type events chan int
+
+// TestRemoveChannelTypes covers Remove's any parameter: it matches by channel identity, so any direction or defined
+// type naming the same channel removes it, while a non-channel or a channel of the wrong element type is a
+// programming error and panics.
+func TestRemoveChannelTypes(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    func(registered chan int) any
+		want      bool
+		wantLen   int
+		wantPanic bool
+	}{
+		{
+			name:   "Success: bidirectional channel",
+			target: func(registered chan int) any { return registered },
+			want:   true,
+		},
+		{
+			name:   "Success: receive only view of the registered channel",
+			target: func(registered chan int) any { return (<-chan int)(registered) },
+			want:   true,
+		},
+		{
+			name:   "Success: send only view of the registered channel",
+			target: func(registered chan int) any { return (chan<- int)(registered) },
+			want:   true,
+		},
+		{
+			name:    "Success: untyped nil reports false",
+			target:  func(chan int) any { return nil },
+			wantLen: 1,
+		},
+		{
+			name:      "Error: not a channel",
+			target:    func(chan int) any { return 42 },
+			wantLen:   1,
+			wantPanic: true,
+		},
+		{
+			name:      "Error: channel of the wrong element type",
+			target:    func(chan int) any { return make(chan string) },
+			wantLen:   1,
+			wantPanic: true,
+		},
+	}
+
+	for _, test := range tests {
+		func() {
+			defer func() {
+				r := recover()
+				switch {
+				case r == nil && test.wantPanic:
+					t.Errorf("TestRemoveChannelTypes(%s): got no panic, want panic", test.name)
+				case r != nil && !test.wantPanic:
+					t.Errorf("TestRemoveChannelTypes(%s): got panic == %v, want no panic", test.name, r)
+				}
+			}()
+
+			s, err := New[int]()
+			if err != nil {
+				t.Fatalf("TestRemoveChannelTypes(%s): New: got err == %s, want err == nil", test.name, err)
+			}
+			registered := make(chan int, 1)
+			if err := s.AddRecv(registered, nil); err != nil {
+				t.Fatalf("TestRemoveChannelTypes(%s): AddRecv: got err == %s, want err == nil", test.name, err)
+			}
+
+			if got := s.Remove(test.target(registered)); got != test.want {
+				t.Errorf("TestRemoveChannelTypes(%s): got %t, want %t", test.name, got, test.want)
+			}
+			if s.Len() != test.wantLen {
+				t.Errorf("TestRemoveChannelTypes(%s): got Len() == %d, want Len() == %d", test.name, s.Len(), test.wantLen)
+			}
+		}()
+	}
+}
+
+// TestAddRecvDefinedType pins that a defined channel type can be both added and removed, which is the pairing the
+// pointer keyed exists map exists to preserve.
+func TestAddRecvDefinedType(t *testing.T) {
+	s, err := New[int]()
+	if err != nil {
+		t.Fatalf("TestAddRecvDefinedType: New: got err == %s, want err == nil", err)
+	}
+	ev := make(events, 1)
+	if err := s.AddRecv(ev, nil); err != nil {
+		t.Fatalf("TestAddRecvDefinedType: AddRecv: got err == %s, want err == nil", err)
+	}
+	if !s.Remove(ev) {
+		t.Errorf("TestAddRecvDefinedType: got Remove == false, want true")
+	}
+	if s.Len() != 0 {
+		t.Errorf("TestAddRecvDefinedType: got Len() == %d, want Len() == 0", s.Len())
+	}
+}
+
+// TestAddDuplicateAcrossDirections pins that the duplicate check is by channel identity, so the same channel cannot
+// be registered twice even when the two adds name it with different directional types.
+func TestAddDuplicateAcrossDirections(t *testing.T) {
+	s, err := New[int]()
+	if err != nil {
+		t.Fatalf("TestAddDuplicateAcrossDirections: New: got err == %s, want err == nil", err)
+	}
+	ch := make(chan int, 1)
+	if err := s.AddRecv(ch, nil); err != nil {
+		t.Fatalf("TestAddDuplicateAcrossDirections: AddRecv: got err == %s, want err == nil", err)
+	}
+	if err := s.AddSend(ch, 1, nil); err == nil {
+		t.Errorf("TestAddDuplicateAcrossDirections: AddSend of the same channel: got err == nil, want err != nil")
+	}
+	if s.Len() != 1 {
+		t.Errorf("TestAddDuplicateAcrossDirections: got Len() == %d, want Len() == 1", s.Len())
+	}
+}
+
+// TestAddRecvAll covers the batch registration path. It is all or nothing, so a rejected batch must leave the Select
+// exactly as it was, which is what wantLen pins on the error rows.
+func TestAddRecvAll(t *testing.T) {
+	tests := []struct {
+		name    string
+		chans   func(registered chan int) []<-chan int
+		preAdd  bool
+		wantLen int
+		wantIs  error
+	}{
+		{
+			name:    "Success: several channels in one call",
+			chans:   func(chan int) []<-chan int { return []<-chan int{make(chan int), make(chan int), make(chan int)} },
+			wantLen: 3,
+		},
+		{
+			name:    "Success: a single channel",
+			chans:   func(chan int) []<-chan int { return []<-chan int{make(chan int)} },
+			wantLen: 1,
+		},
+		{
+			name:    "Success: no channels is a no-op",
+			chans:   func(chan int) []<-chan int { return nil },
+			wantLen: 0,
+		},
+		{
+			name: "Error: a nil channel rejects the whole batch",
+			chans: func(chan int) []<-chan int {
+				return []<-chan int{make(chan int), nil, make(chan int)}
+			},
+			wantIs: ErrNilChan,
+		},
+		{
+			name: "Error: a channel repeated within the batch rejects the whole batch",
+			chans: func(chan int) []<-chan int {
+				ch := make(chan int)
+				return []<-chan int{ch, make(chan int), ch}
+			},
+			wantIs: ErrDupChan,
+		},
+		{
+			name:    "Error: a channel already registered rejects the whole batch",
+			chans:   func(registered chan int) []<-chan int { return []<-chan int{make(chan int), registered} },
+			preAdd:  true,
+			wantLen: 1,
+			wantIs:  ErrDupChan,
+		},
+	}
+
+	for _, test := range tests {
+		s, err := New[int]()
+		if err != nil {
+			t.Fatalf("TestAddRecvAll(%s): New: got err == %s, want err == nil", test.name, err)
+		}
+		registered := make(chan int, 1)
+		if test.preAdd {
+			if err := s.AddRecv(registered, nil); err != nil {
+				t.Fatalf("TestAddRecvAll(%s): setup AddRecv: got err == %s, want err == nil", test.name, err)
+			}
+		}
+
+		err = s.AddRecvAll(nil, test.chans(registered)...)
+		switch {
+		case err == nil && test.wantIs != nil:
+			t.Errorf("TestAddRecvAll(%s): got err == nil, want err != nil", test.name)
+			continue
+		case err != nil && test.wantIs == nil:
+			t.Errorf("TestAddRecvAll(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case err != nil && !errors.Is(err, test.wantIs):
+			t.Errorf("TestAddRecvAll(%s): got err == %s, want errors.Is(err, %s)", test.name, err, test.wantIs)
+			continue
+		}
+
+		if s.Len() != test.wantLen {
+			t.Errorf("TestAddRecvAll(%s): got Len() == %d, want Len() == %d", test.name, s.Len(), test.wantLen)
+		}
+	}
+}
+
+// TestAddRecvAllDelivers pins that channels registered in a batch actually receive, which Len() alone does not show.
+func TestAddRecvAllDelivers(t *testing.T) {
+	s, err := New[int]()
+	if err != nil {
+		t.Fatalf("TestAddRecvAllDelivers: New: got err == %s, want err == nil", err)
+	}
+
+	const n = 8
+	chs := make([]<-chan int, 0, n)
+	for i := 0; i < n; i++ {
+		ch := make(chan int, 1)
+		ch <- i
+		close(ch)
+		chs = append(chs, ch)
+	}
+	if err := s.AddRecvAll(nil, chs...); err != nil {
+		t.Fatalf("TestAddRecvAllDelivers: AddRecvAll: got err == %s, want err == nil", err)
+	}
+
+	got := []int{}
+	for result := range s.All(t.Context()) {
+		if result.Kind == Received {
+			got = append(got, result.Value)
+		}
+		if s.Len() == 0 {
+			break
+		}
+	}
+	slices.Sort(got)
+
+	want := []int{0, 1, 2, 3, 4, 5, 6, 7}
+	if diff := pretty.Compare(want, got); diff != "" {
+		t.Errorf("TestAddRecvAllDelivers: -want/+got:\n%s", diff)
+	}
+}
+
+// TestAddTooManyCases exercises ErrTooManyCases, which is only practical to reach through AddRecvAll: the batch is
+// rejected on the count before any snapshot copy happens, so this costs the channels and nothing else.
+func TestAddTooManyCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		count   int
+		wantLen int
+		wantIs  error
+	}{
+		{
+			name:    "Success: exactly the maximum number of cases",
+			count:   maxCases,
+			wantLen: maxCases,
+		},
+		{
+			name:   "Error: one case past the maximum",
+			count:  maxCases + 1,
+			wantIs: ErrTooManyCases,
+		},
+	}
+
+	for _, test := range tests {
+		s, err := New[int]()
+		if err != nil {
+			t.Fatalf("TestAddTooManyCases(%s): New: got err == %s, want err == nil", test.name, err)
+		}
+		chs := make([]<-chan int, test.count)
+		for i := range chs {
+			chs[i] = make(chan int)
+		}
+
+		err = s.AddRecvAll(nil, chs...)
+		switch {
+		case err == nil && test.wantIs != nil:
+			t.Errorf("TestAddTooManyCases(%s): got err == nil, want err != nil", test.name)
+			continue
+		case err != nil && test.wantIs == nil:
+			t.Errorf("TestAddTooManyCases(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case err != nil && !errors.Is(err, test.wantIs):
+			t.Errorf("TestAddTooManyCases(%s): got err == %s, want errors.Is(err, %s)", test.name, err, test.wantIs)
+			continue
+		}
+
+		if s.Len() != test.wantLen {
+			t.Errorf("TestAddTooManyCases(%s): got Len() == %d, want Len() == %d", test.name, s.Len(), test.wantLen)
+		}
 	}
 }
