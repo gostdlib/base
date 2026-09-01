@@ -42,9 +42,22 @@ from that directory.
 | Flag | What it does |
 |------|-------------|
 | `-type=StructName` | **(Required)** Name of the struct to make immutable. Generates `Im<StructName>` into `<StructName>_immutable.go`. |
+| `-copy` | Makes `Immutable()` copy the maps and slices it wraps instead of sharing them. Off by default. |
 
 The tool takes a single struct per invocation. Add one directive per struct you
 want an immutable version of.
+
+`Immutable()` shares its wrapped maps and slices by default, so calling it hands
+ownership over and the original struct must not be used afterwards. Add `-copy`
+when the caller needs to keep using the original. `Mutable()` copies in both
+modes.
+
+Copying is **one level deep** in both directions: the map or slice itself is
+copied, but a pointer, interface, or nested map/slice element is still shared
+unless its type implements `immutable.Copier`. Two shapes the generator does not
+handle: a named map/slice type (`type Tags map[string]string`, field `Tags Tags`)
+is not wrapped, and an aliased import of the immutable package is not carried
+into the generated file.
 
 ## Rules
 

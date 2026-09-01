@@ -48,8 +48,8 @@ func (r *ImPair[T, X]) Mutable() Pair[T, X] {
 // Immutable converts the mutable struct to the generated immutable struct.
 func (r *Pair[T, X]) Immutable() ImPair[T, X] {
 	return ImPair[T, X]{
-		a: (r.A),
-		b: (r.B),
+		a: r.A,
+		b: r.B,
 	}
 }
 

@@ -9,9 +9,21 @@ import (
 // ImMultiLine is an immutable version of MultiLine.
 // MultiLine exercises doc comments that span more than one line. ast.CommentGroup.Text() strips the "//" markers
 // but keeps the line breaks, so every line after the first needs its own marker in the generated file.
+//
+// An indented line is a code block, and it has to stay indented on the generated type:
+//
+//	m := MultiLine{ID: 1}
+//	use(m)
+//
+// Otherwise the example above is flattened into prose.
 type ImMultiLine struct {
 	// ID has a comment that also spans two lines, so it must be lifted to a doc comment above the field
 	// rather than collapsed into one very long trailing comment, and repeated on the getter and setter.
+	//
+	// The code block here must survive onto the field, the getter and the setter:
+	//
+	//	id := m.GetID()
+	//	use(id)
 	id   uint64
 	name string // Name has a single line comment, which must keep working.
 	tags immutable.Map[string, struct{}]
@@ -20,6 +32,11 @@ type ImMultiLine struct {
 // GetID retrieves the content of the field ID.
 // ID has a comment that also spans two lines, so it must be lifted to a doc comment above the field
 // rather than collapsed into one very long trailing comment, and repeated on the getter and setter.
+//
+// The code block here must survive onto the field, the getter and the setter:
+//
+//	id := m.GetID()
+//	use(id)
 func (r *ImMultiLine) GetID() uint64 {
 	return r.id
 }
@@ -27,6 +44,11 @@ func (r *ImMultiLine) GetID() uint64 {
 // SetID returns a copy of the struct with the field ID set to the new value.
 // ID has a comment that also spans two lines, so it must be lifted to a doc comment above the field
 // rather than collapsed into one very long trailing comment, and repeated on the getter and setter.
+//
+// The code block here must survive onto the field, the getter and the setter:
+//
+//	id := m.GetID()
+//	use(id)
 func (r *ImMultiLine) SetID(value uint64) ImMultiLine {
 	n := copyImMultiLine(*r)
 	n.id = value
@@ -60,6 +82,8 @@ func (r *ImMultiLine) SetTags(value immutable.Map[string, struct{}]) ImMultiLine
 }
 
 // Mutable converts the immutable struct back to the original mutable struct.
+// The maps and slices this type wrapped are copied one level deep, so the returned value can be modified without
+// changing the immutable one. A field declared immutable in MultiLine is returned as it is.
 func (r *ImMultiLine) Mutable() MultiLine {
 	return MultiLine{
 		ID:   r.id,
@@ -69,10 +93,13 @@ func (r *ImMultiLine) Mutable() MultiLine {
 }
 
 // Immutable converts the mutable struct to the generated immutable struct.
+// Every map and slice is shared with the returned value rather than copied, so MultiLine must not be used
+// again after this call: writing to it would change the value returned here. Generate with -copy if both need to
+// stay usable.
 func (r *MultiLine) Immutable() ImMultiLine {
 	return ImMultiLine{
-		id:   (r.ID),
-		name: (r.Name),
+		id:   r.ID,
+		name: r.Name,
 		tags: immutable.NewMap[string, struct{}](r.Tags),
 	}
 }

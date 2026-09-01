@@ -82,6 +82,8 @@ func (r *ImNonGeneric) SetPublicPtr(value *string) ImNonGeneric {
 }
 
 // Mutable converts the immutable struct back to the original mutable struct.
+// The maps and slices this type wrapped are copied one level deep, so the returned value can be modified without
+// changing the immutable one. A field declared immutable in NonGeneric is returned as it is.
 func (r *ImNonGeneric) Mutable() NonGeneric {
 	return NonGeneric{
 		ID:         r.id,
@@ -96,16 +98,19 @@ func (r *ImNonGeneric) Mutable() NonGeneric {
 }
 
 // Immutable converts the mutable struct to the generated immutable struct.
+// Every map and slice is shared with the returned value rather than copied, so NonGeneric must not be used
+// again after this call: writing to it would change the value returned here. Generate with -copy if both need to
+// stay usable.
 func (r *NonGeneric) Immutable() ImNonGeneric {
 	return ImNonGeneric{
-		id:         (r.ID),
-		name:       (r.Name),
+		id:         r.ID,
+		name:       r.Name,
 		tags:       immutable.NewMap[string, struct{}](r.Tags),
 		slices:     immutable.NewSlice[int](r.Slices),
-		private:    (r.private),
-		privatePtr: (r.privatePtr),
-		publicPtr:  (r.PublicPtr),
-		inter:      (r.inter),
+		private:    r.private,
+		privatePtr: r.privatePtr,
+		publicPtr:  r.PublicPtr,
+		inter:      r.inter,
 	}
 }
 

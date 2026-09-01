@@ -40,6 +40,15 @@
 //
 //	var ColorSet = immutable.NewSet([]Color{"blue", "yellow"})
 //
+// An empty -v entry is a value, not a separator to be ignored, so a string type's zero value can be
+// put in the set:
+//
+//	sets -t Color -v ,blue,yellow
+//
+// generates
+//
+//	var ColorSet = immutable.NewSet([]Color{"", "blue", "yellow"})
+//
 // In both modes the type's underlying type must be a string, int/int8/int16/int32/int64,
 // uint/uint8/uint16/uint32/uint64, or float32/float64; -v values are validated against that
 // underlying type.
@@ -59,6 +68,7 @@ import (
 	"go/format"
 	"go/types"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -69,9 +79,13 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// valuesFlag is the name of the -v flag. flagSet looks it up by name, so declaring it once keeps that
+// lookup from drifting away from the flag it is meant to find.
+const valuesFlag = "v"
+
 var (
 	typeNames = flag.String("t", "", "comma-separated list of type names; must be set")
-	values    = flag.String("v", "", "comma-separated list of values instead of the package's constants; requires exactly one -t type")
+	values    = flag.String(valuesFlag, "", "comma-separated list of values instead of the package's constants; requires exactly one -t type; an empty entry is a value")
 	output    = flag.String("output", "", "output file name; default srcdir/<type>_set.go")
 )
 
@@ -94,7 +108,10 @@ func main() {
 	flag.Usage = Usage
 	flag.Parse()
 
-	cfg := config{types: splitList(*typeNames), values: splitList(*values), output: *output, args: os.Args[1:]}
+	cfg := config{types: splitList(*typeNames), output: *output, args: os.Args[1:]}
+	if cfg.useValues = flagSet(valuesFlag); cfg.useValues {
+		cfg.values = splitValues(*values)
+	}
 	if err := cfg.validate(); err != nil {
 		log.Print(err)
 		flag.Usage()
@@ -128,11 +145,12 @@ func main() {
 
 // config holds the parsed inputs for a single generation run.
 type config struct {
-	pkg    string   // package the generated file belongs to.
-	types  []string // names of the types to generate sets for, e.g. ["Color"].
-	values []string // explicit values from -v; empty means collect the package's constants.
-	output string   // output file name override; empty means default.
-	args   []string // the args passed to the command, for the generated header.
+	pkg       string   // package the generated file belongs to.
+	types     []string // names of the types to generate sets for, e.g. ["Color"].
+	useValues bool     // -v was given, so values holds the set's elements instead of the package's constants.
+	values    []string // explicit values from -v; only meaningful when useValues is set.
+	output    string   // output file name override; empty means default.
+	args      []string // the args passed to the command, for the generated header.
 }
 
 // validate reports whether the config holds usable inputs.
@@ -140,8 +158,13 @@ func (c config) validate() error {
 	if len(c.types) == 0 {
 		return fmt.Errorf("-t is required")
 	}
-	if len(c.values) > 0 && len(c.types) != 1 {
+	switch {
+	case c.useValues && len(c.types) != 1:
 		return fmt.Errorf("-v requires exactly one -t type, got %d", len(c.types))
+	case c.useValues && len(c.values) == 0:
+		return fmt.Errorf("-v requires at least one value")
+	case !c.useValues && len(c.values) > 0:
+		return fmt.Errorf("%d values were given without -v", len(c.values))
 	}
 	seen := map[string]bool{}
 	for _, t := range c.types {
@@ -153,7 +176,29 @@ func (c config) validate() error {
 		}
 		seen[t] = true
 	}
+	if c.useValues {
+		seenVal := map[string]bool{}
+		for _, v := range c.values {
+			if seenVal[v] {
+				return fmt.Errorf("-v %q is listed more than once", v)
+			}
+			seenVal[v] = true
+		}
+	}
 	return nil
+}
+
+// flagSet reports whether the named flag was given on the command line. -v needs this because an explicitly empty
+// value list and an absent -v both leave the flag holding "", and those mean different things: the first asks for a
+// set holding the empty string, the second asks for the package's constants.
+func flagSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 // splitList splits a comma-separated list into trimmed, non-empty entries.
@@ -163,6 +208,18 @@ func splitList(s string) []string {
 		if e = strings.TrimSpace(e); e != "" {
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+// splitValues splits the -v list into trimmed entries, keeping the empty ones. An empty entry is a value like any
+// other: "" is the zero value of a string enum and a set often needs it. Dropping it would leave the tool generating
+// a set the caller did not ask for, or, for an all-empty list, silently falling back to the package's constants.
+func splitValues(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, e := range parts {
+		out = append(out, strings.TrimSpace(e))
 	}
 	return out
 }
@@ -215,7 +272,7 @@ func analyze(dir string, c config) (string, []setDef, error) {
 		}
 
 		var elems []string
-		if len(c.values) > 0 {
+		if c.useValues {
 			for _, v := range c.values {
 				lit, err := literal(basic.Kind(), v)
 				if err != nil {
@@ -289,8 +346,12 @@ func literal(k types.BasicKind, v string) (string, error) {
 			return "", err
 		}
 	case types.Float32, types.Float64:
-		if _, err := strconv.ParseFloat(v, bits); err != nil {
+		f, err := strconv.ParseFloat(v, bits)
+		if err != nil {
 			return "", err
+		}
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return "", fmt.Errorf("infinity and NaN have no Go literal form")
 		}
 	default:
 		return "", fmt.Errorf("unsupported kind")

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/gostdlib/base/values/sizes"
 	"github.com/kylelemons/godebug/pretty"
 )
 
@@ -524,51 +528,65 @@ func TestMapHolderReset(t *testing.T) {
 func TestMapHolderMarshalJSON(t *testing.T) {
 	t.Parallel()
 
+	// Each success case holds a single top level key so the expected output does not depend on map
+	// iteration order, which the JSON encoder does not sort.
 	tests := []struct {
 		name    string
 		m       map[string]any
+		want    string
 		wantErr bool
 	}{
 		{
-			name: "Success: marshal simple map",
+			name: "Success: marshal a string value",
 			m: map[string]any{
-				"level": "ERROR",
-				"msg":   "test message",
+				"msg": "test message",
 			},
-			wantErr: false,
+			want: `{"msg":"test message"}`,
 		},
 		{
-			name:    "Success: marshal empty map",
-			m:       map[string]any{},
-			wantErr: false,
+			name: "Success: marshal a number value",
+			m: map[string]any{
+				"line": 110,
+			},
+			want: `{"line":110}`,
 		},
 		{
-			name: "Success: marshal complex map",
+			name: "Success: marshal a nested object",
 			m: map[string]any{
-				"time":  "2025-09-09T18:23:06.102045-07:00",
-				"level": "ERROR",
-				"file":  "/path/to/file.go",
-				"line":  110,
-				"msg":   "test message",
-				"extra": map[string]any{"nested": "value"},
+				"source": map[string]any{"file": "/path/to/file.go"},
 			},
-			wantErr: false,
+			want: `{"source":{"file":"/path/to/file.go"}}`,
+		},
+		{
+			name: "Success: marshal an empty map",
+			m:    map[string]any{},
+			want: `{}`,
+		},
+		{
+			name: "Error: a value that has no JSON representation",
+			m: map[string]any{
+				"msg": make(chan int),
+			},
+			wantErr: true,
 		},
 	}
 
 	for _, test := range tests {
-
 		holder := mapHolder{m: test.m}
-		_, err := holder.MarshalJSON()
+		got, err := holder.MarshalJSON()
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("TestMapHolderMarshalJSON(%s): got err == nil, want err != nil", test.name)
-			return
+			continue
 		case err != nil && !test.wantErr:
 			t.Errorf("TestMapHolderMarshalJSON(%s): got err == %s, want err == nil", test.name, err)
-			return
+			continue
 		case err != nil:
-			return
+			continue
+		}
+
+		if string(got) != test.want {
+			t.Errorf("TestMapHolderMarshalJSON(%s): got %s, want %s", test.name, got, test.want)
 		}
 	}
 }
@@ -577,9 +595,11 @@ func TestScan(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name     string
+		input    string
+		readFail bool // Read from a reader that fails instead of from input.
+		want     string
+		wantErr  bool
 	}{
 		{
 			name: "Success: single valid JSON log line with top level fields",
@@ -650,17 +670,121 @@ yet another line
 `,
 			want: "[DEBUG][12:00:00][.../test.go:1]: with source\n[WARN][12:01:00][.../test.go:2]: without source\n",
 		},
+		{
+			name:  "Success: line longer than a default bufio.Scanner buffer keeps it and the lines after it",
+			input: `{"time":"2025-09-09T12:00:00Z","level":"error","file":"/big.go","line":1,"msg":"` + hugeMsg + `"}` + "\n" + `{"time":"2025-09-09T12:00:01Z","level":"info","file":"/after.go","line":2,"msg":"after the long line"}` + "\n",
+			want:  "[ERROR][12:00:00][.../big.go:1]: " + hugeMsg + "\n[INFO][12:00:01][.../after.go:2]: after the long line\n",
+		},
+		{
+			name:     "Error: the input reader fails",
+			readFail: true,
+			wantErr:  true,
+		},
 	}
 
 	for _, test := range tests {
-		input := strings.NewReader(test.input)
+		var in io.Reader = strings.NewReader(test.input)
+		if test.readFail {
+			in = failReader{}
+		}
 		var output bytes.Buffer
 
-		scan(t.Context(), input, &output)
+		err := scan(t.Context(), in, &output)
+		switch {
+		case err == nil && test.wantErr:
+			t.Errorf("TestScan(%s): got err == nil, want err != nil", test.name)
+			continue
+		case err != nil && !test.wantErr:
+			t.Errorf("TestScan(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case err != nil:
+			continue
+		}
 
 		got := output.String()
 		if got != test.want {
 			t.Errorf("TestScan(%s): got %q, want %q", test.name, got, test.want)
 		}
 	}
+}
+
+func TestReadLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		limit   int
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "Success: a line within the limit is returned with its terminator",
+			input: "hello\n",
+			limit: 64,
+			want:  "hello\n",
+		},
+		{
+			name:  "Success: a line longer than the reader's buffer is accumulated a chunk at a time",
+			input: strings.Repeat("x", 40) + "\n",
+			limit: 64,
+			want:  strings.Repeat("x", 40) + "\n",
+		},
+		{
+			name:  "Success: a line landing exactly on the limit is kept",
+			input: strings.Repeat("x", 63) + "\n",
+			limit: 64,
+			want:  strings.Repeat("x", 63) + "\n",
+		},
+		{
+			name:  "Success: the final line without a newline is returned",
+			input: "tail",
+			limit: 64,
+			want:  "tail",
+		},
+		{
+			name:    "Error: a line running past the limit",
+			input:   strings.Repeat("x", 65),
+			limit:   64,
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		// The smallest buffer bufio allows, so every case longer than 16 bytes drives the ErrBufferFull
+		// accumulation loop rather than completing in one ReadSlice.
+		reader := bufio.NewReaderSize(strings.NewReader(test.input), 16)
+		buf := &bytes.Buffer{}
+
+		line, err := readLine(reader, buf, test.limit)
+		if errors.Is(err, io.EOF) {
+			// EOF is how readLine reports the end of input, not a failure; scan classifies it the same way.
+			err = nil
+		}
+		switch {
+		case err == nil && test.wantErr:
+			t.Errorf("TestReadLine(%s): got err == nil, want err != nil", test.name)
+			continue
+		case err != nil && !test.wantErr:
+			t.Errorf("TestReadLine(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		case err != nil:
+			continue
+		}
+
+		if string(line) != test.want {
+			t.Errorf("TestReadLine(%s): got %q, want %q", test.name, line, test.want)
+		}
+	}
+}
+
+// hugeMsg is a log message longer than the 64 KiB a default bufio.Scanner will read. scan used to stop dead on a
+// line this long, discarding it and every line that followed without reporting anything.
+var hugeMsg = strings.Repeat("x", 70*sizes.KiB)
+
+// failReader is an io.Reader that always fails, so scan's handling of a read error can be tested.
+type failReader struct{}
+
+func (failReader) Read([]byte) (int, error) {
+	return 0, errors.New("read failed")
 }
