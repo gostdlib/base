@@ -732,8 +732,8 @@ func closedWith(vs ...int) <-chan int {
 }
 
 // TestMerge sorts what it collects because Merge interleaves its inputs in arrival order, which is not deterministic.
-// The duplicate case pins current behavior: dynamic.AddRecv rejects a channel already in use and Merge discards that
-// error, so the same channel passed twice is registered once rather than read twice.
+// The duplicate case pins current behavior: Merge collapses repeated channels before registering them, so the
+// same channel passed twice is registered once rather than read twice.
 func TestMerge(t *testing.T) {
 	tests := []struct {
 		name      string
