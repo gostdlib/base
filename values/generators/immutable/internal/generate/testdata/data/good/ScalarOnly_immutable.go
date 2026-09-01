@@ -64,10 +64,10 @@ func (r *ImScalarOnly) Mutable() ScalarOnly {
 // Immutable converts the mutable struct to the generated immutable struct.
 func (r *ScalarOnly) Immutable() ImScalarOnly {
 	return ImScalarOnly{
-		id:      (r.ID),
-		name:    (r.Name),
-		email:   (r.Email),
-		private: (r.private),
+		id:      r.ID,
+		name:    r.Name,
+		email:   r.Email,
+		private: r.private,
 	}
 }
 

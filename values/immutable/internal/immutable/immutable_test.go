@@ -15,6 +15,57 @@ func (c copierInt) Copy() copierInt {
 	return c
 }
 
+// copierPtr is a pointer type implementing Copier, used to exercise the nil element path where calling
+// Copy would dereference a nil pointer.
+type copierPtr struct {
+	N int
+}
+
+func (c *copierPtr) Copy() *copierPtr {
+	n := *c
+	return &n
+}
+
+// namer is an interface element type. A nil interface implements nothing, so the Copier check has to be
+// made against each value rather than against the element type's zero value.
+type namer interface {
+	Name() string
+}
+
+// namedCopier implements both namer and Copier[namer]. It is pointer-backed on purpose: a value-backed Copy
+// returning an equal value would make the copy indistinguishable from the original, so a test could not tell
+// whether Copy was called at all.
+type namedCopier struct {
+	N string
+}
+
+func (n *namedCopier) Name() string { return n.N }
+
+func (n *namedCopier) Copy() namer { c := *n; return &c }
+
+// plainNamer implements namer but not Copier[namer], so a per-value Copier check has to leave it alone rather
+// than assume everything behind an interface can be copied.
+type plainNamer struct {
+	N string
+}
+
+func (p plainNamer) Name() string { return p.N }
+
+// mapCopier is a named map with a value-receiver Copy. A nil mapCopier is a legal receiver for it, so the nil
+// guard must not swallow the call — Copy itself decides what a nil copies to.
+type mapCopier map[string]int
+
+func (m mapCopier) Copy() mapCopier {
+	n := mapCopier{}
+	for k, v := range m {
+		n[k] = v
+	}
+	return n
+}
+
+// copySink keeps the compiler from eliding the copies made while counting allocations.
+var copySink []int
+
 func TestNewSlice(t *testing.T) {
 	tests := []struct {
 		name string
@@ -313,6 +364,17 @@ func TestCopySlice(t *testing.T) {
 	if cp[0] == 99 {
 		t.Errorf("TestCopySlice: copy shares backing array with source")
 	}
+
+	// One allocation — the destination — no matter the length. A per-element interface conversion sneaking back
+	// into the non-Copier path shows up here as one allocation per element. The values sit past the runtime's
+	// small-integer cache so a boxed element really allocates.
+	big := make([]int, 1000)
+	for i := range big {
+		big[i] = i + 1000
+	}
+	if n := testing.AllocsPerRun(20, func() { copySink = CopySlice(big) }); n != 1 {
+		t.Errorf("TestCopySlice: got %v allocations copying a non-Copier slice, want 1", n)
+	}
 }
 
 func TestCopySliceCopier(t *testing.T) {
@@ -321,6 +383,52 @@ func TestCopySliceCopier(t *testing.T) {
 	want := []copierInt{1, 2, 3}
 	if diff := pretty.Compare(want, got); diff != "" {
 		t.Errorf("TestCopySliceCopier: -want/+got:\n%s", diff)
+	}
+
+	// A nil element satisfies Copier but panics if Copy is called on it, so it must be passed through.
+	ptrs := CopySlice([]*copierPtr{nil, {N: 1}})
+	switch {
+	case ptrs[0] != nil:
+		t.Errorf("TestCopySliceCopier: got ptrs[0] == %v, want nil", ptrs[0])
+	case ptrs[1].N != 1:
+		t.Errorf("TestCopySliceCopier: got ptrs[1].N == %d, want 1", ptrs[1].N)
+	}
+	src2 := []*copierPtr{{N: 1}}
+	cp2 := CopySlice(src2)
+	src2[0].N = 99
+	if cp2[0].N == 99 {
+		t.Errorf("TestCopySliceCopier: Copier element was not deep copied")
+	}
+
+	// An interface element type has a nil zero value, so the Copier check must be made per element. The source
+	// element is kept so the copy can be checked to be a different object, which is what proves Copy ran.
+	src3 := &namedCopier{N: "a"}
+	ifaces := CopySlice([]namer{src3, nil, (*namedCopier)(nil), plainNamer{N: "p"}})
+	if ifaces[0] == nil {
+		t.Fatalf("TestCopySliceCopier: got ifaces[0] == nil, want a copy")
+	}
+	if ifaces[0].Name() != "a" {
+		t.Errorf("TestCopySliceCopier: got ifaces[0].Name() == %q, want %q", ifaces[0].Name(), "a")
+	}
+	if ifaces[0].(*namedCopier) == src3 {
+		t.Errorf("TestCopySliceCopier: got the source element back, want a copy")
+	}
+	if ifaces[1] != nil {
+		t.Errorf("TestCopySliceCopier: got ifaces[1] == %v, want nil", ifaces[1])
+	}
+	// A typed nil inside an interface is not a nil interface, but calling Copy on it still dereferences nil.
+	if ifaces[2] != namer((*namedCopier)(nil)) {
+		t.Errorf("TestCopySliceCopier: got ifaces[2] == %v, want the typed nil passed through", ifaces[2])
+	}
+	// A value that does not implement Copier[namer] passes through untouched.
+	if ifaces[3] != namer(plainNamer{N: "p"}) {
+		t.Errorf("TestCopySliceCopier: got ifaces[3] == %v, want the plainNamer passed through", ifaces[3])
+	}
+
+	// A nil named map is a legal value receiver, so its own Copy runs and answers with an empty non-nil map.
+	fromNil := CopySlice([]mapCopier{nil})
+	if fromNil[0] == nil {
+		t.Errorf("TestCopySliceCopier: got a nil map back, want Copy called on the nil mapCopier")
 	}
 }
 
@@ -365,6 +473,96 @@ func TestCopyMapCopier(t *testing.T) {
 	if diff := pretty.Compare(want, got); diff != "" {
 		t.Errorf("TestCopyMapCopier: -want/+got:\n%s", diff)
 	}
+
+	// A nil value satisfies Copier but panics if Copy is called on it, so it must be passed through.
+	ptrs := CopyMap(map[string]*copierPtr{"nil": nil, "set": {N: 1}})
+	switch {
+	case ptrs["nil"] != nil:
+		t.Errorf("TestCopyMapCopier: got [nil] == %v, want nil", ptrs["nil"])
+	case ptrs["set"].N != 1:
+		t.Errorf("TestCopyMapCopier: got [set].N == %d, want 1", ptrs["set"].N)
+	}
+
+	deep := map[string]*copierPtr{"set": {N: 1}}
+	cp := CopyMap(deep)
+	deep["set"].N = 99
+	if cp["set"].N == 99 {
+		t.Errorf("TestCopyMapCopier: Copier value was not deep copied")
+	}
+
+	// An interface value type has a nil zero value, so the Copier check must be made per value.
+	srcNamed := &namedCopier{N: "a"}
+	ifaces := CopyMap(map[string]namer{"a": srcNamed, "nil": nil, "typedNil": (*namedCopier)(nil), "plain": plainNamer{N: "p"}})
+	if ifaces["a"] == nil {
+		t.Fatalf("TestCopyMapCopier: got [a] == nil, want a copy")
+	}
+	if ifaces["a"].Name() != "a" {
+		t.Errorf("TestCopyMapCopier: got [a].Name() == %q, want %q", ifaces["a"].Name(), "a")
+	}
+	if ifaces["a"].(*namedCopier) == srcNamed {
+		t.Errorf("TestCopyMapCopier: got the source value back, want a copy")
+	}
+	if ifaces["nil"] != nil {
+		t.Errorf("TestCopyMapCopier: got [nil] == %v, want nil", ifaces["nil"])
+	}
+	if ifaces["typedNil"] != namer((*namedCopier)(nil)) {
+		t.Errorf("TestCopyMapCopier: got [typedNil] == %v, want the typed nil passed through", ifaces["typedNil"])
+	}
+	if ifaces["plain"] != namer(plainNamer{N: "p"}) {
+		t.Errorf("TestCopyMapCopier: got [plain] == %v, want the plainNamer passed through", ifaces["plain"])
+	}
+}
+
+// BenchmarkCopySlice tracks the copy paths' CPU cost — the regressions this area has seen were pure CPU, with
+// allocations unchanged, so compare ns/op with benchstat when touching CopySlice; the allocation line is held by
+// an assertion in TestCopySlice. plain must sit within a few percent of a bare copy, plainSmall shows the fixed
+// per-call cost of the Copier probe, and the copier/copierPtr/iface shapes cover the per-element paths.
+func BenchmarkCopySlice(b *testing.B) {
+	ints := make([]int, 1000)
+	b.Run("plain", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = CopySlice(ints)
+		}
+	})
+
+	small := make([]int, 8)
+	b.Run("plainSmall", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = CopySlice(small)
+		}
+	})
+
+	copiers := make([]copierInt, 1000)
+	b.Run("copier", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = CopySlice(copiers)
+		}
+	})
+
+	ptrs := make([]*copierPtr, 1000)
+	for i := range ptrs {
+		ptrs[i] = &copierPtr{N: i}
+	}
+	b.Run("copierPtr", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = CopySlice(ptrs)
+		}
+	})
+
+	ifaces := make([]namer, 1000)
+	for i := range ifaces {
+		ifaces[i] = plainNamer{N: "x"}
+	}
+	b.Run("iface", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = CopySlice(ifaces)
+		}
+	})
 }
 
 func TestNewSet(t *testing.T) {

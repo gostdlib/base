@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"maps"
+	"reflect"
 	"slices"
 )
 
@@ -161,37 +162,89 @@ type Copier[T any] interface {
 	Copy() T
 }
 
-// CopySlice returns a copy of the given slice. This is useful for creating an immutable slice.
-// If the type stored in the slice implements the Copier interface, it will use that to copy the
-// values. Otherwise, it will use the standard copy function.
+// CopySlice returns a copy of the given slice. If T implements the Copier interface, each element is copied with
+// its Copy method. Otherwise the elements are copied as they are, which for a pointer, map, slice or other
+// reference type means the copy and the original still share what the element points at.
 func CopySlice[T any](s []T) []T {
 	n := make([]T, len(s))
-
-	var z T
-	if _, ok := any(z).(Copier[T]); ok {
-		for i, v := range s {
-			n[i] = any(v).(Copier[T]).Copy()
-		}
+	copies, nilable := copyTraits[T]()
+	if !copies {
+		copy(n, s)
 		return n
 	}
-	copy(n, s)
+	for i, v := range s {
+		n[i] = copyValue(v, nilable)
+	}
 	return n
 }
 
-// CopyMap returns a copy of the given map. This is useful for creating an immutable map.
-// If the type stored in the map implements the Copier interface, it will use that to copy the
-// values. Otherwise, it will use the standard copy function.
+// CopyMap returns a copy of the given map. If V implements the Copier interface, each value is copied with its
+// Copy method. Otherwise the values are copied as they are, which for a pointer, map, slice or other reference
+// type means the copy and the original still share what the value points at.
 func CopyMap[K comparable, V any](m map[K]V) map[K]V {
-	var z V
-	_, canCopy := any(z).(Copier[V])
-
 	n := make(map[K]V, len(m))
+	copies, nilable := copyTraits[V]()
+	if !copies {
+		maps.Copy(n, m)
+		return n
+	}
 	for k, v := range m {
-		if canCopy {
-			n[k] = any(v).(Copier[V]).Copy()
-			continue
-		}
-		n[k] = v
+		n[k] = copyValue(v, nilable)
 	}
 	return n
+}
+
+// copyTraits reports whether values of type T may implement Copier, and so have to be examined one at a time,
+// and whether they can be a nil pointer, which copyValue must then check for. Both are properties of T, so they
+// are settled once per call rather than once per element: for a concrete T the whole container can be copied in
+// bulk when copies is no, and only a pointer or interface T ever needs the nil check. The Copier probe boxes T's
+// zero value instead of using reflection because a nil boxed zero is exactly the interface case (an interface T
+// can hold anything, so its values must be asked individually), and for every other T the assertion asks T's own
+// method set, which is the same question the per-element assertion would ask.
+func copyTraits[T any]() (copies, nilable bool) {
+	var z T
+	a := any(z)
+	if a == nil {
+		return true, true
+	}
+	if _, ok := a.(Copier[T]); !ok {
+		return false, false
+	}
+	switch reflect.TypeFor[T]().Kind() {
+	case reflect.Pointer, reflect.UnsafePointer:
+		return true, true
+	}
+	return true, false
+}
+
+// copyValue returns v copied through its Copier implementation, or v itself when it has none or is a nil
+// pointer. The assertion is made against the value rather than T's zero value, because a zero value answers the
+// wrong question for an interface T: a nil interface implements nothing. Pass nilable from copyTraits so the
+// reflection isNil needs stays off the paths that cannot hold a nil.
+func copyValue[T any](v T, nilable bool) T {
+	c, ok := any(v).(Copier[T])
+	if !ok || (nilable && isNil(v)) {
+		return v
+	}
+	return c.Copy()
+}
+
+// isNil reports whether v is a value Copy must not be called through: a nil interface, a nil pointer, or an
+// interface holding a typed nil pointer. A nil map, slice, channel or func is deliberately not one of these — a
+// value-receiver method on them is a legal call, so their own Copy decides what a nil copies to. It reflects
+// through a pointer to v so that reflect sees T itself: passing an interface value as any would unwrap it to the
+// concrete value inside.
+func isNil[T any](v T) bool {
+	rv := reflect.ValueOf(&v).Elem()
+	if rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return true
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.UnsafePointer:
+		return rv.IsNil()
+	}
+	return false
 }

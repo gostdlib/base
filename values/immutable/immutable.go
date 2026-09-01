@@ -125,7 +125,7 @@ import (
 // Map provides a read-only map as long as the values are not pointers or references.
 type Map[K comparable, V any] = immutable.Map[K, V]
 
-// NewMap returns a new immutable map.
+// NewMap returns a new immutable map. The original map should not be used or modified after this call.
 func NewMap[K comparable, V any](m map[K]V) Map[K, V] {
 	return immutable.NewMap(m)
 }
@@ -133,7 +133,7 @@ func NewMap[K comparable, V any](m map[K]V) Map[K, V] {
 // Slice provides a read-only slice as long as the values are not pointers or references.
 type Slice[T any] = immutable.Slice[T]
 
-// NewSlice returns a new immutable slice.
+// NewSlice returns a new immutable slice. The original slice should not be used or modified after this call.
 func NewSlice[T any](s []T) Slice[T] {
 	return immutable.NewSlice(s)
 }
@@ -142,6 +142,7 @@ func NewSlice[T any](s []T) Slice[T] {
 type Set[T comparable] = immutable.Set[T]
 
 // NewSet returns a new immutable set built from the values in s. Duplicate values are collapsed.
+// If T is a reference type, the original slice values must not be modified after this call.
 func NewSet[T comparable](s []T) Set[T] {
 	return immutable.NewSet(s)
 }

@@ -61,8 +61,28 @@ tolerated; they are reported only if they prevent a named type from resolving.
 | Flag | Description |
 |------|-------------|
 | `-t` | **(required)** Comma-separated list of type names to generate sets for. |
-| `-v` | Comma-separated values to put in the set instead of the package's constants. Requires exactly one type; each value is validated against the type's underlying type. |
+| `-v` | Comma-separated values to put in the set instead of the package's constants. Requires exactly one type; each value is validated against the type's underlying type. An empty entry is a value, and duplicates are an error. |
 | `-output` | Output file name. Defaults to `<type>_set.go`, lower-cased from the first type listed. |
+
+### `-v` values
+
+Every comma-separated entry is a value, including an empty one, so a string
+type's zero value can be put in the set:
+
+```
+sets -t Color -v ,blue,yellow    ->  immutable.NewSet([]Color{"", "blue", "yellow"})
+```
+
+That also means a **trailing comma adds an empty value** rather than being
+ignored — `-v blue,yellow,` generates a set containing `""`. Listing the same
+value twice is an error, so `-v ,` (two empty entries) is rejected rather than
+quietly falling back to the package's constants.
+
+Giving `-v` at all selects value mode, even when it is empty: `-v ""` generates
+a set holding the empty string, while omitting `-v` collects the constants.
+
+For a float type, `Inf` and `NaN` are rejected. They parse as floats but have no
+Go literal form, so emitting them would produce a file that does not compile.
 
 ## Generated code
 

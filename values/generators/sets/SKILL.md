@@ -41,7 +41,7 @@ same package.
 | Flag | What it does |
 |------|-------------|
 | `-t=Type` | **(Required)** Comma-separated type names. Each gets its own `<Type>Set` var in one output file. |
-| `-v=val,val` | Use these literal values instead of the package's constants. Requires exactly **one** `-t` type. Each value is validated against the type's underlying type. |
+| `-v=val,val` | Use these literal values instead of the package's constants. Requires exactly **one** `-t` type. Each value is validated against the type's underlying type. Every entry counts, empty ones included. |
 | `-output=file.go` | Override output filename (default: `<type>_set.go`, lower-cased from the first type listed) |
 
 There is no `-type` flag; the flag is `-t` only.
@@ -58,7 +58,12 @@ There is no `-type` flag; the flag is `-t` only.
    An untyped constant (`const Foo = "bar"`) is not collected — write `const Foo T = "bar"`.
 4. `-v` requires exactly one `-t` type. Values are range- and syntax-checked against the
    underlying type, so `-v 300` on an `int8` type or `-v -1` on a `uint` type is an error.
-   Strings are quoted and escaped automatically; do not add quotes yourself.
+   Strings are quoted and escaped automatically; do not add quotes yourself. On a float
+   type `Inf` and `NaN` are rejected: they parse but have no Go literal form.
+4b. Every `-v` entry is a value, including an empty one, so `-v ,blue` puts `""` in the
+   set and a **trailing comma adds an empty value** (`-v blue,yellow,` is a three-value
+   set). Duplicates are an error, so `-v ,` is rejected. Passing `-v` selects value mode
+   even when empty: `-v ""` is a set holding `""`, while omitting `-v` collects constants.
 5. The generated var is always named `<Type>Set`, so generate **at most one set per type
    per package** — two runs for the same type into different `-output` files collide.
 6. **Every** constant of the type is collected, including an enum's `Unknown<Type> = 0`

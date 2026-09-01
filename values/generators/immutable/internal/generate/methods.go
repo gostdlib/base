@@ -35,19 +35,34 @@ func (r *{{$.Name}}{{$.GenericUsage}}) Set{{.PublicName}}(value {{.Type}}) {{$.N
 {{- end }}
 
 // Mutable converts the immutable struct back to the original mutable struct.
+{{- if .Wraps }}
+// The maps and slices this type wrapped are copied one level deep, so the returned value can be modified without
+// changing the immutable one. A field declared immutable in {{.OriginalName}} is returned as it is.
+{{- end }}
 func (r *{{.Name}}{{.GenericUsage}}) Mutable() {{.OriginalName}}{{.GenericUsage}} {
 	return {{.OriginalName}}{{.GenericUsage}}{
 {{- range .Fields }}
-		{{.PublicName}}: {{if .IsImmutable}}r.{{.PrivateName}}.Copy(){{else}}r.{{.PrivateName}}{{end}},
+		{{.PublicName}}: {{if .Wrapped}}r.{{.PrivateName}}.Copy(){{else}}r.{{.PrivateName}}{{end}},
 {{- end }}
 	}
 }
 
 // Immutable converts the mutable struct to the generated immutable struct.
+{{- if .Wraps }}
+{{- if .CopyOnConvert }}
+// Every wrapped map and slice is copied one level deep, so writing to {{.OriginalName}}'s own maps and slices after
+// this call no longer reaches the value returned here. What those maps and slices hold is still shared: a pointer,
+// an interface, or a nested map or slice element is copied only if its type implements immutable.Copier.
+{{- else }}
+// Every map and slice is shared with the returned value rather than copied, so {{.OriginalName}} must not be used
+// again after this call: writing to it would change the value returned here. Generate with -copy if both need to
+// stay usable.
+{{- end }}
+{{- end }}
 func (r *{{.OriginalName}}{{.GenericUsage}}) Immutable() {{.Name}}{{.GenericUsage}} {
 	return {{.Name}}{{.GenericUsage}}{
 {{- range .Fields }}
-		{{.PrivateName}}: {{if .IsImmutable}}immutable.New{{if hasPrefix .Type "immutable.Map"}}Map[{{.GenericType}}]{{else if hasPrefix .Type "immutable.Slice"}}Slice[{{.GenericType}}]{{end}}{{end}}(r.{{.PublicName}}),
+		{{.PrivateName}}: {{ immutableExpr . $.CopyOnConvert }},
 {{- end }}
 	}
 }
@@ -60,6 +75,12 @@ func extractMethods(node ast.Node, fs *token.FileSet, structName string, fieldMa
 
 	var err error
 	ast.Inspect(node, func(n ast.Node) bool {
+		// ast.Inspect's false only skips a node's children, not its siblings, so without this a later method
+		// would overwrite the first failure and keep appending to methods after it.
+		if err != nil {
+			return false
+		}
+
 		funcDecl, ok := n.(*ast.FuncDecl)
 		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 || len(funcDecl.Recv.List[0].Names) == 0 {
 			return true

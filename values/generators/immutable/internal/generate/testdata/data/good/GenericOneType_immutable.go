@@ -122,6 +122,8 @@ func (r *ImGenericOneType[T]) SetInter(value io.Reader) ImGenericOneType[T] {
 }
 
 // Mutable converts the immutable struct back to the original mutable struct.
+// The maps and slices this type wrapped are copied one level deep, so the returned value can be modified without
+// changing the immutable one. A field declared immutable in GenericOneType is returned as it is.
 func (r *ImGenericOneType[T]) Mutable() GenericOneType[T] {
 	return GenericOneType[T]{
 		ID:            r.id,
@@ -137,17 +139,20 @@ func (r *ImGenericOneType[T]) Mutable() GenericOneType[T] {
 }
 
 // Immutable converts the mutable struct to the generated immutable struct.
+// Every map and slice is shared with the returned value rather than copied, so GenericOneType must not be used
+// again after this call: writing to it would change the value returned here. Generate with -copy if both need to
+// stay usable.
 func (r *GenericOneType[T]) Immutable() ImGenericOneType[T] {
 	return ImGenericOneType[T]{
-		id:            (r.ID),
-		name:          (r.Name),
-		email:         (r.Email),
+		id:            r.ID,
+		name:          r.Name,
+		email:         r.Email,
 		tags:          immutable.NewMap[string, struct{}](r.Tags),
 		slicesGeneric: immutable.NewSlice[T](r.SlicesGeneric),
 		slices:        immutable.NewSlice[int](r.Slices),
-		subData:       (r.SubData),
-		inter:         (r.Inter),
-		private:       (r.private),
+		subData:       r.SubData,
+		inter:         r.Inter,
+		private:       r.private,
 	}
 }
 

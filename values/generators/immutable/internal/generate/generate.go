@@ -11,6 +11,8 @@ import (
 	"go/token"
 	"log"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"unicode"
@@ -29,6 +31,7 @@ type Field struct {
 	WasPublic   bool   // True if the original field was public
 	Comment     string // Comment associated with the field
 	IsImmutable bool   // True if the field is immutable.Map or immutable.Slice
+	Wrapped     bool   // True if the generator turned a raw map/slice into an immutable type, so conversions must copy
 	GenericType string // Generic type for immutable.Map or immutable.Slice
 }
 
@@ -64,6 +67,16 @@ type StructData struct {
 	Methods       []Method // The methods to be copied to the immutable struct
 	Imports       []string // The imports needed for the struct
 	UsesImmutable bool     // True if any field is an immutable.Map or immutable.Slice, requiring the immutable import
+	Wraps         bool     // True if the generator wrapped a raw map or slice, so Immutable() hands ownership over
+	CopyOnConvert bool     // True if Immutable() should copy the wrapped maps and slices instead of sharing them
+}
+
+// immutablePkg is the import path the generated file needs for immutable.Map and immutable.Slice.
+const immutablePkg = "github.com/gostdlib/base/values/immutable"
+
+// ImmutablePkg gives the struct template the immutable import path so the path is written down once.
+func (s StructData) ImmutablePkg() string {
+	return immutablePkg
 }
 
 var funcMap = template.FuncMap{
@@ -72,6 +85,30 @@ var funcMap = template.FuncMap{
 	"docComment":    docComment,
 	"inlineComment": inlineComment,
 	"multiline":     multiline,
+	"immutableExpr": immutableExpr,
+}
+
+// immutableExpr renders the expression that converts a field of the mutable struct into the field on the generated
+// immutable struct. A wrapped map or slice is shared with the original by default, which is what makes Immutable()
+// an ownership transfer; withCopy copies it instead so both values stay usable.
+func immutableExpr(f Field, withCopy bool) string {
+	src := "r." + f.PublicName
+	if !f.Wrapped {
+		return src
+	}
+	switch {
+	case strings.HasPrefix(f.Type, "immutable.Map"):
+		if withCopy {
+			src = "immutable.CopyMap(" + src + ")"
+		}
+		return "immutable.NewMap[" + f.GenericType + "](" + src + ")"
+	case strings.HasPrefix(f.Type, "immutable.Slice"):
+		if withCopy {
+			src = "immutable.CopySlice(" + src + ")"
+		}
+		return "immutable.NewSlice[" + f.GenericType + "](" + src + ")"
+	}
+	return src
 }
 
 // multiline reports whether a comment body spans more than one line.
@@ -82,12 +119,45 @@ func multiline(s string) bool {
 // docComment renders a comment body in a documentation comment position, returning the complete "//" prefixed
 // lines. ast.CommentGroup.Text() strips the "//" markers but keeps the line breaks, so a template that prefixes
 // only the first line emits bare Go source for every line after it and the generated file does not parse.
+// A line's leading whitespace is preserved: an indented line is a code block in a Go doc comment, and trimming it
+// would turn an example in the original comment into prose on the generated type, getter and setter.
 func docComment(s string) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
+	lines := blankTrim(strings.Split(s, "\n"))
 	for i, line := range lines {
-		lines[i] = strings.TrimRight("// "+strings.TrimSpace(line), " ")
+		line = strings.TrimRight(line, " \t")
+		switch {
+		case line == "":
+			lines[i] = "//"
+		case strings.HasPrefix(line, " "), strings.HasPrefix(line, "\t"):
+			// An indented line is a code block. Prefixing it with "// " instead of "//" would add a space
+			// gofmt then has to take back out.
+			lines[i] = "//" + line
+		default:
+			lines[i] = "// " + line
+		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// commentBody returns a comment group's text with its leading and trailing blank lines removed, and "" when there
+// is no comment. strings.TrimSpace cannot be used for this: it strips the whole body's leading whitespace, which is
+// the first line's indentation, so a comment opening with a code block would be flattened into prose.
+func commentBody(g *ast.CommentGroup) string {
+	if g == nil {
+		return ""
+	}
+	return strings.Join(blankTrim(strings.Split(g.Text(), "\n")), "\n")
+}
+
+// blankTrim drops the leading and trailing blank lines of a comment body, which a doc comment must not have.
+func blankTrim(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 // inlineComment renders a comment body in a trailing comment position, where a line break cannot be represented.
@@ -104,7 +174,7 @@ package {{.Package}}
 
 import (
 	{{- if .UsesImmutable }}
-	"github.com/gostdlib/base/values/immutable"
+	"{{ $.ImmutablePkg }}"
 	{{- end }}
 	{{ range .Imports }}
 	"{{.}}"
@@ -144,18 +214,70 @@ func (r {{.NewReceiver}}) {{.Name}}{{ if .Params }}({{.Params}}){{ else }}(){{ e
 }
 `))
 
+// SkipFile reports whether a file in the target's directory is not an input to generation: a file this tool
+// generated, or any test file. An external test package may legally declare its own type with the target's name,
+// so parsing test files would fail generation with "declared in this file but is not a struct type" depending
+// only on the order the files were listed in. Every reader of a package directory must use this one predicate so
+// the tool and its tests cannot disagree about which files count.
+func SkipFile(name string) bool {
+	return strings.HasSuffix(name, ImmutableSuffix) || strings.HasSuffix(name, "_test.go")
+}
+
+// Args are the arguments to Generate.
+type Args struct {
+	// Node is the parsed file to search for Target.
+	Node *ast.File
+	// FS is the FileSet Node was parsed with.
+	FS *token.FileSet
+	// Builder receives the generated source.
+	Builder *bytes.Buffer
+	// Target names the struct to make immutable. Must be a valid Go identifier.
+	Target string
+	// CopyOnConvert makes the generated Immutable() copy the maps and slices it wraps instead of sharing them
+	// with the original struct. The default, false, makes Immutable() an ownership transfer.
+	CopyOnConvert bool
+}
+
+// validate reports whether the arguments are usable.
+func (a Args) validate() error {
+	switch {
+	case a.Node == nil:
+		return fmt.Errorf("Node is required")
+	case a.FS == nil:
+		return fmt.Errorf("FS is required")
+	case a.Builder == nil:
+		return fmt.Errorf("Builder is required")
+	case !token.IsIdentifier(a.Target):
+		return fmt.Errorf("Target %q is not a valid Go identifier", a.Target)
+	}
+	return nil
+}
+
 // Generate generates an immutable version of the target struct from the provided Go file.
-// Returns true if the target struct was found and processed. The ouptut is written to the provided
-// strings.Builder.
-func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetStruct string) (bool, error) {
+// Returns true if the target struct was found and processed. The output is written to args.Builder.
+func Generate(args Args) (bool, error) {
+	if err := args.validate(); err != nil {
+		return false, err
+	}
+	node, fs, builder, targetStruct, copyOnConvert := args.Node, args.FS, args.Builder, args.Target, args.CopyOnConvert
+
 	var packageName string
 	found := false
 
 	var outerErr error
 	var intermediate bytes.Buffer
 
+	// topLevel holds the file's own declarations so a type declared inside a function body, which ast.Inspect
+	// also visits, is not mistaken for the target.
+	topLevel := make(map[ast.Decl]bool, len(node.Decls))
+	for _, d := range node.Decls {
+		topLevel[d] = true
+	}
+
 	ast.Inspect(node, func(n ast.Node) bool {
-		if found {
+		// Stop at the first error too: ast.Inspect's false only skips a node's children, not its siblings, so
+		// without this the walk would carry on and a later success could mask the failure that was recorded.
+		if found || outerErr != nil {
 			return false
 		}
 
@@ -164,7 +286,7 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 		}
 
 		genDecl, ok := n.(*ast.GenDecl)
-		if !ok || genDecl.Tok != token.TYPE {
+		if !ok || genDecl.Tok != token.TYPE || !topLevel[ast.Decl(genDecl)] {
 			return true
 		}
 
@@ -177,15 +299,12 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 			// Found the target struct
 			structType, ok := typeSpec.Type.(*ast.StructType)
 			if !ok {
-				log.Println("target struct is not a struct")
-				continue
+				outerErr = fmt.Errorf("%s is declared in this file but is not a struct type", targetStruct)
+				return false
 			}
 
 			// Extract the struct's comment
-			var structComment string
-			if genDecl.Doc != nil {
-				structComment = strings.TrimSpace(genDecl.Doc.Text())
-			}
+			structComment := commentBody(genDecl.Doc)
 
 			genericParams, genericUsage := extractTypeParams(fs, typeSpec)
 			immutableStructName := "Im" + targetStruct
@@ -196,16 +315,16 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 
 			for _, field := range structType.Fields.List {
 				for _, fieldName := range field.Names {
-					fieldType, genericType := computeFieldType(fs, field)
+					fieldType, genericType, wrapped := computeFieldType(fs, field)
 
 					// Extract field comments
-					fieldComment := ""
-					if field.Doc != nil {
-						fieldComment = strings.TrimSpace(field.Doc.Text())
-					}
+					fieldComment := commentBody(field.Doc)
 
-					// Determine if the field is immutable
-					isImmutable := strings.HasPrefix(fieldType, "immutable.Map") || strings.HasPrefix(fieldType, "immutable.Slice")
+					// Determine if the field is immutable. A wrapped field was just given the type by
+					// computeFieldType; an unwrapped one only counts when its qualifier resolves to this
+					// package, since another module's immutable mirror imported under the same name is a
+					// different type and emitting our import for it would collide with theirs.
+					isImmutable := wrapped || isImmutableType(fieldType, immutableName(node))
 
 					// Determine if the field was public
 					isPublic := strings.ToUpper(fieldName.Name[:1]) == fieldName.Name[:1]
@@ -217,6 +336,7 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 						WasPublic:   isPublic,
 						Comment:     fieldComment,
 						IsImmutable: isImmutable,
+						Wrapped:     wrapped,
 						GenericType: genericType,
 					})
 					fieldMap[fieldName.Name] = fieldType
@@ -243,12 +363,16 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 				return false
 			}
 
-			// Determine whether any field requires the immutable package import.
+			// Determine whether any field requires the immutable package import, and whether any raw map or
+			// slice was wrapped, which is what makes Immutable() an ownership transfer.
 			usesImmutable := false
+			wraps := false
 			for _, f := range fields {
 				if f.IsImmutable {
 					usesImmutable = true
-					break
+				}
+				if f.Wrapped {
+					wraps = true
 				}
 			}
 
@@ -263,13 +387,29 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 				GenericUsage:  genericUsage,
 				Methods:       methods,
 				UsesImmutable: usesImmutable,
+				Wraps:         wraps,
+				CopyOnConvert: copyOnConvert,
 			}
 
-			// Find any packages that the struct uses so we can import them.
+			// Find any packages that the struct uses so we can import them. The template emits the immutable
+			// import itself when UsesImmutable is set, so a struct that already declares an immutable field
+			// would otherwise have it imported twice and the generated file would not compile.
 			data.Imports, err = findStructImports(node, targetStruct)
 			if err != nil {
 				outerErr = fmt.Errorf("failed to find struct imports: %w", err)
 				return false
+			}
+			if usesImmutable {
+				data.Imports = slices.DeleteFunc(data.Imports, func(i string) bool { return i == immutablePkg })
+
+				// The generated file refers to this generator's immutable package by the name "immutable", so a
+				// different package carried in under that name cannot sit beside it. Only the imports the target
+				// actually uses matter: one referenced elsewhere in the file never reaches the generated file.
+				// Say so here rather than emitting both and leaving the caller with "redeclared in this block".
+				if conflict := conflictingImmutable(node, data.Imports); conflict != "" {
+					outerErr = fmt.Errorf("%s: %s uses %q as immutable, which collides with the %q the generated file needs; import one of them under another name", fs.Position(node.Pos()).Filename, targetStruct, conflict, immutablePkg)
+					return false
+				}
 			}
 
 			// Generate struct
@@ -294,7 +434,10 @@ func Generate(node *ast.File, fs *token.FileSet, builder *bytes.Buffer, targetSt
 			}
 
 			for _, method := range methods {
-				methodCopyTemplate.Execute(&intermediate, method)
+				if err := methodCopyTemplate.Execute(&intermediate, method); err != nil {
+					outerErr = fmt.Errorf("failed to execute method copy template: %w", err)
+					return false
+				}
 			}
 
 			found = true
@@ -385,7 +528,10 @@ func formatNode(fs *token.FileSet, node ast.Node) string {
 	return buf.String()
 }
 
-func computeFieldType(fs *token.FileSet, field *ast.Field) (fieldType, genericType string) {
+// computeFieldType returns the type the generated field gets, the generic arguments of that type, and whether a raw
+// map or slice was wrapped into an immutable one. Wrapped reports the difference between a field the generator
+// converted, whose conversions have to copy, and one the author already declared immutable, which is passed through.
+func computeFieldType(fs *token.FileSet, field *ast.Field) (fieldType, genericType string, wrapped bool) {
 	fieldType = formatNode(fs, field.Type)
 
 	// Replace map and slice types with immutable versions.
@@ -397,13 +543,75 @@ func computeFieldType(fs *token.FileSet, field *ast.Field) (fieldType, genericTy
 		valueType := fieldType[bracketEnd+1:]
 		genericType = keyType + ", " + strings.TrimSpace(valueType)
 		fieldType = "immutable.Map[" + genericType + "]"
+		wrapped = true
 	case strings.HasPrefix(fieldType, "[]"):
 		elementType := strings.TrimSpace(fieldType[2:])
 		genericType = elementType
 		fieldType = "immutable.Slice[" + genericType + "]"
+		wrapped = true
 	}
-	// Replace map and slice types with immutable versions
-	return fieldType, genericType
+	return fieldType, genericType, wrapped
+}
+
+// immutableName returns the name the file uses for this generator's immutable package, or "" when the file does
+// not import it. Aliased imports of other packages are not carried into the generated file, so an aliased
+// immutable import is not supported and correctly resolves to a field this generator leaves alone.
+func immutableName(f *ast.File) string {
+	for _, imp := range f.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		switch {
+		case err != nil, path != immutablePkg:
+			continue
+		case imp.Name != nil:
+			return imp.Name.Name
+		}
+		return "immutable"
+	}
+	return ""
+}
+
+// conflictingImmutable returns the path of an import the target struct carries into the generated file under the
+// name "immutable" that is not this generator's immutable package, or "". Only one package can hold that name in
+// the generated file, and only imports the struct actually uses matter — one referenced elsewhere in the file is
+// never emitted, so it cannot collide.
+func conflictingImmutable(f *ast.File, imports []string) string {
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || p == immutablePkg || !slices.Contains(imports, p) {
+			continue
+		}
+		name := pathName(p)
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		if name == "immutable" {
+			return p
+		}
+	}
+	return ""
+}
+
+// pathName guesses the package name an unaliased import resolves to: the last path element, skipping a major
+// version suffix such as /v2. A package whose name differs from its directory cannot be recognized without type
+// information; findStructImports makes the same assumption.
+func pathName(p string) string {
+	parts := strings.Split(p, "/")
+	base := parts[len(parts)-1]
+	if len(parts) > 1 && len(base) > 1 && base[0] == 'v' {
+		if _, err := strconv.Atoi(base[1:]); err == nil {
+			return parts[len(parts)-2]
+		}
+	}
+	return base
+}
+
+// isImmutableType reports whether a field type written by hand is one of this package's immutable types, given
+// the name the file imports that package under.
+func isImmutableType(fieldType, name string) bool {
+	if name == "" {
+		return false
+	}
+	return strings.HasPrefix(fieldType, name+".Map[") || strings.HasPrefix(fieldType, name+".Slice[")
 }
 
 // lowerFieldReferences finds expressions of the form "<recvVar>.<Field>"

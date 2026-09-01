@@ -9,12 +9,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/gostdlib/base/values/generators/immutable/internal/generate"
 )
 
-var structType = flag.String("type", "", "Name of the struct to make immutable")
+var (
+	structType = flag.String("type", "", "Name of the struct to make immutable")
+	copyValues = flag.Bool("copy", false, "Copy maps and slices in Immutable() so the original struct stays usable; by default they are shared and Immutable() hands ownership over")
+)
 
 type blah struct {
 	Name string
@@ -35,10 +37,14 @@ func main() {
 
 	var builder bytes.Buffer
 
-	// Process each Go file until the target struct is found
+	// Process each Go file until the target struct is found. A file can legitimately fail while a later one
+	// still holds the target — a build-constrained twin declaring the name as another kind, for instance, since
+	// Glob knows nothing of build tags — so the first error is remembered rather than fatal, and it is reported
+	// only if no file ends up supplying the struct.
 	found := false
+	var genErr error
 	for _, file := range goFiles {
-		if strings.HasSuffix(file, generate.ImmutableSuffix) {
+		if generate.SkipFile(file) {
 			continue
 		}
 		fs := token.NewFileSet()
@@ -48,15 +54,22 @@ func main() {
 			continue
 		}
 
-		if found, err = generate.Generate(fileAst, fs, &builder, *structType); found {
-			break
-		}
+		found, err = generate.Generate(generate.Args{Node: fileAst, FS: fs, Builder: &builder, Target: *structType, CopyOnConvert: *copyValues})
 		if err != nil {
-			log.Fatal(err)
+			if genErr == nil {
+				genErr = err
+			}
+			continue
+		}
+		if found {
+			break
 		}
 	}
 
 	if !found {
+		if genErr != nil {
+			log.Fatal(genErr)
+		}
 		log.Fatalf("Struct %s not found in the provided files", *structType)
 	}
 

@@ -121,6 +121,8 @@ func (r *ImGeneric[T, X]) SetComp(value X) ImGeneric[T, X] {
 }
 
 // Mutable converts the immutable struct back to the original mutable struct.
+// The maps and slices this type wrapped are copied one level deep, so the returned value can be modified without
+// changing the immutable one. A field declared immutable in Generic is returned as it is.
 func (r *ImGeneric[T, X]) Mutable() Generic[T, X] {
 	return Generic[T, X]{
 		ID:            r.id,
@@ -136,17 +138,20 @@ func (r *ImGeneric[T, X]) Mutable() Generic[T, X] {
 }
 
 // Immutable converts the mutable struct to the generated immutable struct.
+// Every map and slice is shared with the returned value rather than copied, so Generic must not be used
+// again after this call: writing to it would change the value returned here. Generate with -copy if both need to
+// stay usable.
 func (r *Generic[T, X]) Immutable() ImGeneric[T, X] {
 	return ImGeneric[T, X]{
-		id:            (r.ID),
-		name:          (r.Name),
-		email:         (r.Email),
+		id:            r.ID,
+		name:          r.Name,
+		email:         r.Email,
 		tags:          immutable.NewMap[string, struct{}](r.Tags),
 		slicesGeneric: immutable.NewSlice[T](r.SlicesGeneric),
 		slices:        immutable.NewSlice[int](r.Slices),
-		subData:       (r.SubData),
-		comp:          (r.Comp),
-		private:       (r.private),
+		subData:       r.SubData,
+		comp:          r.Comp,
+		private:       r.private,
 	}
 }
 

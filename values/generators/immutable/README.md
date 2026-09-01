@@ -50,9 +50,59 @@ root).
 | Flag | Description |
 |------|-------------|
 | `-type` | **(required)** Name of the struct to make immutable. Output is written to `<StructName>_immutable.go`. |
+| `-copy` | Make `Immutable()` copy the maps and slices it wraps, so the original struct stays usable. Off by default. |
 
 One struct per invocation — add a directive for each struct you want an
 immutable version of.
+
+### Ownership on conversion
+
+By default `Immutable()` shares the maps and slices it wraps with the value it
+returns rather than copying them. Calling it hands ownership over: the original
+struct must not be used again, because writing to it would change the immutable
+value.
+
+```go
+c := Cfg{Tags: map[string]string{"a": "1"}}
+im := c.Immutable()
+c.Tags["a"] = "2"     // WRONG: c was handed over, and this changes im too
+```
+
+Pass `-copy` when both values need to stay usable.
+
+The copy is **one level deep**. `-copy` copies the map or slice itself, so
+writing to `c.Tags` no longer reaches the immutable value — but what those
+entries hold is still shared:
+
+```go
+type Cfg struct {
+    Rows [][]int
+}
+
+c := Cfg{Rows: [][]int{{1, 2}}}
+im := c.Immutable()   // generated with -copy
+c.Rows[0][0] = 9      // still changes im: the inner slice was not copied
+```
+
+An element is deep-copied only when its type implements `immutable.Copier`, so
+give the element type a `Copy()` method if you need that. Pointer, interface,
+and nested map or slice elements are otherwise shared in both modes.
+
+`Mutable()` copies the wrapped maps and slices, in both modes, under the same
+one-level rule. A field you declared as an `immutable.Map`/`Slice` yourself is
+returned as it is, since it is already immutable.
+
+### Limitations
+
+- A **named** map or slice type is not wrapped. A field `Tags Tags`, where
+  `type Tags map[string]string`, is copied through as-is, so the generated type
+  is not actually immutable for that field. The generator works from the AST and
+  does not resolve a named type to its underlying kind. Use the underlying
+  `map[string]string` in the struct, or declare the field as an
+  `immutable.Map[string, string]` yourself.
+- An **aliased** import is not carried into the generated file. Import the
+  immutable package unaliased if you declare `immutable.Map`/`Slice` fields by
+  hand; a field qualified by any other name is left alone.
 
 ## Generated code
 

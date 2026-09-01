@@ -46,8 +46,8 @@ func (r *ImUnnamed) Mutable() Unnamed {
 // Immutable converts the mutable struct to the generated immutable struct.
 func (r *Unnamed) Immutable() ImUnnamed {
 	return ImUnnamed{
-		id:   (r.ID),
-		name: (r.Name),
+		id:   r.ID,
+		name: r.Name,
 	}
 }
 

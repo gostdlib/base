@@ -1,5 +1,3 @@
-//go:build unix
-
 // Package debugstrip provides a utility to reformat JSON log lines into a more human-readable format.
 // This is useful when not using a structured log viewer, such as when you want to quickly scan logs in a terminal.
 // It reads from standard input and writes to standard output. Lines that are not valid JSON or do not
@@ -8,7 +6,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,33 +18,75 @@ import (
 
 	"github.com/go-json-experiment/json"
 	"github.com/gostdlib/base/concurrency/sync"
+	"github.com/gostdlib/base/values/sizes"
 )
 
 func main() {
-	scan(context.Background(), os.Stdin, os.Stdout)
+	if err := scan(context.Background(), os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "debugstrip: %s\n", err)
+		os.Exit(1)
+	}
 }
 
-var lineReturn = []byte{'\n'}
+var (
+	lineReturn     = []byte{'\n'}
+	carriageReturn = []byte{'\r'}
+)
+
+// maxLine is the longest log line scan will read. A bufio.Scanner's 64 KiB default is far too small: a line carrying
+// a stack trace or a dumped object routinely runs past it, and those are precisely the lines this tool exists to
+// read. The limit is here only so that input with no newline at all cannot grow one allocation without bound.
+const maxLine = 64 * sizes.MiB
 
 // scan reads lines from the input reader, reformats them if they are JSON log lines, and writes them to the output writer.
-func scan(ctx context.Context, in io.Reader, out io.Writer) {
-	// Create a new scanner to read from os.Stdin
-	scanner := bufio.NewScanner(in)
+func scan(ctx context.Context, in io.Reader, out io.Writer) error {
+	reader := bufio.NewReader(in)
+	buf := &bytes.Buffer{}
 
 	for {
-		// Scan for the next token, which by default is a line
-		if scanner.Scan() {
-			// Get the text of the scanned line
-			line := scanner.Bytes()
-			_, err := out.Write(reframe(ctx, line))
-			if err != nil {
-				return
+		line, readErr := readLine(reader, buf, maxLine)
+		if len(line) > 0 {
+			if _, err := out.Write(reframe(ctx, trimEOL(line))); err != nil {
+				return fmt.Errorf("writing output: %w", err)
 			}
-			_, _ = out.Write(lineReturn) // Ignore this error.
+			if _, err := out.Write(lineReturn); err != nil {
+				return fmt.Errorf("writing output: %w", err)
+			}
+		}
+		switch {
+		case errors.Is(readErr, io.EOF):
+			return nil
+		case readErr != nil:
+			return fmt.Errorf("reading input: %w", readErr)
+		}
+	}
+}
+
+// readLine reads one line into buf and returns it, refusing to grow past limit bytes. bufio.Reader.ReadBytes cannot
+// be used for this: it has no limit of its own, so a newline-free stream would buffer entirely into memory. The limit
+// is a parameter rather than maxLine itself so the refusal can be tested without building a maxLine-sized input. The
+// returned slice is owned by buf and is only valid until the next call.
+func readLine(reader *bufio.Reader, buf *bytes.Buffer, limit int) ([]byte, error) {
+	buf.Reset()
+	for {
+		// ReadSlice returns what it has with ErrBufferFull when its buffer fills before the delimiter, so the
+		// line is accumulated a chunk at a time. Its slice points into the reader, so it must be copied now.
+		chunk, err := reader.ReadSlice('\n')
+		if buf.Len()+len(chunk) > limit {
+			return nil, fmt.Errorf("a single line ran past the %d byte limit", limit)
+		}
+		buf.Write(chunk)
+		if err == bufio.ErrBufferFull {
 			continue
 		}
-		return
+		return buf.Bytes(), err
 	}
+}
+
+// trimEOL removes the line terminator that readLine leaves on the line, including a CRLF's carriage return.
+func trimEOL(line []byte) []byte {
+	line = bytes.TrimSuffix(line, lineReturn)
+	return bytes.TrimSuffix(line, carriageReturn)
 }
 
 var reqKeys = []string{
@@ -59,7 +101,7 @@ type mapHolder struct {
 	m map[string]any
 }
 
-func (m mapHolder) valid() bool {
+func (m *mapHolder) valid() bool {
 	for _, k := range reqKeys {
 		if _, ok := m.m[k]; !ok {
 			return false
@@ -88,15 +130,15 @@ func (m mapHolder) valid() bool {
 	return hasFile && hasLine
 }
 
-func (m mapHolder) MarshalJSON() ([]byte, error) {
+func (m *mapHolder) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m.m)
 }
 
-func (m mapHolder) Reset() {
+func (m *mapHolder) Reset() {
 	clear(m.m)
 }
 
-func (m mapHolder) level() string {
+func (m *mapHolder) level() string {
 	v, ok := m.m["level"].(string)
 	if !ok {
 		return "UnknownLevel"
@@ -104,7 +146,7 @@ func (m mapHolder) level() string {
 	return strings.ToUpper(v)
 }
 
-func (m mapHolder) line() int {
+func (m *mapHolder) line() int {
 	// Try top level first
 	switch v := m.m["line"].(type) {
 	case int:
@@ -126,7 +168,7 @@ func (m mapHolder) line() int {
 	return 0
 }
 
-func (m mapHolder) shortFile() string {
+func (m *mapHolder) shortFile() string {
 	// Try top level first
 	v, ok := m.m["file"].(string)
 	if !ok {
@@ -147,7 +189,7 @@ func (m mapHolder) shortFile() string {
 	return parts[len(parts)-1]
 }
 
-func (m mapHolder) hourMinuteSecond() string {
+func (m *mapHolder) hourMinuteSecond() string {
 	v, ok := m.m["time"].(string)
 	if !ok {
 		return "00:00:00"
@@ -159,7 +201,7 @@ func (m mapHolder) hourMinuteSecond() string {
 	return tm.Format(`15:04:05`)
 }
 
-func (m mapHolder) msg() string {
+func (m *mapHolder) msg() string {
 	s, ok := m.m["msg"].(string)
 	if !ok {
 		return "no message"
@@ -170,8 +212,8 @@ func (m mapHolder) msg() string {
 var pool = sync.NewPool(
 	context.Background(),
 	"mapHolder",
-	func() mapHolder {
-		return mapHolder{m: make(map[string]any)}
+	func() *mapHolder {
+		return &mapHolder{m: make(map[string]any)}
 	},
 	sync.WithBuffer(10),
 )
