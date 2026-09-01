@@ -103,13 +103,13 @@ type ResultKind uint8
 const (
 	// RKUnknown indicates a Result that was never populated. This always indicates a bug.
 	RKUnknown ResultKind = 0 // Unknown
-	// Received indicates a value was received on Result.Ch and is stored in Result.Value.
+	// Received indicates a value was received on Result.RecvCh and is stored in Result.Value.
 	Received ResultKind = 1 // Received
-	// Closed indicates Result.Ch was closed. The case was removed and no Action was run.
+	// Closed indicates Result.RecvCh was closed. The case was removed and no Action was run.
 	Closed ResultKind = 2 // Closed
-	// Sent indicates Result.Value was sent on Result.Ch. The case was removed.
+	// Sent indicates Result.Value was sent on Result.SendCh. The case was removed.
 	Sent ResultKind = 3 // Sent
-	// CtxDone indicates the Context passed to Select() was cancelled. Result.Ch is nil.
+	// CtxDone indicates the Context passed to Select() was cancelled. RecvCh and SendCh are nil.
 	CtxDone ResultKind = 4 // CtxDone
 	// Defaulted indicates no case was ready. Only TrySelect() can return this.
 	Defaulted ResultKind = 5 // Defaulted
@@ -119,8 +119,10 @@ const (
 type Result[T any] struct {
 	// Kind says why Select() returned and which other fields are set. Always switch on this first.
 	Kind ResultKind
-	// Ch is the channel the case was on. This is nil for CtxDone and Defaulted.
-	Ch chan T
+	// RecvCh is the channel the case was on for Received and Closed. It is nil for every other Kind.
+	RecvCh <-chan T
+	// SendCh is the channel the case was on for Sent. It is nil for every other Kind.
+	SendCh chan<- T
 	// Value is the value received (Received) or sent (Sent). It is the zero value otherwise.
 	Value T
 }
@@ -140,9 +142,14 @@ const (
 // entry is a single dynamic case. An entry is immutable once it is published inside a snapshot. chVal and sendVal
 // are precomputed at Add time so that rebuilding the scratch slice needs no reflect calls and no allocations.
 type entry[T any] struct {
-	id      uint64
-	kind    entryKind
-	ch      chan T
+	id   uint64
+	kind entryKind
+	// key is the channel's identity, independent of its direction, and is the exists map key. It is safe as a
+	// uintptr because chVal holds a live reference for as long as the entry is registered, so the channel can
+	// never be collected out from under it, and the key is deleted on removal. It is never dereferenced.
+	key     uintptr
+	recvCh  <-chan T
+	sendCh  chan<- T
 	chVal   reflect.Value
 	sendVal reflect.Value
 	value   T
@@ -197,7 +204,7 @@ func WithPreallocate(n int) Option {
 type Select[T any] struct {
 	// mu guards the mutator side of the copy on write. The consumer only takes it to auto remove a finished case.
 	mu     sync.Mutex
-	exists map[chan T]uint64
+	exists map[uintptr]uint64
 	nextID uint64
 
 	// snap holds the current immutable snapshot. Readers load it without taking mu.
@@ -234,7 +241,7 @@ func New[T any](options ...Option) (*Select[T], error) {
 	}
 
 	s := &Select[T]{
-		exists: make(map[chan T]uint64, o.prealloc),
+		exists: make(map[uintptr]uint64, o.prealloc),
 		wake:   make(chan struct{}, 1),
 	}
 	s.wakeVal = reflect.ValueOf((<-chan struct{})(s.wake))
@@ -283,29 +290,44 @@ func (s *Select[T]) signal() {
 
 // add copies the current snapshot, appends e and publishes the copy.
 func (s *Select[T]) add(e entry[T]) error {
+	return s.addAll([]entry[T]{e})
+}
+
+// addAll copies the current snapshot once, appends every entry in entries and publishes the copy. It is all or
+// nothing: if any entry is already registered, or the batch would exceed maxCases, nothing is added. Adding n cases
+// this way costs one snapshot copy rather than the n copies that n calls to add() would cost.
+func (s *Select[T]) addAll(entries []entry[T]) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.exists[e.ch]; ok {
-		return ErrDupChan
+	// Validate the whole batch before mutating anything, so a rejected batch leaves the Select untouched.
+	for _, e := range entries {
+		if _, ok := s.exists[e.key]; ok {
+			return ErrDupChan
+		}
 	}
 
 	cur := *s.snap.Load()
-	if cur.Len() >= maxCases {
+	if cur.Len()+len(entries) > maxCases {
 		return ErrTooManyCases
 	}
 
-	s.nextID++
-	e.id = s.nextID
-
 	// Exact capacity, because the slice behind a published snapshot must never be appended into.
-	raw := make([]entry[T], 0, cur.Len()+1)
+	raw := make([]entry[T], 0, cur.Len()+len(entries))
 	for _, existing := range cur.All() {
 		raw = append(raw, existing)
 	}
-	raw = append(raw, e)
+	for _, e := range entries {
+		s.nextID++
+		e.id = s.nextID
+		raw = append(raw, e)
+		s.exists[e.key] = e.id
+	}
 
-	s.exists[e.ch] = e.id
 	s.store(immutable.NewSlice(raw))
 	s.signal()
 	return nil
@@ -314,26 +336,55 @@ func (s *Select[T]) add(e entry[T]) error {
 // AddRecv adds a case that receives from ch. When a value arrives, action is called with it and Select() returns a
 // Received Result. If ch is closed, Select() returns a Closed Result, the case is removed and
 // action is NOT called. action may be nil. ch cannot be nil and cannot already be in use by another case.
-func (s *Select[T]) AddRecv(ch chan T, action Action[T]) error {
+func (s *Select[T]) AddRecv(ch <-chan T, action Action[T]) error {
 	if ch == nil {
 		return ErrNilChan
 	}
-	return s.add(entry[T]{kind: ekRecv, ch: ch, chVal: reflect.ValueOf(ch), action: action})
+	chVal := reflect.ValueOf(ch)
+	return s.add(entry[T]{kind: ekRecv, key: chVal.Pointer(), recvCh: ch, chVal: chVal, action: action})
+}
+
+// AddRecvAll adds a receive case for every channel in chs, all in a single snapshot update. It is equivalent to
+// calling AddRecv once per channel with the same action, but costs one snapshot copy instead of len(chs), so
+// registering n channels is O(n) rather than O(n^2). It is all or nothing: if any channel is nil, is already in use,
+// or is repeated within chs, nothing is added and the error is returned. action may be nil.
+func (s *Select[T]) AddRecvAll(action Action[T], chs ...<-chan T) error {
+	if len(chs) == 0 {
+		return nil
+	}
+
+	entries := make([]entry[T], 0, len(chs))
+	seen := make(map[uintptr]bool, len(chs))
+	for _, ch := range chs {
+		if ch == nil {
+			return ErrNilChan
+		}
+		chVal := reflect.ValueOf(ch)
+		key := chVal.Pointer()
+		if seen[key] {
+			return ErrDupChan
+		}
+		seen[key] = true
+		entries = append(entries, entry[T]{kind: ekRecv, key: key, recvCh: ch, chVal: chVal, action: action})
+	}
+	return s.addAll(entries)
 }
 
 // AddSend adds a case that sends value on ch. The case is one shot: once the send completes, action is called with
 // value, the case is removed and Select() returns a Sent Result. action may be nil. ch cannot be nil and
 // cannot already be in use by another case. Closing ch while a send case is pending panics inside Select(), exactly
 // as it would in a hand written select statement.
-func (s *Select[T]) AddSend(ch chan T, value T, action Action[T]) error {
+func (s *Select[T]) AddSend(ch chan<- T, value T, action Action[T]) error {
 	if ch == nil {
 		return ErrNilChan
 	}
 
+	chVal := reflect.ValueOf(ch)
 	e := entry[T]{
-		kind:  ekSend,
-		ch:    ch,
-		chVal: reflect.ValueOf(ch),
+		kind:   ekSend,
+		key:    chVal.Pointer(),
+		sendCh: ch,
+		chVal:  chVal,
 		// This is deliberately not reflect.ValueOf(value). If T is an interface type holding nil, that yields
 		// the invalid Value and reflect.Select panics with "SendDir case missing Send value". Going through a
 		// pointer always yields a Value whose type is exactly T.
@@ -344,7 +395,10 @@ func (s *Select[T]) AddSend(ch chan T, value T, action Action[T]) error {
 	return s.add(e)
 }
 
-// Remove removes ch from the Select and reports whether it was present.
+// Remove removes ch from the Select and reports whether it was present. ch may be a bidirectional, receive only or
+// send only channel of T, including a defined type whose underlying type is one of those; it is matched by channel
+// identity, not by the static type it was added with. A nil ch reports false. Passing anything that is not a channel
+// of T panics, because that is a programming error rather than a runtime condition.
 //
 // Remove is not a synchronization point, and it does not retract a select that is already running. A blocked
 // Select() is parked on the previous case set, which still contains ch, so it can still receive from ch and run
@@ -354,15 +408,27 @@ func (s *Select[T]) AddSend(ch chan T, value T, action Action[T]) error {
 // Suppressing such a delivery would mean discarding a value the runtime had already taken off the channel, which
 // is worse than a late one. If you need a hard barrier, close ch instead and wait for a Closed Result, which is by
 // definition the last event for that channel.
-func (s *Select[T]) Remove(ch chan T) bool {
+func (s *Select[T]) Remove(ch any) bool {
 	if ch == nil {
 		return false
 	}
 
+	v := reflect.ValueOf(ch)
+	if v.Kind() != reflect.Chan || v.Type().Elem() != reflect.TypeFor[T]() {
+		panic(fmt.Sprintf("Select.Remove: want a channel of %s, got %T", reflect.TypeFor[T](), ch))
+	}
+	if v.IsNil() {
+		return false
+	}
+	return s.remove(v.Pointer())
+}
+
+// remove removes the case registered under key and reports whether it was present.
+func (s *Select[T]) remove(key uintptr) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id, ok := s.exists[ch]
+	id, ok := s.exists[key]
 	if !ok {
 		return false
 	}
@@ -393,8 +459,8 @@ func (s *Select[T]) removeID(id uint64) {
 	}
 
 	// Only drop the map key if it still points at the entry we removed.
-	if s.exists[removed.ch] == id {
-		delete(s.exists, removed.ch)
+	if s.exists[removed.key] == id {
+		delete(s.exists, removed.key)
 	}
 	s.store(immutable.NewSlice(raw))
 }
@@ -519,7 +585,7 @@ func (s *Select[T]) finish(ctx context.Context, e entry[T], recvVal reflect.Valu
 		if e.action != nil {
 			e.action(ctx, e.value)
 		}
-		return Result[T]{Kind: Sent, Ch: e.ch, Value: e.value}
+		return Result[T]{Kind: Sent, SendCh: e.sendCh, Value: e.value}
 	default:
 		panic(fmt.Sprintf("bug: dynamic.Select entry has kind %d, which is not a valid entryKind", e.kind))
 	}
@@ -532,7 +598,7 @@ func (s *Select[T]) finish(ctx context.Context, e entry[T], recvVal reflect.Valu
 		s.mu.Unlock()
 
 		var zero T
-		return Result[T]{Kind: Closed, Ch: e.ch, Value: zero}
+		return Result[T]{Kind: Closed, RecvCh: e.recvCh, Value: zero}
 	}
 
 	// The comma ok form matters: if T is an interface type and the value is nil, a plain assertion panics.
@@ -540,10 +606,10 @@ func (s *Select[T]) finish(ctx context.Context, e entry[T], recvVal reflect.Valu
 	if e.action != nil {
 		e.action(ctx, v)
 	}
-	return Result[T]{Kind: Received, Ch: e.ch, Value: v}
+	return Result[T]{Kind: Received, RecvCh: e.recvCh, Value: v}
 }
 
-// All returns an iterator over Results for use with range. It stops when the loop body breaks or when ctx is done,
+// All returns an iterator that calls Select() and returns the Results. It stops when the loop body breaks or when ctx is done,
 // yielding a final CtxDone Result first. Only one goroutine may iterate at a time.
 func (s *Select[T]) All(ctx context.Context) iter.Seq[Result[T]] {
 	return func(yield func(Result[T]) bool) {
