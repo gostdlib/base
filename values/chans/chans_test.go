@@ -194,6 +194,7 @@ func TestTryPut(t *testing.T) {
 		name      string
 		prefill   int
 		nilChan   bool
+		options   []TryPutOption
 		wantOK    bool
 		wantPanic bool
 	}{
@@ -204,6 +205,16 @@ func TestTryPut(t *testing.T) {
 		{
 			name:    "Success: channel is full reports not ok",
 			prefill: 1,
+		},
+		{
+			name:    "Success: WithTPNoPanic still sends when the channel has room",
+			options: []TryPutOption{WithTPNoPanic()},
+			wantOK:  true,
+		},
+		{
+			name:    "Success: nil channel with WithTPNoPanic reports not ok",
+			nilChan: true,
+			options: []TryPutOption{WithTPNoPanic()},
 		},
 		{
 			name:      "Error: channel is nil",
@@ -232,7 +243,7 @@ func TestTryPut(t *testing.T) {
 				}
 			}
 
-			ok := TryPut(ch, 42)
+			ok := TryPut(ch, 42, test.options...)
 			if ok != test.wantOK {
 				t.Errorf("TestTryPut(%s): got ok == %t, want ok == %t", test.name, ok, test.wantOK)
 			}
@@ -253,6 +264,7 @@ func TestTryGet(t *testing.T) {
 		prefill    []int
 		closed     bool
 		nilChan    bool
+		options    []TryGetOption
 		wantV      int
 		wantOK     bool
 		wantClosed bool
@@ -278,6 +290,16 @@ func TestTryGet(t *testing.T) {
 			closed:  true,
 			wantV:   7,
 			wantOK:  true,
+		},
+		{
+			name:    "Success: WithNoPanic on an open empty channel reports not closed",
+			options: []TryGetOption{WithNoPanic()},
+		},
+		{
+			name:       "Success: nil channel with WithNoPanic reports closed",
+			nilChan:    true,
+			options:    []TryGetOption{WithNoPanic()},
+			wantClosed: true,
 		},
 		{
 			name:      "Error: channel is nil",
@@ -309,7 +331,7 @@ func TestTryGet(t *testing.T) {
 				}
 			}
 
-			v, ok, closed := TryGet(ch)
+			v, ok, closed := TryGet(ch, test.options...)
 			if v != test.wantV {
 				t.Errorf("TestTryGet(%s): got v == %d, want v == %d", test.name, v, test.wantV)
 			}
