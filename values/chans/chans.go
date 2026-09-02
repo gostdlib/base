@@ -31,6 +31,46 @@ func Get[T any](ctx context.Context, ch <-chan T) (v T, ok bool) {
 	}
 }
 
+type tryGetOpt struct {
+	// noPanic makes a nil channel return ok == false and closed == true instead of panicking. Defaults to false,
+	// which panics on a nil channel.
+	noPanic bool
+}
+
+// TryGetOption is an option for TryGet.
+type TryGetOption func(tryGetOpt) tryGetOpt
+
+// WithNoPanic sets TryGet to return the zero value of T, ok == false and closed == true if the channel is nil.
+// By default, TryGet panics if the channel is nil.
+func WithNoPanic() TryGetOption {
+	return func(o tryGetOpt) tryGetOpt {
+		o.noPanic = true
+		return o
+	}
+}
+
+// TryGet returns the next value from ch if available. ok is true if a value was received. closed is true if ch is
+// closed and drained. On closed or empty channels, v is the zero value of T. If ch is nil, it panics unless
+// WithNoPanic() is used, in which case it returns the zero value of T, ok == false and closed == true.
+func TryGet[T any](ch <-chan T, options ...TryGetOption) (v T, ok, closed bool) {
+	opts := tryGetOpt{}
+	for _, opt := range options {
+		opts = opt(opts)
+	}
+	if ch == nil {
+		if opts.noPanic {
+			return v, false, true
+		}
+		panic("cannot receive from a nil channel")
+	}
+	select {
+	case v, ok = <-ch:
+		return v, ok, !ok
+	default:
+		return v, false, false
+	}
+}
+
 // Put sends a value to ch. If the context is done, it returns ok == false. If ch is nil, it panics.
 func Put[T any](ctx context.Context, ch chan<- T, v T) (ok bool) {
 	if ch == nil {
@@ -44,10 +84,35 @@ func Put[T any](ctx context.Context, ch chan<- T, v T) (ok bool) {
 	}
 }
 
-// TryPut sends a value to ch if it is not full. If ch is nil, it panics. It returns true if the value was sent,
-// false if the channel was full.
-func TryPut[T any](ch chan<- T, v T) (ok bool) {
+type tryPutOpt struct {
+	// noPanic makes a nil channel return false instead of panicking. Defaults to false, which panics on a nil channel.
+	noPanic bool
+}
+
+// TryPutOption is an option for TryPut.
+type TryPutOption func(tryPutOpt) tryPutOpt
+
+// WithTPNoPanic sets TryPut to return false if the channel is nil. By default, TryPut panics if the channel is nil.
+func WithTPNoPanic() TryPutOption {
+	return func(o tryPutOpt) tryPutOpt {
+		o.noPanic = true
+		return o
+	}
+}
+
+// TryPut sends a value to ch if it is not full. It returns true if the value was sent, false if the channel was full.
+// If ch is nil, it panics unless WithTPNoPanic() is used, in which case it returns false. If ch is closed, it panics
+// regardless of WithTPNoPanic().
+func TryPut[T any](ch chan<- T, v T, options ...TryPutOption) (ok bool) {
+	opts := tryPutOpt{}
+	for _, opt := range options {
+		opts = opt(opts)
+	}
+
 	if ch == nil {
+		if opts.noPanic {
+			return false
+		}
 		panic("cannot send to a nil channel")
 	}
 	select {
@@ -77,21 +142,6 @@ func Fill[T any](ctx context.Context, ch chan<- T, seq iter.Seq[T]) (undelivered
 		}
 	}
 	return undelivered, true
-}
-
-// TryGet returns the next value from ch if available. ok is true if a value was received. closed is true if ch is
-// closed and drained, which lets a caller polling TryGet detect termination instead of spinning forever. On closed
-// or empty channels, v is the zero value of T. If ch is nil, it panics.
-func TryGet[T any](ch <-chan T) (v T, ok, closed bool) {
-	if ch == nil {
-		panic("cannot receive from a nil channel")
-	}
-	select {
-	case v, ok = <-ch:
-		return v, ok, !ok
-	default:
-		return v, false, false
-	}
 }
 
 // Iter returns a sequence that yields values from ch until the context is done or ch is closed. If ch is nil,

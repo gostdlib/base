@@ -18,10 +18,6 @@ var (
 	copyValues = flag.Bool("copy", false, "Copy maps and slices in Immutable() so the original struct stays usable; by default they are shared and Immutable() hands ownership over")
 )
 
-type blah struct {
-	Name string
-}
-
 func main() {
 	flag.Parse()
 
