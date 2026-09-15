@@ -130,24 +130,24 @@ type regionZone struct {
 	zone   string
 }
 
-func NewregionZone(region string, zone string) regionZone
+func newRegionZone(region string, zone string) regionZone
 func (t regionZone) Region() string
 func (t regionZone) Zone() string
 func (t regionZone) Len() int
 func (t regionZone) String() string // "(us-east, 1a)"
 ```
 
-Note the constructor is `New` + the verbatim name, so an unexported tuple yields
-`NewregionZone`, not `NewRegionZone`.
+The constructor follows the type's visibility: an unexported tuple yields `newRegionZone` and an exported
+`RegionZone` yields `NewRegionZone`.
 
 ## Usage example
 
 Flattening the nested map the tuple replaces:
 
 ```go
-// m[r][z]                     → m[NewregionZone(r, z)]
-// m[r][z] = v (+ inner init)  → m[NewregionZone(r, z)] = v
-// delete(m[r], z)             → delete(m, NewregionZone(r, z))
+// m[r][z]                     → m[newRegionZone(r, z)]
+// m[r][z] = v (+ inner init)  → m[newRegionZone(r, z)] = v
+// delete(m[r], z)             → delete(m, newRegionZone(r, z))
 // for r, inner := range m { for z, v := range inner { … } }
 //                             → for k, v := range m { k.Region(); k.Zone() }
 ```

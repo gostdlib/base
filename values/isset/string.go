@@ -45,12 +45,20 @@ func (i String) MarshalJSON() ([]byte, error) {
 	return json.Marshal(i.v)
 }
 
-// MarshalJSONV2 implements the json.MarshalerV2 interface.
-func (i String) MarshalJSONV2(enc *jsontext.Encoder, opts json.Options) error {
+// MarshalJSONTo implements the json.MarshalerTo interface.
+func (i String) MarshalJSONTo(enc *jsontext.Encoder) error {
 	if !i.isSet {
 		return enc.WriteToken(jsontext.Null)
 	}
 	return enc.WriteToken(jsontext.String(string(i.v)))
+}
+
+// MarshalJSONV2 calls MarshalJSONTo.
+//
+// Deprecated: Use MarshalJSONTo. The json v2 marshaler interface is json.MarshalerTo, which this method name
+// never satisfied.
+func (i String) MarshalJSONV2(enc *jsontext.Encoder, _ json.Options) error {
+	return i.MarshalJSONTo(enc)
 }
 
 // UnmarshalJSON implements the json.Unmarshaler interface.
@@ -70,8 +78,8 @@ func (i *String) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSONV2 implements the json.UnmarshalerV2 interface.
-func (v *String) UnmarshalJSONV2(dec *jsontext.Decoder, opts json.Options) error {
+// UnmarshalJSONFrom implements the json.UnmarshalerFrom interface.
+func (v *String) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	t, err := dec.ReadToken()
 	if err != nil {
 		return err
@@ -88,4 +96,12 @@ func (v *String) UnmarshalJSONV2(dec *jsontext.Decoder, opts json.Options) error
 		return nil
 	}
 	return fmt.Errorf("expected a JSON string, got %v", t.Kind())
+}
+
+// UnmarshalJSONV2 calls UnmarshalJSONFrom.
+//
+// Deprecated: Use UnmarshalJSONFrom. The json v2 unmarshaler interface is json.UnmarshalerFrom, which this
+// method name never satisfied.
+func (v *String) UnmarshalJSONV2(dec *jsontext.Decoder, _ json.Options) error {
+	return v.UnmarshalJSONFrom(dec)
 }

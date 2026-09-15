@@ -5,7 +5,6 @@ import (
 	"io"
 	"testing"
 
-	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
 )
 
@@ -57,12 +56,12 @@ func BenchmarkInt(b *testing.B) {
 	})
 
 	enc := jsontext.NewEncoder(io.Discard)
-	b.Run("MarshalJSONV2", func(b *testing.B) {
+	b.Run("MarshalJSONTo", func(b *testing.B) {
 		var v Int
 		v = v.Set(42)
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			err = v.MarshalJSONV2(enc, json.DefaultOptionsV2())
+			err = v.MarshalJSONTo(enc)
 		}
 	})
 
@@ -74,16 +73,19 @@ func BenchmarkInt(b *testing.B) {
 		}
 	})
 
-	dec := jsontext.NewDecoder(bytes.NewReader([]byte("42")))
-	b.Run("UnmarshalJSONV2", func(b *testing.B) {
+	b.Run("UnmarshalJSONFrom", func(b *testing.B) {
+		data := []byte("42")
+		r := bytes.NewReader(data)
+		dec := jsontext.NewDecoder(r)
 		b.ReportAllocs()
+		// The decoder is reset inside the timed loop because StopTimer/StartTimer with ReportAllocs reads memory
+		// stats on every call, which costs far more than the decode and makes the benchmark take minutes.
 		for i := 0; i < b.N; i++ {
-			b.StopTimer()
-			dec.Reset(bytes.NewReader([]byte("42")))
-			b.StartTimer()
+			r.Reset(data)
+			dec.Reset(r)
 
 			var x Int
-			err = x.UnmarshalJSONV2(dec, json.DefaultOptionsV2())
+			err = x.UnmarshalJSONFrom(dec)
 		}
 	})
 }

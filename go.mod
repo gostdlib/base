@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/Azure/retry v0.0.0-20260629192600-3a6893b45f6d
 	github.com/CAFxX/httpcompression v0.0.9
-	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2
+	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3
 	github.com/gofiber/fiber/v2 v2.52.13
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0

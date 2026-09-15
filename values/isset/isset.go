@@ -56,19 +56,16 @@ Example:
 
 Benchmarks:
 
-	BenchmarkInt/Set-10                             1000000000               0.3142 ns/op          0 B/op          0 allocs/op
-	BenchmarkInt/Unset-10                           1000000000               0.3140 ns/op          0 B/op          0 allocs/op
-	BenchmarkInt/V-10                               1000000000               0.3156 ns/op          0 B/op          0 allocs/op
-	BenchmarkInt/IsSet-10                           1000000000               0.3148 ns/op          0 B/op          0 allocs/op
-	BenchmarkInt/MarshalJSON-10                     14314348                82.78 ns/op           16 B/op          2 allocs/op
-	BenchmarkInt/MarshalJSONV2-10                   76317876                15.72 ns/op            0 B/op          0 allocs/op
-	BenchmarkInt/UnmarshalJSON-10                   14442656                82.24 ns/op           16 B/op          2 allocs/op
-	BenchmarkInt/UnmarshalJSONV2-10                  3822488               309.4 ns/op            64 B/op          1 allocs/op
+	BenchmarkInt/Set-10                             1000000000               0.3239 ns/op          0 B/op          0 allocs/op
+	BenchmarkInt/Unset-10                           1000000000               0.3337 ns/op          0 B/op          0 allocs/op
+	BenchmarkInt/V-10                               1000000000               0.3183 ns/op          0 B/op          0 allocs/op
+	BenchmarkInt/IsSet-10                           1000000000               0.3166 ns/op          0 B/op          0 allocs/op
+	BenchmarkInt/MarshalJSON-10                     14258449                82.80 ns/op           16 B/op          2 allocs/op
+	BenchmarkInt/MarshalJSONTo-10                   73467886                16.44 ns/op            0 B/op          0 allocs/op
+	BenchmarkInt/UnmarshalJSON-10                   13472341                93.45 ns/op           16 B/op          2 allocs/op
+	BenchmarkInt/UnmarshalJSONFrom-10               17886554                66.00 ns/op            0 B/op          0 allocs/op
 
-Benchmark note: I expect BenchmarkInt/UnmarshalJSONV2-10 time of 309.4 ns/op to be significantly lower on a real system.
-Testing this is a little funky because you have to re-create the JSON decoder each time. Even with starting and
-stopping the timer in the test, the time is still higher than I would expect in the real world.
-I think this is due to the test harness and not the actual performance of the code.
+UnmarshalJSONFrom includes resetting the decoder on every iteration.
 
 Note: This does not use a single generic type because the json unmarshalling in the v2 package required type detection at runtime.
 By not using a generic version, we already know what broad type we are dealing with and can avoid the type detection.
@@ -78,6 +75,23 @@ package isset
 
 import (
 	"unsafe"
+
+	"github.com/go-json-experiment/json"
+)
+
+// Compile time assertions that every type here implements the json v2 marshaling interfaces. Without these it is
+// easy to rename a method and silently fall back to the slower v1 reflection path.
+var (
+	_ json.MarshalerTo     = Bool{}
+	_ json.UnmarshalerFrom = (*Bool)(nil)
+	_ json.MarshalerTo     = String{}
+	_ json.UnmarshalerFrom = (*String)(nil)
+	_ json.MarshalerTo     = Int{}
+	_ json.UnmarshalerFrom = (*Int)(nil)
+	_ json.MarshalerTo     = Uint{}
+	_ json.UnmarshalerFrom = (*Uint)(nil)
+	_ json.MarshalerTo     = Float64{}
+	_ json.UnmarshalerFrom = (*Float64)(nil)
 )
 
 // bytesToStr converts a byte slice to a string without copying the data.

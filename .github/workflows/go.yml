@@ -11,14 +11,32 @@ on:
 
 jobs:
   build:
+    name: build (go ${{ matrix.go }}, GOEXPERIMENT=${{ matrix.goexperiment || 'default' }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Go 1.26 without experiments: github.com/go-json-experiment/json is its own implementation.
+          - go: "1.26.x"
+            goexperiment: ""
+          # Go 1.26 with the json v2 experiment: github.com/go-json-experiment/json aliases the standard library's
+          # encoding/json/v2, and the stdlib json v2 tests (values/isset/stdlib_jsonv2_test.go) run.
+          - go: "1.26.x"
+            goexperiment: "jsonv2"
+          # Go 1.27 turns the json v2 experiment on by default, so the stdlib json v2 tests run here too.
+          - go: "1.27.x"
+            goexperiment: ""
+    env:
+      GOEXPERIMENT: ${{ matrix.goexperiment }}
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: ${{ matrix.go }}
 
       - name: Build
         run: go build -v ./...

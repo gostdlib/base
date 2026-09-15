@@ -45,6 +45,21 @@ func TestValidate(t *testing.T) {
 			cfg:     config{name: "lastFirst", fields: []field{{Field: "last", Type: "string"}, {Field: "last", Type: "string"}}},
 			wantErr: true,
 		},
+		{
+			name:    "Error: field name is a Go keyword",
+			cfg:     config{name: "key", fields: []field{{Field: "type", Accessor: "Type", Type: "string"}}},
+			wantErr: true,
+		},
+		{
+			name:    "Error: field accessor collides with the generated Len method",
+			cfg:     config{name: "key", fields: []field{{Field: "len", Accessor: "Len", Type: "int"}}},
+			wantErr: true,
+		},
+		{
+			name:    "Error: field accessor collides with the generated String method",
+			cfg:     config{name: "key", fields: []field{{Field: "string", Accessor: "String", Type: "string"}}},
+			wantErr: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -171,6 +186,27 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestConstructorName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "Success: An unexported type gets an unexported constructor with the type name capitalized.", in: "lastFirst", want: "newLastFirst"},
+		{name: "Success: An exported type gets an exported constructor.", in: "LastFirst", want: "NewLastFirst"},
+		{name: "Success: A single letter unexported type is capitalized after new.", in: "k", want: "newK"},
+		{name: "Success: A type starting with an underscore is unexported and keeps the underscore.", in: "_key", want: "new_key"},
+	}
+
+	for _, test := range tests {
+		if got := constructorName(test.in); got != test.want {
+			t.Errorf("TestConstructorName(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
 func TestGenerate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -228,8 +264,8 @@ type lastFirst struct {
 	v1 string
 }
 
-// NewlastFirst creates a new lastFirst tuple with the given values.
-func NewlastFirst(v0 string, v1 string) lastFirst {
+// newLastFirst creates a new lastFirst tuple with the given values.
+func newLastFirst(v0 string, v1 string) lastFirst {
 	return lastFirst{v0: v0, v1: v1}
 }
 
@@ -260,8 +296,8 @@ type lastFirst struct {
 	first string
 }
 
-// NewlastFirst creates a new lastFirst tuple with the given values.
-func NewlastFirst(last string, first string) lastFirst {
+// newLastFirst creates a new lastFirst tuple with the given values.
+func newLastFirst(last string, first string) lastFirst {
 	return lastFirst{last: last, first: first}
 }
 

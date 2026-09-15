@@ -53,7 +53,8 @@ go get -tool github.com/gostdlib/base/values/generators/tuple
 
 The name is used **verbatim**, so its case controls whether the generated type is
 exported: `lastFirst` generates an unexported `lastFirst`, while `LastFirst`
-generates an exported `LastFirst`. The accessor methods are exported either way.
+generates an exported `LastFirst`. The constructor follows the type: `newLastFirst` for
+an unexported type, `NewLastFirst` for an exported one. The accessor methods are exported either way.
 
 Each field after the name is a comma-separated `type` or `name:type`
 specification. A bare `type` produces a positional field with accessor `V0`,
@@ -84,8 +85,8 @@ type lastFirst struct {
 	first string
 }
 
-// NewlastFirst creates a new lastFirst tuple with the given values.
-func NewlastFirst(last string, first string) lastFirst {
+// newLastFirst creates a new lastFirst tuple with the given values.
+func newLastFirst(last string, first string) lastFirst {
 	return lastFirst{last: last, first: first}
 }
 
