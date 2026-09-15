@@ -13,7 +13,7 @@
 //		v1 string
 //	}
 //
-//	func NewlastFirst(v0 string, v1 string) lastFirst { ... }
+//	func newLastFirst(v0 string, v1 string) lastFirst { ... }
 //	func (t lastFirst) V0() string { ... }
 //	func (t lastFirst) V1() string { ... }
 //	func (t lastFirst) Len() int { ... }
@@ -27,7 +27,9 @@
 // generates a lastFirst tuple whose accessors are Last() and First() instead of V0() and V1().
 //
 // The type name is used verbatim, so its exported/unexported case is whatever is passed on the command line:
-// "lastFirst" generates an unexported type, while "LastFirst" generates an exported one.
+// "lastFirst" generates an unexported type, while "LastFirst" generates an exported one. The constructor matches: an
+// unexported type gets an unexported constructor (newLastFirst) and an exported type gets an exported one
+// (NewLastFirst).
 //
 // The -p flag controls output. With -p, a complete Go source file (package clause and imports) is written into the
 // current directory as <name>.go, lower-cased. Without -p, only the type and its methods are printed to standard
@@ -149,11 +151,18 @@ func (c config) validate() error {
 			return fmt.Errorf("field %q has an empty type", f.Field)
 		case seen[f.Field]:
 			return fmt.Errorf("field name %q is listed more than once", f.Field)
+		case token.IsKeyword(f.Field):
+			return fmt.Errorf("field name %q is a Go keyword and cannot be a struct field or parameter", f.Field)
+		case generatedMethods[f.Accessor]:
+			return fmt.Errorf("field name %q would generate accessor %s, which the tuple already defines", f.Field, f.Accessor)
 		}
 		seen[f.Field] = true
 	}
 	return nil
 }
+
+// generatedMethods are the methods every tuple has, which a field accessor must not collide with.
+var generatedMethods = map[string]bool{"Len": true, "String": true}
 
 // parseArgs splits the positional command arguments into the tuple name and its fields. The first argument is the name;
 // the remainder is a comma-separated list of "type" or "name:type" field specifications.
@@ -265,6 +274,7 @@ type tmplData struct {
 	Preamble bool    // emit the package clause and imports.
 	Pkg      string  // the package name.
 	Name     string  // the tuple type name.
+	Ctor     string  // the constructor name, e.g. "newLastFirst" or "NewLastFirst".
 	List     string  // human-readable field list for the type doc comment.
 	Fields   []field // the tuple fields.
 	N        int     // the number of fields.
@@ -292,6 +302,7 @@ func generate(c config) ([]byte, error) {
 		Preamble: c.preamble,
 		Pkg:      c.pkg,
 		Name:     c.name,
+		Ctor:     constructorName(c.name),
 		List:     strings.Join(list, ", "),
 		Fields:   c.fields,
 		N:        len(c.fields),
@@ -367,6 +378,15 @@ func isIdent(s string) bool {
 	return true
 }
 
+// constructorName returns the name of the constructor for the tuple type name. The constructor is exported only when
+// the type is: "LastFirst" gets "NewLastFirst" and "lastFirst" gets "newLastFirst".
+func constructorName(name string) string {
+	if r := []rune(name); unicode.IsUpper(r[0]) {
+		return "New" + name
+	}
+	return "new" + export(name)
+}
+
 // export returns s with its first rune upper-cased.
 func export(s string) string {
 	r := []rune(s)
@@ -404,8 +424,8 @@ type {{.Name}} struct {
 {{- end}}
 }
 
-// New{{.Name}} creates a new {{.Name}} tuple with the given values.
-func New{{.Name}}({{.Params}}) {{.Name}} {
+// {{.Ctor}} creates a new {{.Name}} tuple with the given values.
+func {{.Ctor}}({{.Params}}) {{.Name}} {
 	return {{.Name}}{ {{.Inits}} }
 }
 {{range .Fields}}

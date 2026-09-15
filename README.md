@@ -433,7 +433,7 @@ building composite map keys without nested maps (`map[string]map[string]V`):
 
 // Generates a lastFirst value type with a constructor and accessors:
 lookup := map[lastFirst]User{}
-lookup[NewlastFirst("Doak", "John")] = user
+lookup[newLastFirst("Doak", "John")] = user
 name := key.Last() // named accessor; positional would be V0()
 ```
 
