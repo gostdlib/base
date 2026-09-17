@@ -20,15 +20,16 @@ this will be used to send traces to an OTEL collector. Tracing collectors seem t
 so this uses insecure connections.
 
 If TracingEndpoint is not set and if it is not a production environment, the stdout exporter will be used to
-send to stderr. If this is not needed, --localTraceDisable can be set to true to disable the stdout exporter.
+send to stderr. Tracing can be disabled entirely with init.WithDisableTrace().
 
 The default production sampler is a filter based sampler that can be updated to capture certain traces based
-on metadata. It has a secondary sampler that is set to --traceSampleRate, which defaults to 0.01 or 1%.
+on metadata. It has a secondary sampler that is set by init.WithTraceSampleRate(), which defaults to 0.01 or 1%.
 
-The default production sampler can be overridden by calling Set(tp *sdkTrace.TracerProvider) before
+The default trace provider can be replaced by using init.WithTraceProvider() or calling Set() before
 init.Service() is called. The new trace provider can have a different sampler or other settings.
 
-If you simply want to adjust the sampling rate, you can use the flag --traceSampleRate.
+Whichever provider is used is registered as the OTEL global tracer provider along with the W3C TraceContext
+propagator, so instrumentation that uses the globals (such as otelgrpc) sends to it.
 */
 package trace
 
@@ -38,12 +39,14 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gostdlib/base/env/detect"
 	"github.com/gostdlib/base/internal/envvar"
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/trace/sampler"
+	"github.com/gostdlib/base/values/isset"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -62,9 +65,12 @@ type tracerKeyType int
 var TracerKey = tracerKeyType(0)
 var TracerNameKey = tracerKeyType(1)
 
-var defaultTP *sdkTrace.TracerProvider
+var defaultTP atomic.Pointer[sdkTrace.TracerProvider]
 var once sync.Once
 var connTimeout = 5 * time.Second
+
+// defaultSampleRate is the sample rate used by the default production sampler when none is set.
+const defaultSampleRate = 0.01
 
 // Default returns the default trace provider. Normally not required by an end user.
 // TraceProviders are not normally used, instead spans are done via the .../otel/trace/span package
@@ -78,25 +84,21 @@ var connTimeout = 5 * time.Second
 //	var sp trace.Span
 //	ctx, sp := tracer.Start(ctx, opts.name, opts.startOptions...)
 func Default() *sdkTrace.TracerProvider {
-	return defaultTP
+	return defaultTP.Load()
 }
 
 // Set will set the default trace provider. This can be used to override the
-// TraceProvider before init.Service() is called. The other use is for testing.
+// TraceProvider before init.Service() is called. Init() registers it as the OTEL global
+// tracer provider. The other use is for testing.
 func Set(tp *sdkTrace.TracerProvider) {
-	defaultTP = tp
+	defaultTP.Store(tp)
 }
 
 // Init initializes the trace package. This should be called once at the beginning of the program.
-// Normally this is done by init.Service(). Can only be called once.
-func Init(disable bool, sampleRate float64) error {
-	// Our check if defaultTP != nil is in Init() so that Once() will fire.
-
-	// Default sample rate is 1%.
-	if sampleRate == 0 {
-		sampleRate = 0.01
-	}
-
+// Normally this is done by init.Service(). Can only be called once. If a provider was set with Set(), it is used
+// instead of creating one. The provider is registered as the OTEL global tracer provider with the W3C TraceContext
+// propagator. If disable is true, no provider is created or registered. If sampleRate is not set, 0.01 is used.
+func Init(disable bool, sampleRate isset.Float64) error {
 	i := newIniter(os.Getenv(envvar.TracingEndpoint), disable, sampleRate)
 
 	var err error
@@ -111,69 +113,80 @@ func Init(disable bool, sampleRate float64) error {
 // initer is a helper struct to initialize the trace package.
 // It is used to allow for testing.
 type initer struct {
-	env               detect.RunEnv
-	localTraceDisable bool
-	sampleRate        float64
-	endpoint          string
+	env        detect.RunEnv
+	disable    bool
+	sampleRate float64
+	endpoint   string
 
 	prodProvider     func(context.Context, string, float64) (*sdkTrace.TracerProvider, error)
 	localProvider    func(context.Context, io.Writer) (*sdkTrace.TracerProvider, error)
 	setTraceProvider func(tp trace.TracerProvider)
+	setPropagator    func(p propagation.TextMapPropagator)
 }
 
 // newIniter creates a new initer.
-func newIniter(endpoint string, localTraceDisable bool, sampleRate float64) initer {
+func newIniter(endpoint string, disable bool, sampleRate isset.Float64) initer {
+	rate := defaultSampleRate
+	if sampleRate.IsSet() {
+		rate = sampleRate.V()
+	}
+
 	return initer{
-		env:               detect.Env(),
-		localTraceDisable: localTraceDisable,
-		endpoint:          endpoint,
-		sampleRate:        sampleRate,
-		prodProvider:      prodProvider,
-		localProvider:     localProvider,
-		setTraceProvider:  otel.SetTracerProvider,
+		env:              detect.Env(),
+		disable:          disable,
+		endpoint:         endpoint,
+		sampleRate:       rate,
+		prodProvider:     prodProvider,
+		localProvider:    localProvider,
+		setTraceProvider: otel.SetTracerProvider,
+		setPropagator:    otel.SetTextMapPropagator,
 	}
 }
 
-// Init initializes the trace package.
+// Init initializes the trace package. It uses the provider from Set() if there is one, otherwise it creates one
+// for the environment. The provider is then registered as the OTEL global along with the TraceContext propagator.
 func (i *initer) Init() error {
+	if i.disable {
+		return nil
+	}
+
+	tp := defaultTP.Load()
+	if tp == nil {
+		var err error
+		tp, err = i.newProvider()
+		if err != nil {
+			return err
+		}
+		if tp == nil {
+			return nil
+		}
+		defaultTP.Store(tp)
+	}
+
+	i.setTraceProvider(tp)
+	// Set global propagator to tracecontext (the default is no-op).
+	i.setPropagator(propagation.TraceContext{})
+	return nil
+}
+
+// newProvider creates the trace provider for the environment. It returns a nil provider and nil error if the
+// environment should not trace.
+func (i *initer) newProvider() (*sdkTrace.TracerProvider, error) {
 	ctx := context.Background()
 
-	if defaultTP != nil {
-		return nil
-	}
-	defer func() {
-		if defaultTP != nil {
-			// sdkTrace.Sampler
-			i.setTraceProvider(defaultTP)
-
-			// set global propagator to tracecontext (the default is no-op).
-			otel.SetTextMapPropagator(propagation.TraceContext{})
+	if i.env.Prod() {
+		if i.endpoint == "" {
+			log.Default().Error("prod environment detected, but no TracingEndpoint set, tracing disabled")
+			return nil, nil
 		}
-	}()
-
-	var err error
-	switch i.env.Prod() {
-	case true:
-		if i.endpoint != "" {
-			defaultTP, err = i.prodProvider(ctx, i.endpoint, i.sampleRate)
-			if err != nil {
-				return err
-			}
-			return nil
-		}
-		log.Default().Error("prod environment detected, but no TracingEndpoint set, tracing disabled")
-		return nil
-	default:
-		if i.localTraceDisable {
-			return nil
-		}
-		defaultTP, err = i.localProvider(ctx, os.Stderr)
-		if err != nil {
-			return fmt.Errorf("could not create a new stdout trace provider: %v", err)
-		}
+		return i.prodProvider(ctx, i.endpoint, i.sampleRate)
 	}
 
-	return nil
+	tp, err := i.localProvider(ctx, os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("could not create a new stdout trace provider: %w", err)
+	}
+	return tp, nil
 }
 
 // If the OpenTelemetry Collector is running on a kubernetes cluster (AKS, GKE, EKS, etc.),
@@ -273,11 +286,9 @@ func resources(ctx context.Context) (*resource.Resource, error) {
 // Close shuts down the trace provider. This should be called at the end of the program.
 // Normally this is done by init.Close().
 func Close() {
-	if defaultTP != nil {
+	if tp := defaultTP.Load(); tp != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		defaultTP.Shutdown(ctx)
+		tp.Shutdown(ctx)
 	}
 }
-
-

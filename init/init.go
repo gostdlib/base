@@ -145,6 +145,7 @@ import (
 	"github.com/gostdlib/base/telemetry/log"
 	"github.com/gostdlib/base/telemetry/otel/metrics"
 	"github.com/gostdlib/base/telemetry/otel/trace"
+	"github.com/gostdlib/base/values/isset"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -265,16 +266,47 @@ type initOpts struct {
 
 	metricProvider metric.MeterProvider
 	metricsPort    uint16
-	disableTrace   bool
-	traceProvider  *sdkTrace.TracerProvider
-	sampleRate     float64
+	// disableTrace turns off tracing entirely. It cannot be combined with traceProvider or sampleRate.
+	disableTrace bool
+	// traceProvider replaces the default trace provider. It cannot be combined with disableTrace or sampleRate.
+	traceProvider *sdkTrace.TracerProvider
+	// sampleRate is the sample rate for the default trace provider. It cannot be combined with disableTrace or
+	// traceProvider. If not set, the trace package's default rate is used.
+	sampleRate isset.Float64
 
 	pool      *worker.Pool
 	noDefault bool
 }
 
+// validate checks the options for settings that cannot be used together.
+func (o initOpts) validate() error {
+	switch {
+	case o.disableTrace && o.traceProvider != nil:
+		return fmt.Errorf("cannot use WithDisableTrace and WithTraceProvider together")
+	case o.disableTrace && o.sampleRate.IsSet():
+		return fmt.Errorf("cannot use WithDisableTrace and WithTraceSampleRate together")
+	case o.traceProvider != nil && o.sampleRate.IsSet():
+		return fmt.Errorf("cannot use WithTraceProvider and WithTraceSampleRate together")
+	}
+	return nil
+}
+
 // Option is an optional argument to Init.
 type Option func(*initOpts) error
+
+// resolveOptions applies options in order and then validates the result.
+func resolveOptions(options []Option) (initOpts, error) {
+	opts := initOpts{}
+	for _, o := range options {
+		if err := o(&opts); err != nil {
+			return initOpts{}, err
+		}
+	}
+	if err := opts.validate(); err != nil {
+		return initOpts{}, err
+	}
+	return opts, nil
+}
 
 // WithExtraFields sets extra fields to be added to the logger. These fields will always
 // be logged with every log message. These are not logged in non-production environments.
@@ -316,7 +348,9 @@ func WithMeterProvider(m metric.MeterProvider) Option {
 	}
 }
 
-// WithDisableTrace disables tracing for the service.
+// WithDisableTrace disables tracing for the service in every environment. No trace provider is created or
+// registered as the OTEL global. You cannot use this with WithTraceProvider or WithTraceSampleRate or it will
+// cause a panic.
 func WithDisableTrace() Option {
 	return func(opts *initOpts) error {
 		opts.disableTrace = true
@@ -327,11 +361,13 @@ func WithDisableTrace() Option {
 // WithTraceProvider sets the trace provider to use for the service. By default this will
 // be created for you. If the environment variable "TracingEndpoint" is set, this will be
 // used to send traces to the OTEL provider endpoint. Otherwise it uses the stdout exporter
-// that is set to use stderr. You cannot use this and WithTraceSampleRate together or it will cause a panic.
+// that is set to use stderr. The provider is registered as the OTEL global tracer provider with the
+// W3C TraceContext propagator and is shut down by Close(). The provider cannot be nil. You cannot use this with
+// WithTraceSampleRate or WithDisableTrace or it will cause a panic.
 func WithTraceProvider(t *sdkTrace.TracerProvider) Option {
 	return func(opts *initOpts) error {
-		if opts.sampleRate != 0 {
-			panic("cannot use WithTraceProvider and WithTraceSampleRate together")
+		if t == nil {
+			return fmt.Errorf("WithTraceProvider: provider cannot be nil")
 		}
 		opts.traceProvider = t
 		return nil
@@ -339,14 +375,12 @@ func WithTraceProvider(t *sdkTrace.TracerProvider) Option {
 }
 
 // WithTraceSampleRate sets the sample rate for traces. This only applies if using the default trace provider
-// when the environmental variable "TracingEndpoint" is set. If using WithTraceProvider, using this will cause
-// a panic.
+// when the environmental variable "TracingEndpoint" is set. A rate of 0 samples only traces that are forced or
+// match a filter. If not set, the rate defaults to 0.01. If using WithTraceProvider or WithDisableTrace, using
+// this will cause a panic.
 func WithTraceSampleRate(r float64) Option {
 	return func(opts *initOpts) error {
-		if opts.traceProvider != nil {
-			panic("cannot use WithTraceProvider and WithTraceSampleRate together")
-		}
-		opts.sampleRate = r
+		opts.sampleRate = opts.sampleRate.Set(r)
 		return nil
 	}
 }
@@ -401,12 +435,9 @@ func Service(args InitArgs, options ...Option) {
 
 	uuid.EnableRandPool()
 
-	opts := initOpts{}
-
-	for _, o := range options {
-		if err := o(&opts); err != nil {
-			panic(err)
-		}
+	opts, err := resolveOptions(options)
+	if err != nil {
+		panic(err)
 	}
 
 	sm := newSetup(args, opts)
@@ -428,7 +459,7 @@ type setup struct {
 	logMsgs []string
 
 	detectInit  func()
-	traceInit   func(bool, float64) error
+	traceInit   func(bool, isset.Float64) error
 	metricsInit func(*resource.Resource, uint16) error
 }
 

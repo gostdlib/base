@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/gostdlib/base/env/detect"
+	"github.com/gostdlib/base/values/isset"
 	"github.com/kylelemons/godebug/pretty"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdkTrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -19,7 +21,7 @@ import (
 )
 
 func TestIniter(t *testing.T) {
-	t.Parallel()
+	// Sequential: Set() mutates the package-level default trace provider.
 
 	prodEnv := detect.RunEnv{
 		IsKubernetes:  true,
@@ -45,73 +47,92 @@ func TestIniter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		env               detect.RunEnv
-		endpoint          string
-		localTraceDisable bool
-		defaultTP         *sdkTrace.TracerProvider
-		prodProvider      func(context.Context, string, float64) (*sdkTrace.TracerProvider, error)
-		localProvider     func(context.Context, io.Writer) (*sdkTrace.TracerProvider, error)
+		name          string
+		env           detect.RunEnv
+		endpoint      string
+		disable       bool
+		defaultTP     *sdkTrace.TracerProvider
+		prodProvider  func(context.Context, string, float64) (*sdkTrace.TracerProvider, error)
+		localProvider func(context.Context, io.Writer) (*sdkTrace.TracerProvider, error)
 
-		wantErr            bool
-		wantSetTraceCalled bool
+		wantErr bool
+		// wantGlobals is true when the provider and propagator should be registered as the OTEL globals.
+		wantGlobals bool
 	}{
 		{
-			name:      "defaultTP is already set",
-			defaultTP: &sdkTrace.TracerProvider{},
+			name:        "Success: a provider set before Init is registered as the global provider",
+			defaultTP:   &sdkTrace.TracerProvider{},
+			wantGlobals: true,
 		},
 		{
-			name: "In prod, but no endpoint set",
+			name:      "Success: a provider set before Init is not registered when tracing is disabled",
+			defaultTP: &sdkTrace.TracerProvider{},
+			disable:   true,
+		},
+		{
+			name: "Success: in prod with no endpoint set, no provider is created",
 			env:  prodEnv,
 		},
 		{
-			name:         "In prod, endpoint set, but error",
+			name:         "Error: in prod with an endpoint set, the prod provider fails",
 			env:          prodEnv,
 			endpoint:     "endpoint",
 			prodProvider: prodProviderErr,
 			wantErr:      true,
 		},
 		{
-			name:               "In prod, endpoint set",
-			env:                prodEnv,
-			endpoint:           "endpoint",
-			prodProvider:       prodProviderOk,
-			wantSetTraceCalled: true,
+			name:         "Success: in prod with an endpoint set, the prod provider is registered",
+			env:          prodEnv,
+			endpoint:     "endpoint",
+			prodProvider: prodProviderOk,
+			wantGlobals:  true,
 		},
 		{
-			name:              "Non-prod, local trace disabled",
-			env:               nonProdEnv,
-			localTraceDisable: true,
+			name:         "Success: in prod with an endpoint set and tracing disabled, no provider is created",
+			env:          prodEnv,
+			endpoint:     "endpoint",
+			disable:      true,
+			prodProvider: prodProviderOk,
 		},
 		{
-			name:          "Non-prod, localProvider error",
+			name:    "Success: in non-prod with tracing disabled, no provider is created",
+			env:     nonProdEnv,
+			disable: true,
+		},
+		{
+			name:          "Error: in non-prod, the local provider fails",
 			env:           nonProdEnv,
 			localProvider: localProviderErr,
 			wantErr:       true,
 		},
 		{
-			name:               "Non-prod",
-			env:                nonProdEnv,
-			localProvider:      localProviderOk,
-			wantSetTraceCalled: true,
+			name:          "Success: in non-prod, the local provider is registered",
+			env:           nonProdEnv,
+			localProvider: localProviderOk,
+			wantGlobals:   true,
 		},
 	}
 
 	for _, test := range tests {
-		setTraceCalled := false
+		var gotTP trace.TracerProvider
 		setTrace := func(tp trace.TracerProvider) {
-			setTraceCalled = true
+			gotTP = tp
+		}
+		var gotPropagator propagation.TextMapPropagator
+		setPropagator := func(p propagation.TextMapPropagator) {
+			gotPropagator = p
 		}
 
 		Set(test.defaultTP)
 
 		i := initer{
-			endpoint:          test.endpoint,
-			env:               test.env,
-			localTraceDisable: test.localTraceDisable,
-			prodProvider:      test.prodProvider,
-			localProvider:     test.localProvider,
-			setTraceProvider:  setTrace,
+			endpoint:         test.endpoint,
+			env:              test.env,
+			disable:          test.disable,
+			prodProvider:     test.prodProvider,
+			localProvider:    test.localProvider,
+			setTraceProvider: setTrace,
+			setPropagator:    setPropagator,
 		}
 
 		err := i.Init()
@@ -126,13 +147,60 @@ func TestIniter(t *testing.T) {
 			continue
 		}
 
-		if setTraceCalled != test.wantSetTraceCalled {
-			t.Errorf("TestIniter(%s): got setTraceCalled == %t, want setTraceCalled == %t", test.name, setTraceCalled, test.wantSetTraceCalled)
+		if !test.wantGlobals {
+			if gotTP != nil {
+				t.Errorf("TestIniter(%s): got global tracer provider registered, want none", test.name)
+			}
+			if gotPropagator != nil {
+				t.Errorf("TestIniter(%s): got global propagator registered, want none", test.name)
+			}
+			continue
+		}
+
+		// The registered global must be the provider Default() returns, whether it came from Set() or was created.
+		if gotTP == nil || gotTP != trace.TracerProvider(Default()) {
+			t.Errorf("TestIniter(%s): got global tracer provider %p, want Default() %p", test.name, gotTP, Default())
+		}
+		if _, ok := gotPropagator.(propagation.TraceContext); !ok {
+			t.Errorf("TestIniter(%s): got global propagator %T, want propagation.TraceContext", test.name, gotPropagator)
+		}
+	}
+}
+
+func TestNewIniter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		sampleRate     isset.Float64
+		wantSampleRate float64
+	}{
+		{
+			name:           "Success: an unset sample rate uses the default rate",
+			wantSampleRate: defaultSampleRate,
+		},
+		{
+			name:           "Success: a sample rate set to zero stays zero",
+			sampleRate:     isset.Float64{}.Set(0),
+			wantSampleRate: 0,
+		},
+		{
+			name:           "Success: a set sample rate is used as given",
+			sampleRate:     isset.Float64{}.Set(0.5),
+			wantSampleRate: 0.5,
+		},
+	}
+
+	for _, test := range tests {
+		i := newIniter("", false, test.sampleRate)
+		if i.sampleRate != test.wantSampleRate {
+			t.Errorf("TestNewIniter(%s): got sampleRate == %v, want sampleRate == %v", test.name, i.sampleRate, test.wantSampleRate)
 		}
 	}
 }
 
 func TestProdProvider(t *testing.T) {
+	// Sequential: mutates the package-level connTimeout.
 	ctx := context.Background()
 
 	lis, err := net.Listen("tcp", "localhost:0")
@@ -207,6 +275,8 @@ func (b *lockedBuilder) String() string {
 }
 
 func TestLocalProvider(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	buff := &lockedBuilder{b: &strings.Builder{}}

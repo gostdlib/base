@@ -88,7 +88,9 @@ func WithMeterProvider(m metric.MeterProvider) Option {
     return goinit.WithMeterProvider(m)
 }
 
-// WithDisableTrace disables tracing for the service.
+// WithDisableTrace disables tracing for the service in every environment. No trace provider is created or
+// registered as the OTEL global. You cannot use this with WithTraceProvider or WithTraceSampleRate or it will
+// cause a panic.
 func WithDisableTrace() Option {
     return goinit.WithDisableTrace()
 }
@@ -96,14 +98,17 @@ func WithDisableTrace() Option {
 // WithTraceProvider sets the trace provider to use for the service. By default this will
 // be created for you. If the environment variable "TracingEndpoint" is set, this will be
 // used to send traces to the OTEL provider endpoint. Otherwise it uses the stdout exporter
-// that is set to use stderr. You cannot use this and WithTraceSampleRate together or it will cause a panic.
+// that is set to use stderr. The provider is registered as the OTEL global tracer provider with the
+// W3C TraceContext propagator and is shut down by Close(). The provider cannot be nil. You cannot use this with
+// WithTraceSampleRate or WithDisableTrace or it will cause a panic.
 func WithTraceProvider(t *sdkTrace.TracerProvider) Option {
     return goinit.WithTraceProvider(t)
 }
 
 // WithTraceSampleRate sets the sample rate for traces. This only applies if using the default trace provider
-// when the environmental variable "TracingEndpoint" is set. If using WithTraceProvider, using this will cause
-// a panic.
+// when the environmental variable "TracingEndpoint" is set. A rate of 0 samples only traces that are forced or
+// match a filter. If not set, the rate defaults to 0.01. If using WithTraceProvider or WithDisableTrace, using
+// this will cause a panic.
 func WithTraceSampleRate(r float64) Option {
     return goinit.WithTraceSampleRate(r)
 }
