@@ -9,12 +9,12 @@ import (
 	"github.com/kylelemons/godebug/pretty"
 )
 
-// TestGet exercises the context branch with an empty channel on purpose. Get blocks forever on an empty channel with
-// a live context, and when a buffered value and a done context are both ready select picks between them at random, so
-// an empty channel is the only deterministic way to reach the context branch. Get returns no error, so every case but
-// the nil channel is a success case: ok == false covers both a closed channel and a done context, and the caller is
-// expected to check the context to tell them apart.
+// TestGet covers both sides of a done context: when ch has nothing ready Get reports ResultCtxDone, and when ch has
+// a value ready or is closed the channel's result wins over the done context. Get returns no error, so every case but
+// the nil channel is a success case.
 func TestGet(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		buffer    int
@@ -24,7 +24,7 @@ func TestGet(t *testing.T) {
 		nilChan   bool
 		producer  func(ch chan int)
 		wantV     int
-		wantOK    bool
+		want      Result
 		wantPanic bool
 	}{
 		{
@@ -32,27 +32,54 @@ func TestGet(t *testing.T) {
 			buffer:  1,
 			prefill: []int{7},
 			wantV:   7,
-			wantOK:  true,
+			want:    ResultOK,
 		},
 		{
-			name:   "Success: closed and drained channel reports not ok",
+			name:   "Success: closed and drained channel reports closed",
 			buffer: 1,
 			closed: true,
+			want:   ResultClosed,
 		},
 		{
-			name:   "Success: context is done reports not ok",
+			name:   "Success: context is done with an empty channel reports context done",
 			buffer: 1,
 			cancel: true,
+			want:   ResultCtxDone,
+		},
+		{
+			name:    "Success: a buffered value is returned as ok canceled when the context is done",
+			buffer:  1,
+			prefill: []int{7},
+			cancel:  true,
+			wantV:   7,
+			want:    ResultOKCanceled,
+		},
+		{
+			name:    "Success: a value buffered in a closed channel is returned as ok canceled when the context is done",
+			buffer:  1,
+			prefill: []int{7},
+			closed:  true,
+			cancel:  true,
+			wantV:   7,
+			want:    ResultOKCanceled,
+		},
+		{
+			name:   "Success: a closed and drained channel reports closed when the context is done",
+			buffer: 1,
+			closed: true,
+			cancel: true,
+			want:   ResultClosed,
 		},
 		{
 			name:     "Success: receives a value sent by another goroutine over an unbuffered channel",
 			producer: func(ch chan int) { ch <- 7 },
 			wantV:    7,
-			wantOK:   true,
+			want:     ResultOK,
 		},
 		{
-			name:     "Success: a producer closing while the receive is blocked reports not ok",
+			name:     "Success: a producer closing while the receive is blocked reports closed",
 			producer: func(ch chan int) { close(ch) },
+			want:     ResultClosed,
 		},
 		{
 			name:      "Error: channel is nil",
@@ -92,20 +119,73 @@ func TestGet(t *testing.T) {
 				cancel()
 			}
 
-			v, ok := Get(ctx, ch)
+			v, r := Get(ctx, ch)
 			if v != test.wantV {
 				t.Errorf("TestGet(%s): got v == %d, want v == %d", test.name, v, test.wantV)
 			}
-			if ok != test.wantOK {
-				t.Errorf("TestGet(%s): got ok == %t, want ok == %t", test.name, ok, test.wantOK)
+			if r != test.want {
+				t.Errorf("TestGet(%s): got r == %s, want r == %s", test.name, r, test.want)
 			}
 		}()
 	}
 }
 
-// TestPut fills the channel in the error case for the same reason TestGet empties it: a done context racing a send
-// that can succeed is decided at random, so the send must be unable to proceed for the context branch to be reliable.
+func TestResult(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		r                    Result
+		wantOK               bool
+		wantCanceledOrClosed bool
+		wantClosed           bool
+	}{
+		{
+			name: "Success: unknown is none of ok, canceled or closed",
+			r:    ResultUnknown,
+		},
+		{
+			name:   "Success: ok carries a value and does not stop",
+			r:      ResultOK,
+			wantOK: true,
+		},
+		{
+			name:                 "Success: ok canceled carries a value and stops",
+			r:                    ResultOKCanceled,
+			wantOK:               true,
+			wantCanceledOrClosed: true,
+		},
+		{
+			name:                 "Success: closed stops and is closed",
+			r:                    ResultClosed,
+			wantCanceledOrClosed: true,
+			wantClosed:           true,
+		},
+		{
+			name:                 "Success: ctx done stops without a value",
+			r:                    ResultCtxDone,
+			wantCanceledOrClosed: true,
+		},
+	}
+
+	for _, test := range tests {
+		if got := test.r.OK(); got != test.wantOK {
+			t.Errorf("TestResult(%s): got OK() == %t, want OK() == %t", test.name, got, test.wantOK)
+		}
+		if got := test.r.CanceledOrClosed(); got != test.wantCanceledOrClosed {
+			t.Errorf("TestResult(%s): got CanceledOrClosed() == %t, want CanceledOrClosed() == %t", test.name, got, test.wantCanceledOrClosed)
+		}
+		if got := test.r.Closed(); got != test.wantClosed {
+			t.Errorf("TestResult(%s): got Closed() == %t, want Closed() == %t", test.name, got, test.wantClosed)
+		}
+	}
+}
+
+// TestPut fills the channel in the error case on purpose: a done context racing a send that can succeed is decided at
+// random, so the send must be unable to proceed for the context branch to be reliable.
 func TestPut(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		buffer    int
@@ -346,7 +426,7 @@ func TestTryGet(t *testing.T) {
 }
 
 // TestIter uses an empty channel in the context case so the context branch is not racing a ready receive. Iter
-// yields no error, so a cancelled context simply ends the sequence; every case here is a success case. The stopAfter
+// yields no error, so a canceled context simply ends the sequence; every case here is a success case. The stopAfter
 // case pins that abandoning the range terminates the sequence, and the closed cases pin that a closed channel ends
 // the sequence without yielding a trailing zero value.
 func TestIter(t *testing.T) {
@@ -490,7 +570,7 @@ func TestWithLimit(t *testing.T) {
 }
 
 // TestCollect leaves the channel open in the limit case to prove the limit alone stops the collection. The partial
-// case pins that a cancelled context still returns everything already taken off the channel, with done false. Collect
+// case pins that a canceled context still returns everything already taken off the channel, with done false. Collect
 // returns no error, so every case here is a success case; done distinguishes "drained the channel" from "stopped
 // early", and stopping early is a normal outcome rather than a failure.
 func TestCollect(t *testing.T) {
