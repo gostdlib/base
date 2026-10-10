@@ -13,21 +13,71 @@ import (
 	"github.com/gostdlib/base/values/chans/dynamic"
 )
 
-// Get returns the next value from ch. ok == false if the channel is closed or the context is done. If ch is nil, it panics.
-func Get[T any](ctx context.Context, ch <-chan T) (v T, ok bool) {
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Result -linecomment
+
+// Result indicates the result of a Get operation.
+type Result uint8
+
+const (
+	// ResultUnknown indicates a Result that was never set. This always indicates a bug.
+	ResultUnknown Result = 0 // Unknown
+	// ResultOK indicates that a value was received from the channel and ctx was not done.
+	ResultOK Result = 1 // OK
+	// ResultOKCanceled indicates that a value was received from the channel and ctx was done by the time Get returned.
+	// The value was taken off the channel and must be handled. If the channel is empty, ResultCtxDone is returned instead.
+	ResultOKCanceled Result = 2 // OKCanceled
+	// ResultClosed indicates that the channel was closed and drained. It is reported even if ctx is done.
+	ResultClosed Result = 3 // Closed
+	// ResultCtxDone indicates that ctx was done, there were no values on the channel and the channel was not closed.
+	ResultCtxDone Result = 4 // CtxDone
+)
+
+// OK returns true if a value was received from the channel, even if ctx was done.
+func (r Result) OK() bool {
+	return r == ResultOK || r == ResultOKCanceled
+}
+
+// CanceledOrClosed returns true if ctx was done or the channel was closed. This includes ResultOKCanceled, which
+// carries a value that must still be handled, so check OK() before stopping.
+func (r Result) CanceledOrClosed() bool {
+	return r == ResultOKCanceled || r == ResultClosed || r == ResultCtxDone
+}
+
+// Closed returns true if the channel was closed and drained.
+func (r Result) Closed() bool {
+	return r == ResultClosed
+}
+
+// Get returns the next value from ch and r says why it returned. v is only valid when r.OK() is true.
+// Get prefers a ready value over a done ctx, so it keeps returning values after cancellation while ch has them; those
+// are reported as ResultOKCanceled. A loop that must stop when ctx is done should stop on any result but ResultOK,
+// after handling v when r.OK() is true. A loop that stops only on !r.OK() ends once producers stop sending, so use the
+// stop-on-cancel pattern if a producer may outlive ctx.
+// If ch is nil, it panics.
+func Get[T any](ctx context.Context, ch <-chan T) (v T, r Result) {
 	if ch == nil {
 		panic("cannot receive from a nil channel")
 	}
+	var ok bool
 	select {
 	case <-ctx.Done():
-		var v T
-		return v, false
-	case v, ok := <-ch:
-		if !ok {
-			var v T
-			return v, false
+		var closed bool
+		v, ok, closed = TryGet(ch)
+		switch {
+		case ok:
+			return v, ResultOKCanceled
+		case closed:
+			return v, ResultClosed
 		}
-		return v, true
+		return v, ResultCtxDone
+	case v, ok = <-ch:
+		switch {
+		case !ok:
+			return v, ResultClosed
+		case ctx.Err() != nil:
+			return v, ResultOKCanceled
+		}
+		return v, ResultOK
 	}
 }
 
