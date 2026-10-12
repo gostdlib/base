@@ -85,6 +85,16 @@ If you want to get all the benefits of Pool metrics, create the Pool with NewPoo
 		},
 	)
 
+OwnedPool is a Pool that tags each value it hands out with an owner ID from NextOwner(). Only that owner can access
+the value, pass it to another owner with Transfer(), or return it with Put(). Anything else panics, which catches
+use-after-Put, double Put and values being used by two goroutines that each believe they own it:
+
+	p := sync.NewOwnedPool(ctx, "bufferPool", func() *bytes.Buffer { return &bytes.Buffer{} })
+	owner := sync.NextOwner()
+	b := p.Get(ctx, owner)
+	defer p.Put(ctx, owner, b)
+	b.V(owner).WriteString("hello")
+
 There are also a few new synchronization primitives for reducing lock contention.
 
 WProtect provides a type that allows you to protect a value via atomic.Pointer. This is useful for when you
