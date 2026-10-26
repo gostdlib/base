@@ -33,6 +33,16 @@ func (o *Owned[T]) V(owner uint64) T {
 	return o.v
 }
 
+// Ptr returns a pointer to the value after validating that it is owned by owner. If it is not, it panics.
+// Use it to change a value type in place: V returns a copy, so a pool of value types (rather than pointers) needs Ptr
+// to write, and storing the value inside the Owned saves the separate allocation a pointer type costs on every pool
+// miss. The pointer is only valid while owner holds the value. Keeping it past Put or Transfer is not detected, so
+// call Ptr at each use instead of storing its result.
+func (o *Owned[T]) Ptr(owner uint64) *T {
+	o.Validate(owner)
+	return &o.v
+}
+
 // Validate checks if the value is owned by owner. If not, or owner is 0, it panics.
 func (o *Owned[T]) Validate(owner uint64) {
 	mustOwner(owner)

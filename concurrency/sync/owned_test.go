@@ -108,6 +108,68 @@ func TestOwnedPool(t *testing.T) {
 			},
 		},
 		{
+			name: "Success: Ptr lets the owner change a value type in place, and Put resets it",
+			fn: func(t *testing.T) {
+				p := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} }, WithBuffer(1))
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				v.Ptr(o).n = 5
+				if v.V(o).n != 5 {
+					t.Errorf("TestOwnedPool: got n == %d, want 5", v.V(o).n)
+				}
+				p.Put(ctx, o, v)
+
+				o2 := NextOwner()
+				got := p.Get(ctx, o2)
+				if got.Ptr(o2).n != 0 {
+					t.Errorf("TestOwnedPool: got n == %d, want 0", got.Ptr(o2).n)
+				}
+			},
+		},
+		{
+			name: "Success: Ptr by the new owner after Transfer",
+			fn: func(t *testing.T) {
+				p := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} }, WithBuffer(1))
+				o, o2 := NextOwner(), NextOwner()
+				v := p.Get(ctx, o)
+				v.Ptr(o).n = 3
+				v.Transfer(o, o2)
+				if v.Ptr(o2).n != 3 {
+					t.Errorf("TestOwnedPool: got n == %d, want 3", v.Ptr(o2).n)
+				}
+			},
+		},
+		{
+			name: "Error: Ptr by a non-owner panics",
+			fn: func(t *testing.T) {
+				v := newIntOwnedPool(ctx).Get(ctx, NextOwner())
+				v.Ptr(NextOwner())
+			},
+			wantPanic: true,
+		},
+		{
+			name: "Error: Ptr by the old owner after Put panics",
+			fn: func(t *testing.T) {
+				p := newIntOwnedPool(ctx)
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				p.Put(ctx, o, v)
+				v.Ptr(o)
+			},
+			wantPanic: true,
+		},
+		{
+			name: "Error: Ptr by the old owner after Transfer panics",
+			fn: func(t *testing.T) {
+				p := newIntOwnedPool(ctx)
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				v.Transfer(o, NextOwner())
+				v.Ptr(o)
+			},
+			wantPanic: true,
+		},
+		{
 			name: "Error: Get with owner 0 panics",
 			fn: func(t *testing.T) {
 				newIntOwnedPool(ctx).Get(ctx, 0)
@@ -302,5 +364,29 @@ func TestOwnedConcurrentRelease(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// TestOwnedPoolValueTypeMissAllocs pins why Ptr exists: a pool of a value type stores the value inside the Owned, so a
+// pool miss allocates once, where a pointer type allocates the Owned and the value separately.
+func TestOwnedPoolValueTypeMissAllocs(t *testing.T) {
+	// Sequential: it measures allocations.
+	ctx := t.Context()
+
+	values := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} })
+	pointers := NewOwnedPool(ctx, "", func() *valueResetter { return &valueResetter{} })
+
+	// Every Get is a miss: nothing is ever Put back.
+	gotValues := testing.AllocsPerRun(100, func() {
+		o := NextOwner()
+		values.Get(ctx, o).Ptr(o).n = 1
+	})
+	gotPointers := testing.AllocsPerRun(100, func() {
+		o := NextOwner()
+		pointers.Get(ctx, o).V(o).n = 1
+	})
+
+	if gotValues >= gotPointers {
+		t.Errorf("TestOwnedPoolValueTypeMissAllocs: got %v allocs per value-type miss, want fewer than the %v of a pointer type", gotValues, gotPointers)
 	}
 }
