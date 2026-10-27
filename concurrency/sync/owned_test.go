@@ -87,6 +87,55 @@ func TestOwnedPool(t *testing.T) {
 			},
 		},
 		{
+			name: "Success: interface type whose value implements Resetter is reset",
+			fn: func(t *testing.T) {
+				p := NewOwnedPool(ctx, "", func() Resetter { var x intType; return &x }, WithBuffer(1))
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				*v.V(o).(*intType) = 42
+				p.Put(ctx, o, v)
+
+				o2 := NextOwner()
+				got := p.Get(ctx, o2)
+				if *got.V(o2).(*intType) != 0 {
+					t.Errorf("TestOwnedPool: got %d, want 0", *got.V(o2).(*intType))
+				}
+			},
+		},
+		{
+			name: "Success: value type without Reset is put back unchanged",
+			fn: func(t *testing.T) {
+				p := NewOwnedPool(ctx, "", func() int { return 0 }, WithBuffer(1))
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				*v.Ptr(o) = 5
+				p.Put(ctx, o, v)
+
+				o2 := NextOwner()
+				got := p.Get(ctx, o2)
+				if *got.Ptr(o2) != 5 {
+					t.Errorf("TestOwnedPool: got %d, want 5", *got.Ptr(o2))
+				}
+			},
+		},
+		{
+			name: "Success: a value put into a second pool of the same type is reset there",
+			fn: func(t *testing.T) {
+				first := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} })
+				second := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} }, WithBuffer(1))
+				o := NextOwner()
+				v := first.Get(ctx, o)
+				v.Ptr(o).n = 9
+				second.Put(ctx, o, v)
+
+				o2 := NextOwner()
+				got := second.Get(ctx, o2)
+				if got.V(o2).n != 0 {
+					t.Errorf("TestOwnedPool: got n == %d, want 0", got.V(o2).n)
+				}
+			},
+		},
+		{
 			name: "Success: Validate by the owner does not panic",
 			fn: func(t *testing.T) {
 				o := NextOwner()
@@ -388,5 +437,134 @@ func TestOwnedPoolValueTypeMissAllocs(t *testing.T) {
 
 	if gotValues >= gotPointers {
 		t.Errorf("TestOwnedPoolValueTypeMissAllocs: got %v allocs per value-type miss, want fewer than the %v of a pointer type", gotValues, gotPointers)
+	}
+}
+
+// valueReceiverResetter has a value receiver Reset(), so both valueReceiverResetter and its pointer satisfy Resetter.
+// Reset clears through a pointer field, because a value receiver cannot change the value itself.
+type valueReceiverResetter struct {
+	n *int
+}
+
+func (v valueReceiverResetter) Reset() {
+	*v.n = 0
+}
+
+func TestResetFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// run builds an Owned holding a value whose state is 5, resets it with the function resetFor picks (when it
+		// picks one) and returns the state afterwards and whether a function was picked.
+		run       func() (state int, picked bool)
+		wantState int
+		wantNil   bool
+	}{
+		{
+			name: "Success: a value type with a pointer receiver Reset is reset",
+			run: func() (int, bool) {
+				o := &Owned[valueResetter]{v: valueResetter{n: 5}}
+				return applyReset(resetFor[valueResetter](), o, func() int { return o.v.n })
+			},
+			wantState: 0,
+		},
+		{
+			name: "Success: a value type with a value receiver Reset is reset",
+			run: func() (int, bool) {
+				n := 5
+				o := &Owned[valueReceiverResetter]{v: valueReceiverResetter{n: &n}}
+				return applyReset(resetFor[valueReceiverResetter](), o, func() int { return n })
+			},
+			wantState: 0,
+		},
+		{
+			name: "Success: a pointer type with Reset is reset",
+			run: func() (int, bool) {
+				x := intType(5)
+				o := &Owned[*intType]{v: &x}
+				return applyReset(resetFor[*intType](), o, func() int { return int(x) })
+			},
+			wantState: 0,
+		},
+		{
+			name: "Success: an interface type holding a Resetter is reset",
+			run: func() (int, bool) {
+				x := intType(5)
+				o := &Owned[Resetter]{v: &x}
+				return applyReset(resetFor[Resetter](), o, func() int { return int(x) })
+			},
+			wantState: 0,
+		},
+		{
+			name: "Success: an interface type holding a value without Reset is left unchanged",
+			run: func() (int, bool) {
+				o := &Owned[any]{v: 5}
+				return applyReset(resetFor[any](), o, func() int { return o.v.(int) })
+			},
+			wantState: 5,
+		},
+		{
+			name: "Success: a type without Reset gets no reset function",
+			run: func() (int, bool) {
+				o := &Owned[int]{v: 5}
+				return applyReset(resetFor[int](), o, func() int { return o.v })
+			},
+			wantState: 5,
+			wantNil:   true,
+		},
+	}
+
+	for _, test := range tests {
+		state, picked := test.run()
+		if picked == test.wantNil {
+			t.Errorf("TestResetFor(%s): got a reset function == %v, want %v", test.name, picked, !test.wantNil)
+		}
+		if state != test.wantState {
+			t.Errorf("TestResetFor(%s): got state %d after reset, want %d", test.name, state, test.wantState)
+		}
+	}
+}
+
+// applyReset calls reset on o when reset is not nil, then returns state() and whether reset was not nil.
+func applyReset[T any](reset func(o *Owned[T]), o *Owned[T], state func() int) (int, bool) {
+	if reset != nil {
+		reset(o)
+	}
+	return state(), reset != nil
+}
+
+// sliceResetter is a buffer-shaped value type with a pointer receiver Reset(). Converting it to an interface copies
+// its slice header to the heap, unlike a small integer, which Go boxes from a static table without allocating.
+type sliceResetter struct {
+	b []byte
+}
+
+func (s *sliceResetter) Reset() {
+	s.b = s.b[:0]
+}
+
+// TestOwnedPoolValueTypeHitAllocs pins that a pool hit on a value type allocates nothing: Put must not convert the
+// value to an interface to find Reset(), which would copy it to the heap on every Put.
+func TestOwnedPoolValueTypeHitAllocs(t *testing.T) {
+	// Sequential: it measures allocations.
+	if raceEnabled {
+		t.Skip("the race detector makes sync.Pool drop values at random, so a hit cannot be guaranteed")
+	}
+	ctx := t.Context()
+
+	p := NewOwnedPool(ctx, "", func() sliceResetter { return sliceResetter{b: make([]byte, 0, 64)} })
+	warm := NextOwner()
+	p.Put(ctx, warm, p.Get(ctx, warm))
+
+	got := testing.AllocsPerRun(1000, func() {
+		o := NextOwner()
+		v := p.Get(ctx, o)
+		s := v.Ptr(o)
+		s.b = append(s.b, 1)
+		p.Put(ctx, o, v)
+	})
+	if got != 0 {
+		t.Errorf("TestOwnedPoolValueTypeHitAllocs: got %v allocs per Get+Put of a value type, want 0", got)
 	}
 }
