@@ -19,9 +19,8 @@ type Resetter interface {
 	Reset()
 }
 
-// Pool is an advanced generics based sync.Pool. The generics make for less verbose
-// code and prevent accidental assignments of the wrong type which can cause a panic.
-// This is NOT a drop in replacement for sync.Pool as we need to provide methods
+// Pool is an advanced generics based sync.Pool. The generics make for less verbose code and prevent accidental assignments
+// of the wrong type which can cause a panic. This is NOT a drop in replacement for sync.Pool as we need to provide methods
 // a context object.
 //
 // In addition it can provide:
@@ -36,8 +35,8 @@ type Pool[T any] struct {
 
 	buffer chan T
 
-	isResetter  bool
-	isInterface bool
+	// reset is resetValueFor[T](): nil when T has no Reset() method. NewOwnedPool replaces it to reset in place.
+	reset func(v T) T
 
 	getCalls, putCalls, newAllocated, bufferAllocated metric.Int64Counter
 
@@ -128,23 +127,9 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		log.Default().Error(fmt.Sprintf("sync.NewPool(%s): %s", name, err))
 	}
 
-	// When T is an interface, different concrete values may or may not implement Resetter,
-	// so Put() must use a guarded type assertion instead of an unconditional one.
-	isInterface := reflect.TypeFor[T]().Kind() == reflect.Interface
-
-	// Probe once whether T implements Resetter so Put() can skip the type assertion
-	// for non-Resetter types. Use a zero value to avoid calling n() which could
-	// allocate resources or trigger side effects.
-	var isResetter bool
-	if !isInterface {
-		var zero T
-		_, isResetter = any(zero).(Resetter)
-	}
-
 	p := Pool[T]{
 		buffer:          c,
-		isResetter:      isResetter,
-		isInterface:     isInterface,
+		reset:           resetValueFor[T](),
 		getCalls:        gc,
 		putCalls:        pc,
 		newAllocated:    na,
@@ -160,6 +145,43 @@ func NewPool[T any](ctx context.Context, name string, n func() T, options ...Opt
 		},
 	}
 	return &p
+}
+
+// resetValueFor returns the function that Pool.Put uses to reset a T, or nil when T has no Reset() method. It is
+// decided once, when the pool is made, and probes zero values only, so it never calls the pool's New function. The
+// function takes the value and returns it, rather than taking a *T: a pointer to Put's argument would move that argument
+// to the heap on every Put, for every T, even one that is never reset.
+func resetValueFor[T any]() func(v T) T {
+	// An interface T can hold values that do and do not implement Resetter, so it is checked per value. Converting an
+	// interface value to any does not allocate.
+	if reflect.TypeFor[T]().Kind() == reflect.Interface {
+		return func(v T) T {
+			if r, ok := any(v).(Resetter); ok {
+				r.Reset()
+			}
+			return v
+		}
+	}
+	var zero T
+	// T itself implements Resetter: a pointer-shaped type such as *X, which converts to an interface without
+	// allocating, or a value type with a value receiver Reset(). This must be checked before *T below: for a value
+	// receiver *T implements Resetter too, and taking &v always allocates, where converting a pointer-shaped value such
+	// as a struct holding one pointer does not.
+	if _, ok := any(zero).(Resetter); ok {
+		return func(v T) T {
+			any(v).(Resetter).Reset()
+			return v
+		}
+	}
+	// Only *T implements Resetter: a value type with a pointer receiver Reset(). Reset() needs the address of v, which
+	// moves v to the heap: 1 allocation per Put.
+	if _, ok := any(&zero).(Resetter); ok {
+		return func(v T) T {
+			any(&v).(Resetter).Reset()
+			return v
+		}
+	}
+	return nil
 }
 
 // Get returns a value from the pool or creates a new one if the pool is empty.
@@ -186,12 +208,8 @@ func (p *Pool[T]) Put(ctx context.Context, v T) {
 		p.putCalls.Add(ctx, 1)
 	}
 
-	if p.isInterface {
-		if r, ok := any(v).(Resetter); ok {
-			r.Reset()
-		}
-	} else if p.isResetter {
-		any(v).(Resetter).Reset()
+	if p.reset != nil {
+		v = p.reset(v)
 	}
 
 	select {

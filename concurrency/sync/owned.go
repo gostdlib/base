@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"reflect"
 	"sync/atomic"
 )
 
@@ -61,22 +62,44 @@ func (o *Owned[T]) Transfer(oldOwner, newOwner uint64) {
 	}
 }
 
-// reset calls Reset() on the value if it, or a pointer to it, implements Resetter.
-func (o *Owned[T]) reset() {
-	switch r := any(o.v).(type) {
-	case Resetter:
-		r.Reset()
-	default:
-		if r, ok := any(&o.v).(Resetter); ok {
-			r.Reset()
+// resetFor returns the function that OwnedPool.Put uses to reset a T in place, or nil when T has no Reset() method. It
+// is decided once, when the pool is made, so Put never converts the value to an interface to look for Reset(): for a
+// value type that conversion copies the value to the heap, which is an allocation per Put. Resetting through &o.v,
+// which already lives on the heap inside the Owned, is what lets a value type with a pointer receiver Reset() be reset
+// without the allocation Pool.Put pays for it. It probes zero values only, so it never calls the pool's New function.
+// The returned function is built once per pool: a function literal in a generic function captures the type's
+// dictionary, so building it allocates once there, and calling it on Put allocates nothing.
+func resetFor[T any]() func(o *Owned[T]) {
+	// An interface T can hold values that do and do not implement Resetter, so it is checked per value. Converting an
+	// interface value to any does not allocate.
+	if reflect.TypeFor[T]().Kind() == reflect.Interface {
+		return func(o *Owned[T]) {
+			if r, ok := any(o.v).(Resetter); ok {
+				r.Reset()
+			}
 		}
 	}
+	var zero T
+	// *T implements Resetter for a pointer receiver and for a value receiver, since the method set of *T includes the
+	// methods of T. Converting &o.v to an interface does not allocate.
+	if _, ok := any(&zero).(Resetter); ok {
+		return func(o *Owned[T]) {
+			any(&o.v).(Resetter).Reset()
+		}
+	}
+	// Only T implements Resetter, which happens when T is a pointer-shaped type such as *X. Converting a pointer-shaped
+	// value to an interface does not allocate.
+	if _, ok := any(zero).(Resetter); ok {
+		return func(o *Owned[T]) {
+			any(o.v).(Resetter).Reset()
+		}
+	}
+	return nil
 }
 
 // OwnedPool is a Pool whose values have an ownership model. Each value handed out by Get() is tagged with an owner
 // ID and can only be accessed or returned to the pool by that owner, which catches use-after-Put and double Put bugs.
 // If the stored type implements Resetter, Reset() is called when the value is returned to the pool.
-// Safe for concurrent use.
 type OwnedPool[T any] struct {
 	pool *Pool[*Owned[T]]
 }
@@ -96,16 +119,21 @@ func NewOwnedPool[T any](ctx context.Context, name string, n func() T, options .
 		},
 	)
 
-	return &OwnedPool[T]{
-		pool: NewPool(
-			ctx,
-			name,
-			func() *Owned[T] {
-				return &Owned[T]{v: n()}
-			},
-			options...,
-		),
+	pool := NewPool(
+		ctx,
+		name,
+		func() *Owned[T] {
+			return &Owned[T]{v: n()}
+		},
+		options...,
+	)
+	if r := resetFor[T](); r != nil {
+		pool.reset = func(o *Owned[T]) *Owned[T] {
+			r(o)
+			return o
+		}
 	}
+	return &OwnedPool[T]{pool: pool}
 }
 
 // Get returns a value from the pool owned by owner. owner should come from NextOwner(). If owner is 0 or
@@ -126,6 +154,6 @@ func (p *OwnedPool[T]) Put(ctx context.Context, owner uint64, v *Owned[T]) {
 	if !v.owner.CompareAndSwap(owner, 0) {
 		panic("sync.OwnedPool: value is not owned by the caller")
 	}
-	v.reset()
+	// The inner pool resets v in place (see NewOwnedPool) before it stores v.
 	p.pool.Put(ctx, v)
 }
