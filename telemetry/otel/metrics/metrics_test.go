@@ -15,7 +15,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -49,7 +48,7 @@ func TestIniterServe(t *testing.T) {
 		panic(err)
 	}
 
-	if err := initer(rsc, uint16(port)); err != nil {
+	if err := initer(rsc, uint16(port), defaultRegistry()); err != nil {
 		t.Fatalf("TestIniter(): failed to init metrics: %v", err)
 	}
 	defer Close()
@@ -146,7 +145,7 @@ func TestIniterServeWithOtherProvider(t *testing.T) {
 		panic(err)
 	}
 
-	if err := initer(rsc, uint16(port)); err != nil {
+	if err := initer(rsc, uint16(port), defaultRegistry()); err != nil {
 		t.Fatalf("TestIniterServeWithOtherProvider(): failed to init metrics: %v", err)
 	}
 	defer Close()
@@ -189,6 +188,7 @@ func mustNewResc(options ...resource.Option) *resource.Resource {
 }
 
 func TestIniter(t *testing.T) {
+	// Not parallel: initer and Close mutate package-level state (the otel global provider, defaultProvider and app).
 	orig := otel.GetMeterProvider()
 	t.Cleanup(
 		func() { otel.SetMeterProvider(orig) },
@@ -197,37 +197,42 @@ func TestIniter(t *testing.T) {
 	t.Cleanup(
 		func() { defaultProvider.Store(&provider{p: dpOrig}) },
 	)
+	// Registered after the restores so it runs first (cleanups are LIFO), while Default() is still the provider
+	// this test installed. It covers a t.Fatal mid-loop; each case that starts a server also closes it below.
+	t.Cleanup(func() { closeWithin(t, 10*time.Second) })
 
-	promExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(prometheus.DefaultRegisterer))
-	if err != nil {
-		panic(err)
-	}
+	serviceMeta := mustNewResc(
+		resource.WithAttributes(
+			attribute.String(string(semconv.ServiceNameKey), "service"),
+		),
+	)
 
 	tests := []struct {
 		name            string
 		defaultProvider metric.MeterProvider
 		meta            *resource.Resource
 		wantErr         bool
+		wantServe       bool
 		wantProvider    metric.MeterProvider
 	}{
 		{
-			name:            "no-op provider",
+			name:            "Success: a no-op default provider is installed and no server starts",
 			defaultProvider: noop.NewMeterProvider(),
 			wantProvider:    noop.NewMeterProvider(),
 		},
 		{
-			name:            "meta is nil",
+			name:            "Error: a nil resource is rejected",
 			defaultProvider: otherProvider{},
 			wantErr:         true,
 		},
 		{
-			name:            "meta attributes len is zero",
+			name:            "Error: a resource with no attributes is rejected",
 			meta:            &resource.Resource{},
 			defaultProvider: otherProvider{},
 			wantErr:         true,
 		},
 		{
-			name: "meta attributes doesn't have a serviceKey",
+			name: "Error: a resource without a service name is rejected",
 			meta: mustNewResc(
 				resource.WithAttributes(
 					attribute.Bool("some key", true),
@@ -238,7 +243,7 @@ func TestIniter(t *testing.T) {
 			wantErr:         true,
 		},
 		{
-			name: "meta service key doesn't have a string value",
+			name: "Error: a service name that is not a string is rejected",
 			meta: mustNewResc(
 				resource.WithAttributes(
 					attribute.Bool(string(semconv.ServiceNameKey), true),
@@ -248,7 +253,7 @@ func TestIniter(t *testing.T) {
 			wantErr:         true,
 		},
 		{
-			name: "meta service key has empty string value",
+			name: "Error: an empty service name is rejected",
 			meta: mustNewResc(
 				resource.WithAttributes(
 					attribute.String(string(semconv.ServiceNameKey), ""),
@@ -258,46 +263,38 @@ func TestIniter(t *testing.T) {
 			wantErr:         true,
 		},
 		{
-			name: "default provider already set",
-			meta: mustNewResc(
-				resource.WithAttributes(
-					attribute.String(string(semconv.ServiceNameKey), "service"),
-				),
-			),
+			name:            "Success: an already set default provider is kept and served",
+			meta:            serviceMeta,
 			defaultProvider: otherProvider{},
+			wantServe:       true,
 			wantProvider:    otherProvider{},
 		},
 		{
-			name: "default provider not set",
-			meta: mustNewResc(
-				resource.WithAttributes(
-					attribute.String(string(semconv.ServiceNameKey), "service"),
-				),
-			),
+			name:            "Success: with no default provider a Prometheus SDK provider is created and served",
+			meta:            serviceMeta,
 			defaultProvider: nil,
-			wantProvider: sdkmetric.NewMeterProvider(
-				sdkmetric.WithReader(promExporter),
-				sdkmetric.WithResource(
-					mustNewResc(
-						resource.WithAttributes(
-							attribute.String(string(semconv.ServiceNameKey), "service"),
-						),
-					),
-				),
-			),
+			wantServe:       true,
+			wantProvider:    (*sdkmetric.MeterProvider)(nil),
 		},
 	}
 
 	for _, test := range tests {
 		defaultProvider.Store(&provider{p: test.defaultProvider})
 
-		err := initer(test.meta, 0)
+		port, err := freePort()
+		if err != nil {
+			t.Fatalf("TestIniter(%s): freePort(): %v", test.name, err)
+		}
+
+		// Each case gets its own registry so nothing lands in prometheus.DefaultRegisterer.
+		reg := prometheus.NewRegistry()
+		err = initer(test.meta, uint16(port), reg)
 		switch {
 		case test.wantErr && err == nil:
-			t.Errorf("TestIniter(%s): expected error, got nil", test.name)
+			t.Errorf("TestIniter(%s): got err == nil, want err != nil", test.name)
 			continue
 		case !test.wantErr && err != nil:
-			t.Errorf("TestIniter(%s): unexpected error: %v", test.name, err)
+			t.Errorf("TestIniter(%s): got err == %s, want err == nil", test.name, err)
 			continue
 		case err != nil:
 			continue
@@ -306,8 +303,62 @@ func TestIniter(t *testing.T) {
 		got := fmt.Sprintf("%T", otel.GetMeterProvider())
 		want := fmt.Sprintf("%T", test.wantProvider)
 		if got != want {
-			t.Errorf("TestIniter(%s): expected provider %s, got %s", test.name, want, got)
+			t.Errorf("TestIniter(%s): got provider %s, want provider %s", test.name, got, want)
 		}
+
+		if !test.wantServe {
+			continue
+		}
+		// Wait for the server before closing it: closing before Listen() would leave it running.
+		status, err := waitServing(t, port, 10*time.Second)
+		closeWithin(t, 10*time.Second)
+		if err != nil {
+			t.Errorf("TestIniter(%s): metrics server never answered: %v", test.name, err)
+			continue
+		}
+		if status != http.StatusOK {
+			t.Errorf("TestIniter(%s): got /metrics status %d, want status %d", test.name, status, http.StatusOK)
+		}
+	}
+}
+
+// waitServing polls GET /metrics on port until it answers or d passes, and returns the status of the first answer.
+func waitServing(t *testing.T, port int, d time.Duration) (int, error) {
+	t.Helper()
+
+	hclient := http.Client{Timeout: time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", port)
+	deadline := time.Now().Add(d)
+	for {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := hclient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			return resp.StatusCode, nil
+		}
+		if time.Now().After(deadline) {
+			return 0, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// closeWithin calls Close() and fails the test if it has not returned within d.
+func closeWithin(t *testing.T, d time.Duration) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Errorf("%s: Close() did not return within %v", t.Name(), d)
 	}
 }
 
@@ -383,6 +434,76 @@ func TestMeterNameWithHelper(t *testing.T) {
 		got := meterNameHelper(test.stackFrame)
 		if got != test.want {
 			t.Errorf("TestMeterNameWithHelper(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestNewApp(t *testing.T) {
+	t.Parallel()
+
+	reg := prometheus.NewRegistry()
+	counter := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_new_app_total", Help: "TestNewApp counter."})
+	reg.MustRegister(counter)
+	counter.Inc()
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("TestNewApp: net.Listen(): %v", err)
+	}
+
+	a := newApp(reg)
+	served := make(chan error, 1)
+	go func() { served <- a.Listener(ln, listenConfig) }()
+	t.Cleanup(
+		func() {
+			if err := a.Shutdown(); err != nil {
+				t.Errorf("TestNewApp: Shutdown(): %v", err)
+			}
+			select {
+			case err := <-served:
+				if err != nil {
+					t.Errorf("TestNewApp: Listener(): %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Errorf("TestNewApp: Listener() did not return after Shutdown()")
+			}
+		},
+	)
+
+	base := "http://" + ln.Addr().String()
+	hclient := http.Client{Timeout: 5 * time.Second}
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{
+			name:       "Success: the metrics route serves the gatherer's metrics",
+			path:       "/metrics",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "Error: an unknown route returns not found",
+			path:       "/unknown",
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, test := range tests {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+test.path, nil)
+		if err != nil {
+			t.Fatalf("TestNewApp(%s): NewRequest: %v", test.name, err)
+		}
+		resp, err := hclient.Do(req)
+		if err != nil {
+			t.Errorf("TestNewApp(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != test.wantStatus {
+			t.Errorf("TestNewApp(%s): got status %d, want status %d", test.name, resp.StatusCode, test.wantStatus)
 		}
 	}
 }
