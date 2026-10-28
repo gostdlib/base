@@ -17,7 +17,22 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 )
 
-func initer(meta *resource.Resource, port uint16) error {
+// registry is where initer registers the Prometheus exporter and what the metrics server gathers from. Production
+// passes defaultRegistry(); tests pass their own prometheus.NewRegistry() so they do not pollute the global one.
+type registry interface {
+	prometheus.Registerer
+	prometheus.Gatherer
+}
+
+// defaultRegistry returns the process-wide Prometheus registerer and gatherer as a registry.
+func defaultRegistry() registry {
+	return struct {
+		prometheus.Registerer
+		prometheus.Gatherer
+	}{prometheus.DefaultRegisterer, prometheus.DefaultGatherer}
+}
+
+func initer(meta *resource.Resource, port uint16, reg registry) error {
 	dp := loadDefault()
 	if fmt.Sprintf("%T", dp) == fmt.Sprintf("%T", noop.NewMeterProvider()) {
 		otel.SetMeterProvider(dp)
@@ -51,7 +66,7 @@ func initer(meta *resource.Resource, port uint16) error {
 	var meterProvider metric.MeterProvider
 
 	if dp == nil {
-		metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(prometheus.DefaultRegisterer))
+		metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(reg))
 		if err != nil {
 			return fmt.Errorf("failed to create metrics exporter: %w", err)
 		}
@@ -77,7 +92,7 @@ func initer(meta *resource.Resource, port uint16) error {
 	}
 
 	go func() {
-		if err := serveMetrics(uint16(port)); err != nil {
+		if err := serveMetrics(uint16(port), reg); err != nil {
 			log.Default().Error(fmt.Sprintf("metric http server stop: %v", err))
 		}
 	}()

@@ -22,8 +22,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 )
 
 const defaultPort uint16 = 2223
@@ -124,7 +124,7 @@ func Init(meta *resource.Resource, port uint16) error {
 		panic("metrics.Init() can only be called once")
 	}
 
-	return initer(meta, port)
+	return initer(meta, port, defaultRegistry())
 }
 
 var app atomic.Pointer[fiber.App]
@@ -159,41 +159,47 @@ func Close() {
 }
 
 // serveMetrics creates a new http server that serves Prometheus metrics
-// at 0:<port>/metrics. This a blocking function.
-func serveMetrics(port uint16) error {
+// at 0:<port>/metrics from g. This a blocking function.
+func serveMetrics(port uint16, g prometheus.Gatherer) error {
 	if port == 0 {
 		port = defaultPort
 	}
 
-	config := fiber.Config{
-		Concurrency:           10,
-		DisableStartupMessage: true,
-		IdleTimeout:           5 * time.Minute,
-		ReadTimeout:           10 * time.Second,
-		WriteTimeout:          20 * time.Second,
-	}
-
-	// Initialize a new Fiber app
-	a := fiber.New(config)
+	a := newApp(g)
 	if !app.CompareAndSwap(nil, a) {
 		if !testing.Testing() {
 			panic("metrics http server already started")
 		}
 	}
 
-	// Define a route for the GET method on the root path '/'
+	addr := fmt.Sprintf(":%d", port)
+	log.Default().Info(fmt.Sprintf("serving metrics at %s/metrics", addr))
+	return a.Listen(addr, listenConfig)
+}
+
+// listenConfig is the Fiber listen configuration. Fiber v3 moved the startup banner switch here from fiber.Config.
+var listenConfig = fiber.ListenConfig{DisableStartupMessage: true}
+
+// newApp returns a Fiber app that serves the metrics in g on GET /metrics.
+func newApp(g prometheus.Gatherer) *fiber.App {
+	config := fiber.Config{
+		Concurrency:  10,
+		IdleTimeout:  5 * time.Minute,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 20 * time.Second,
+	}
+
+	a := fiber.New(config)
 	a.Get(
 		"/metrics",
 		adaptor.HTTPHandler(
 			promhttp.HandlerFor(
-				prometheus.DefaultGatherer,
+				g,
 				promhttp.HandlerOpts{
 					MaxRequestsInFlight: 10,
 				},
 			),
 		),
 	)
-	addr := fmt.Sprintf(":%d", port)
-	log.Default().Info(fmt.Sprintf("serving metrics at %s/metrics", addr))
-	return a.Listen(addr)
+	return a
 }
