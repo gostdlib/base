@@ -52,6 +52,15 @@ func (o *Owned[T]) Validate(owner uint64) {
 	}
 }
 
+// OwnedBy reports whether the value is owned by owner. It is the non-panicking form of Validate: it returns false,
+// instead of panicking, when owner is 0, after the value was returned to its pool with OwnedPool.Put, and for the old
+// owner after a Transfer. Use it to decide whether you still hold a value you may have handed away. A true answer
+// stays true until owner itself calls Put or Transfer; a false answer can turn true only if the value is later handed
+// back to owner. It is safe for concurrent use.
+func (o *Owned[T]) OwnedBy(owner uint64) bool {
+	return owner != 0 && o.owner.Load() == owner
+}
+
 // Transfer transfers ownership of the value from oldOwner to newOwner. If the value is not owned by oldOwner,
 // or either owner is 0, it panics.
 func (o *Owned[T]) Transfer(oldOwner, newOwner uint64) {

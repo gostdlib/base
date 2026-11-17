@@ -416,6 +416,149 @@ func TestOwnedConcurrentRelease(t *testing.T) {
 	}
 }
 
+func TestOwnedBy(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	tests := []struct {
+		name string
+		// run sets up a value and returns it with the owner to ask OwnedBy about.
+		run  func() (v *Owned[*intType], owner uint64)
+		want bool
+	}{
+		{
+			name: "Success: the owner from Get owns the value",
+			run: func() (*Owned[*intType], uint64) {
+				o := NextOwner()
+				return newIntOwnedPool(ctx).Get(ctx, o), o
+			},
+			want: true,
+		},
+		{
+			name: "Success: the new owner after Transfer owns the value",
+			run: func() (*Owned[*intType], uint64) {
+				o, o2 := NextOwner(), NextOwner()
+				v := newIntOwnedPool(ctx).Get(ctx, o)
+				v.Transfer(o, o2)
+				return v, o2
+			},
+			want: true,
+		},
+		{
+			name: "Success: the old owner after Transfer does not own the value",
+			run: func() (*Owned[*intType], uint64) {
+				o := NextOwner()
+				v := newIntOwnedPool(ctx).Get(ctx, o)
+				v.Transfer(o, NextOwner())
+				return v, o
+			},
+		},
+		{
+			name: "Success: the owner after Put does not own the value",
+			run: func() (*Owned[*intType], uint64) {
+				p := newIntOwnedPool(ctx)
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				p.Put(ctx, o, v)
+				return v, o
+			},
+		},
+		{
+			name: "Success: a different owner does not own the value",
+			run: func() (*Owned[*intType], uint64) {
+				return newIntOwnedPool(ctx).Get(ctx, NextOwner()), NextOwner()
+			},
+		},
+		{
+			name: "Success: owner 0 does not own an owned value",
+			run: func() (*Owned[*intType], uint64) {
+				return newIntOwnedPool(ctx).Get(ctx, NextOwner()), 0
+			},
+		},
+		{
+			name: "Success: owner 0 does not own a value after Put",
+			run: func() (*Owned[*intType], uint64) {
+				p := newIntOwnedPool(ctx)
+				o := NextOwner()
+				v := p.Get(ctx, o)
+				p.Put(ctx, o, v)
+				return v, 0
+			},
+		},
+		{
+			name: "Success: no owner owns a zero value Owned",
+			run: func() (*Owned[*intType], uint64) {
+				return &Owned[*intType]{}, NextOwner()
+			},
+		},
+	}
+
+	for _, test := range tests {
+		v, owner := test.run()
+		var got bool
+		if panics(func() { got = v.OwnedBy(owner) }) {
+			t.Errorf("TestOwnedBy(%s): got panic, want no panic", test.name)
+			continue
+		}
+		if got != test.want {
+			t.Errorf("TestOwnedBy(%s): got %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+// TestOwnedByConcurrent races OwnedBy against a Transfer away from the owner it asks about. Once a reader sees false,
+// it must never see true again, and after the Transfer the old owner must not own the value and the new one must.
+func TestOwnedByConcurrent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	const iterations = 1000
+
+	p := newIntOwnedPool(ctx)
+	for i := 0; i < iterations; i++ {
+		o, o2 := NextOwner(), NextOwner()
+		v := p.Get(ctx, o)
+
+		var flipped atomic.Bool
+		g := Group{}
+		g.Go(
+			ctx,
+			func(ctx context.Context) error {
+				seenFalse := false
+				for j := 0; j < 100; j++ {
+					switch owned := v.OwnedBy(o); {
+					case !owned:
+						seenFalse = true
+					case seenFalse:
+						flipped.Store(true)
+					}
+				}
+				return nil
+			},
+		)
+		g.Go(
+			ctx,
+			func(ctx context.Context) error {
+				v.Transfer(o, o2)
+				return nil
+			},
+		)
+		if err := g.Wait(ctx); err != nil {
+			t.Fatalf("TestOwnedByConcurrent: got err == %s, want err == nil", err)
+		}
+		if flipped.Load() {
+			t.Errorf("TestOwnedByConcurrent: iteration %d: got OwnedBy(old owner) true after false, want it to stay false", i)
+			break
+		}
+		if v.OwnedBy(o) || !v.OwnedBy(o2) {
+			t.Errorf("TestOwnedByConcurrent: iteration %d: got OwnedBy(old) == %v, OwnedBy(new) == %v, want false, true", i, v.OwnedBy(o), v.OwnedBy(o2))
+			break
+		}
+		p.Put(ctx, o2, v)
+	}
+}
+
 // TestOwnedPoolValueTypeMissAllocs pins why Ptr exists: a pool of a value type stores the value inside the Owned, so a
 // pool miss allocates once, where a pointer type allocates the Owned and the value separately.
 func TestOwnedPoolValueTypeMissAllocs(t *testing.T) {
