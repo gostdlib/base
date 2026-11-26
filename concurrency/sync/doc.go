@@ -85,15 +85,24 @@ If you want to get all the benefits of Pool metrics, create the Pool with NewPoo
 		},
 	)
 
-OwnedPool is a Pool that tags each value it hands out with an owner ID from NextOwner(). Only that owner can access
+OwnedPool is a Pool that tags each value it hands out with an OwnerID from NextOwner(). Only that owner can access
 the value, pass it to another owner with Transfer(), or return it with Put(). Anything else panics, which catches
 use-after-Put, double Put and values being used by two goroutines that each believe they own it:
 
+	// This is a trivial example where a standard sync.Pool would be sufficient, but it shows the usage of OwnedPool.
 	p := sync.NewOwnedPool(ctx, "bufferPool", func() *bytes.Buffer { return &bytes.Buffer{} })
 	owner := sync.NextOwner()
 	b := p.Get(ctx, owner)
 	defer p.Put(ctx, owner, b)
 	b.V(owner).WriteString("hello")
+
+To hand a value to another goroutine, Transfer it to the receiver's OwnerID. Transfer returns the value so it can be
+sent inline. Do this outside of a select, which evaluates the send before choosing a case and so would move ownership
+even if another case wins:
+
+	b := p.Get(ctx, me)
+	b.V(me).WriteString("hello")
+	ch <- b.Transfer(me, them) // The receiver uses b.V(them) and it calls p.Put(ctx, them, b) or passes the object along.
 
 There are also a few new synchronization primitives for reducing lock contention.
 
