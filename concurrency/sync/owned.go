@@ -9,13 +9,16 @@ import (
 // owner is the last owner ID handed out by NextOwner(). 0 is never handed out and means "unowned".
 var owner atomic.Uint64
 
+// OwnerID is the ID used to claim ownership of Owned objects.
+type OwnerID uint64
+
 // NextOwner returns a new, unique owner ID. It never returns 0. This is safe for concurrent use.
-func NextOwner() uint64 {
-	return owner.Add(1)
+func NextOwner() OwnerID {
+	return OwnerID(owner.Add(1))
 }
 
 // mustOwner panics if owner is 0, which means "unowned" and is never a valid caller.
-func mustOwner(owner uint64) {
+func mustOwner(owner OwnerID) {
 	if owner == 0 {
 		panic("sync: owner cannot be 0")
 	}
@@ -29,7 +32,7 @@ type Owned[T any] struct {
 }
 
 // V returns the value after validating that it is owned by owner. If it is not, it panics.
-func (o *Owned[T]) V(owner uint64) T {
+func (o *Owned[T]) V(owner OwnerID) T {
 	o.Validate(owner)
 	return o.v
 }
@@ -39,15 +42,15 @@ func (o *Owned[T]) V(owner uint64) T {
 // to write, and storing the value inside the Owned saves the separate allocation a pointer type costs on every pool
 // miss. The pointer is only valid while owner holds the value. Keeping it past Put or Transfer is not detected, so
 // call Ptr at each use instead of storing its result.
-func (o *Owned[T]) Ptr(owner uint64) *T {
+func (o *Owned[T]) Ptr(owner OwnerID) *T {
 	o.Validate(owner)
 	return &o.v
 }
 
 // Validate checks if the value is owned by owner. If not, or owner is 0, it panics.
-func (o *Owned[T]) Validate(owner uint64) {
+func (o *Owned[T]) Validate(owner OwnerID) {
 	mustOwner(owner)
-	if o.owner.Load() != owner {
+	if OwnerID(o.owner.Load()) != owner {
 		panic("sync.Owned: value is not owned by the caller")
 	}
 }
@@ -57,18 +60,21 @@ func (o *Owned[T]) Validate(owner uint64) {
 // owner after a Transfer. Use it to decide whether you still hold a value you may have handed away. A true answer
 // stays true until owner itself calls Put or Transfer; a false answer can turn true only if the value is later handed
 // back to owner. It is safe for concurrent use.
-func (o *Owned[T]) OwnedBy(owner uint64) bool {
-	return owner != 0 && o.owner.Load() == owner
+func (o *Owned[T]) OwnedBy(owner OwnerID) bool {
+	return owner != 0 && OwnerID(o.owner.Load()) == owner
 }
 
 // Transfer transfers ownership of the value from oldOwner to newOwner. If the value is not owned by oldOwner,
-// or either owner is 0, it panics.
-func (o *Owned[T]) Transfer(oldOwner, newOwner uint64) {
+// or either owner is 0, it panics. It returns o so the handoff can be written inline, e.g. ch <- v.Transfer(me, them).
+// Do not write that inline form as a select case: select evaluates it on entry, so ownership moves even when another
+// case is chosen. Call Transfer before the select instead.
+func (o *Owned[T]) Transfer(oldOwner, newOwner OwnerID) *Owned[T] {
 	mustOwner(oldOwner)
 	mustOwner(newOwner)
-	if !o.owner.CompareAndSwap(oldOwner, newOwner) {
+	if !o.owner.CompareAndSwap(uint64(oldOwner), uint64(newOwner)) {
 		panic("sync.Owned: value is not owned by the caller")
 	}
+	return o
 }
 
 // resetFor returns the function that OwnedPool.Put uses to reset a T in place, or nil when T has no Reset() method. It
@@ -147,10 +153,10 @@ func NewOwnedPool[T any](ctx context.Context, name string, n func() T, options .
 
 // Get returns a value from the pool owned by owner. owner should come from NextOwner(). If owner is 0 or
 // the value is already owned, it panics.
-func (p *OwnedPool[T]) Get(ctx context.Context, owner uint64) *Owned[T] {
+func (p *OwnedPool[T]) Get(ctx context.Context, owner OwnerID) *Owned[T] {
 	mustOwner(owner)
 	v := p.pool.Get(ctx)
-	if !v.owner.CompareAndSwap(0, owner) {
+	if !v.owner.CompareAndSwap(0, uint64(owner)) {
 		panic("sync.OwnedPool: value from pool is already owned")
 	}
 	return v
@@ -158,9 +164,9 @@ func (p *OwnedPool[T]) Get(ctx context.Context, owner uint64) *Owned[T] {
 
 // Put returns a value to the pool. If v is not owned by owner, or owner is 0, it panics. This includes putting a
 // value that was already returned to the pool.
-func (p *OwnedPool[T]) Put(ctx context.Context, owner uint64, v *Owned[T]) {
+func (p *OwnedPool[T]) Put(ctx context.Context, owner OwnerID, v *Owned[T]) {
 	mustOwner(owner)
-	if !v.owner.CompareAndSwap(owner, 0) {
+	if !v.owner.CompareAndSwap(uint64(owner), 0) {
 		panic("sync.OwnedPool: value is not owned by the caller")
 	}
 	// The inner pool resets v in place (see NewOwnedPool) before it stores v.

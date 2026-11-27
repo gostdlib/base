@@ -49,12 +49,12 @@ func TestOwnedPool(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		fn        func(t *testing.T)
+		fn        func(t *testing.T, name string)
 		wantPanic bool
 	}{
 		{
 			name: "Success: Get, V and Put by the owner, pointer Resetter is reset",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				p := NewOwnedPool(ctx, "", func() *intType { var x intType; return &x }, WithBuffer(1))
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -64,31 +64,31 @@ func TestOwnedPool(t *testing.T) {
 				o2 := NextOwner()
 				got := p.Get(ctx, o2)
 				if *got.V(o2) != 0 {
-					t.Errorf("TestOwnedPool: got %d, want 0", *got.V(o2))
+					t.Errorf("TestOwnedPool(%s): got %d, want 0", name, *got.V(o2))
 				}
 			},
 		},
 		{
 			name: "Success: value type with pointer receiver Reset is reset",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				p := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{n: 1} }, WithBuffer(1))
 				o := NextOwner()
 				v := p.Get(ctx, o)
 				if v.V(o).n != 1 {
-					t.Errorf("TestOwnedPool: got n == %d, want 1", v.V(o).n)
+					t.Errorf("TestOwnedPool(%s): got n == %d, want 1", name, v.V(o).n)
 				}
 				p.Put(ctx, o, v)
 
 				o2 := NextOwner()
 				got := p.Get(ctx, o2)
 				if got.V(o2).n != 0 {
-					t.Errorf("TestOwnedPool: got n == %d, want 0", got.V(o2).n)
+					t.Errorf("TestOwnedPool(%s): got n == %d, want 0", name, got.V(o2).n)
 				}
 			},
 		},
 		{
 			name: "Success: interface type whose value implements Resetter is reset",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				p := NewOwnedPool(ctx, "", func() Resetter { var x intType; return &x }, WithBuffer(1))
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -98,13 +98,13 @@ func TestOwnedPool(t *testing.T) {
 				o2 := NextOwner()
 				got := p.Get(ctx, o2)
 				if *got.V(o2).(*intType) != 0 {
-					t.Errorf("TestOwnedPool: got %d, want 0", *got.V(o2).(*intType))
+					t.Errorf("TestOwnedPool(%s): got %d, want 0", name, *got.V(o2).(*intType))
 				}
 			},
 		},
 		{
 			name: "Success: value type without Reset is put back unchanged",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				p := NewOwnedPool(ctx, "", func() int { return 0 }, WithBuffer(1))
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -114,13 +114,13 @@ func TestOwnedPool(t *testing.T) {
 				o2 := NextOwner()
 				got := p.Get(ctx, o2)
 				if *got.Ptr(o2) != 5 {
-					t.Errorf("TestOwnedPool: got %d, want 5", *got.Ptr(o2))
+					t.Errorf("TestOwnedPool(%s): got %d, want 5", name, *got.Ptr(o2))
 				}
 			},
 		},
 		{
 			name: "Success: a value put into a second pool of the same type is reset there",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				first := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} })
 				second := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} }, WithBuffer(1))
 				o := NextOwner()
@@ -131,66 +131,69 @@ func TestOwnedPool(t *testing.T) {
 				o2 := NextOwner()
 				got := second.Get(ctx, o2)
 				if got.V(o2).n != 0 {
-					t.Errorf("TestOwnedPool: got n == %d, want 0", got.V(o2).n)
+					t.Errorf("TestOwnedPool(%s): got n == %d, want 0", name, got.V(o2).n)
 				}
 			},
 		},
 		{
 			name: "Success: Validate by the owner does not panic",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				o := NextOwner()
 				newIntOwnedPool(ctx).Get(ctx, o).Validate(o)
 			},
 		},
 		{
-			name: "Success: Transfer lets the new owner use V and Put",
-			fn: func(t *testing.T) {
+			name: "Success: Transfer returns the same value and lets the new owner use V and Put",
+			fn: func(t *testing.T, name string) {
 				p := newIntOwnedPool(ctx)
 				o, o2 := NextOwner(), NextOwner()
 				v := p.Get(ctx, o)
 				*v.V(o) = 7
-				v.Transfer(o, o2)
-				if *v.V(o2) != 7 {
-					t.Errorf("TestOwnedPool: got %d, want 7", *v.V(o2))
+				got := v.Transfer(o, o2)
+				if got != v {
+					t.Errorf("TestOwnedPool(%s): Transfer returned %p, want %p", name, got, v)
 				}
-				p.Put(ctx, o2, v)
+				if *got.V(o2) != 7 {
+					t.Errorf("TestOwnedPool(%s): got %d, want 7", name, *got.V(o2))
+				}
+				p.Put(ctx, o2, got)
 			},
 		},
 		{
 			name: "Success: Ptr lets the owner change a value type in place, and Put resets it",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				p := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} }, WithBuffer(1))
 				o := NextOwner()
 				v := p.Get(ctx, o)
 				v.Ptr(o).n = 5
 				if v.V(o).n != 5 {
-					t.Errorf("TestOwnedPool: got n == %d, want 5", v.V(o).n)
+					t.Errorf("TestOwnedPool(%s): got n == %d, want 5", name, v.V(o).n)
 				}
 				p.Put(ctx, o, v)
 
 				o2 := NextOwner()
 				got := p.Get(ctx, o2)
 				if got.Ptr(o2).n != 0 {
-					t.Errorf("TestOwnedPool: got n == %d, want 0", got.Ptr(o2).n)
+					t.Errorf("TestOwnedPool(%s): got n == %d, want 0", name, got.Ptr(o2).n)
 				}
 			},
 		},
 		{
 			name: "Success: Ptr by the new owner after Transfer",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, name string) {
 				p := NewOwnedPool(ctx, "", func() valueResetter { return valueResetter{} }, WithBuffer(1))
 				o, o2 := NextOwner(), NextOwner()
 				v := p.Get(ctx, o)
 				v.Ptr(o).n = 3
 				v.Transfer(o, o2)
 				if v.Ptr(o2).n != 3 {
-					t.Errorf("TestOwnedPool: got n == %d, want 3", v.Ptr(o2).n)
+					t.Errorf("TestOwnedPool(%s): got n == %d, want 3", name, v.Ptr(o2).n)
 				}
 			},
 		},
 		{
 			name: "Error: Ptr by a non-owner panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				v := newIntOwnedPool(ctx).Get(ctx, NextOwner())
 				v.Ptr(NextOwner())
 			},
@@ -198,7 +201,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Ptr by the old owner after Put panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -209,7 +212,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Ptr by the old owner after Transfer panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -220,14 +223,14 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Get with owner 0 panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				newIntOwnedPool(ctx).Get(ctx, 0)
 			},
 			wantPanic: true,
 		},
 		{
 			name: "Error: V by a non-owner panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				v := newIntOwnedPool(ctx).Get(ctx, NextOwner())
 				v.V(NextOwner())
 			},
@@ -235,7 +238,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Validate by a non-owner panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				v := newIntOwnedPool(ctx).Get(ctx, NextOwner())
 				v.Validate(NextOwner())
 			},
@@ -243,7 +246,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: V by the old owner after Put panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -254,7 +257,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: V with owner 0 after Put panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -265,7 +268,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Put by a non-owner panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				v := p.Get(ctx, NextOwner())
 				p.Put(ctx, NextOwner(), v)
@@ -274,7 +277,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: double Put by the owner panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -285,7 +288,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Put with owner 0 after Put panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -296,7 +299,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Transfer by a non-owner panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				v := newIntOwnedPool(ctx).Get(ctx, NextOwner())
 				v.Transfer(NextOwner(), NextOwner())
 			},
@@ -304,7 +307,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Transfer to owner 0 panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				o := NextOwner()
 				v := newIntOwnedPool(ctx).Get(ctx, o)
 				v.Transfer(o, 0)
@@ -313,7 +316,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Transfer from owner 0 after Put panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -324,7 +327,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: V by the old owner after Transfer panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				o := NextOwner()
 				v := newIntOwnedPool(ctx).Get(ctx, o)
 				v.Transfer(o, NextOwner())
@@ -334,7 +337,7 @@ func TestOwnedPool(t *testing.T) {
 		},
 		{
 			name: "Error: Put by the old owner after Transfer panics",
-			fn: func(t *testing.T) {
+			fn: func(t *testing.T, _ string) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -346,7 +349,7 @@ func TestOwnedPool(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		panicked := panics(func() { test.fn(t) })
+		panicked := panics(func() { test.fn(t, test.name) })
 
 		switch {
 		case panicked && !test.wantPanic:
@@ -367,22 +370,22 @@ func TestOwnedConcurrentRelease(t *testing.T) {
 
 	tests := []struct {
 		name string
-		a, b func(p *OwnedPool[*intType], o uint64, v *Owned[*intType])
+		a, b func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType])
 	}{
 		{
 			name: "Success: concurrent Put and Put, exactly one panics",
-			a:    func(p *OwnedPool[*intType], o uint64, v *Owned[*intType]) { p.Put(ctx, o, v) },
-			b:    func(p *OwnedPool[*intType], o uint64, v *Owned[*intType]) { p.Put(ctx, o, v) },
+			a:    func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType]) { p.Put(ctx, o, v) },
+			b:    func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType]) { p.Put(ctx, o, v) },
 		},
 		{
 			name: "Success: concurrent Transfer and Transfer, exactly one panics",
-			a:    func(p *OwnedPool[*intType], o uint64, v *Owned[*intType]) { v.Transfer(o, NextOwner()) },
-			b:    func(p *OwnedPool[*intType], o uint64, v *Owned[*intType]) { v.Transfer(o, NextOwner()) },
+			a:    func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType]) { v.Transfer(o, NextOwner()) },
+			b:    func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType]) { v.Transfer(o, NextOwner()) },
 		},
 		{
 			name: "Success: concurrent Put and Transfer, exactly one panics",
-			a:    func(p *OwnedPool[*intType], o uint64, v *Owned[*intType]) { p.Put(ctx, o, v) },
-			b:    func(p *OwnedPool[*intType], o uint64, v *Owned[*intType]) { v.Transfer(o, NextOwner()) },
+			a:    func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType]) { p.Put(ctx, o, v) },
+			b:    func(p *OwnedPool[*intType], o OwnerID, v *Owned[*intType]) { v.Transfer(o, NextOwner()) },
 		},
 	}
 
@@ -394,7 +397,7 @@ func TestOwnedConcurrentRelease(t *testing.T) {
 
 			var panicCount atomic.Int32
 			g := Group{}
-			for _, op := range []func(*OwnedPool[*intType], uint64, *Owned[*intType]){test.a, test.b} {
+			for _, op := range []func(*OwnedPool[*intType], OwnerID, *Owned[*intType]){test.a, test.b} {
 				g.Go(
 					ctx,
 					func(ctx context.Context) error {
@@ -424,30 +427,28 @@ func TestOwnedBy(t *testing.T) {
 	tests := []struct {
 		name string
 		// run sets up a value and returns it with the owner to ask OwnedBy about.
-		run  func() (v *Owned[*intType], owner uint64)
+		run  func() (v *Owned[*intType], owner OwnerID)
 		want bool
 	}{
 		{
 			name: "Success: the owner from Get owns the value",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				o := NextOwner()
 				return newIntOwnedPool(ctx).Get(ctx, o), o
 			},
 			want: true,
 		},
 		{
-			name: "Success: the new owner after Transfer owns the value",
-			run: func() (*Owned[*intType], uint64) {
+			name: "Success: the new owner owns the value Transfer returns",
+			run: func() (*Owned[*intType], OwnerID) {
 				o, o2 := NextOwner(), NextOwner()
-				v := newIntOwnedPool(ctx).Get(ctx, o)
-				v.Transfer(o, o2)
-				return v, o2
+				return newIntOwnedPool(ctx).Get(ctx, o).Transfer(o, o2), o2
 			},
 			want: true,
 		},
 		{
 			name: "Success: the old owner after Transfer does not own the value",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				o := NextOwner()
 				v := newIntOwnedPool(ctx).Get(ctx, o)
 				v.Transfer(o, NextOwner())
@@ -456,7 +457,7 @@ func TestOwnedBy(t *testing.T) {
 		},
 		{
 			name: "Success: the owner after Put does not own the value",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -466,19 +467,19 @@ func TestOwnedBy(t *testing.T) {
 		},
 		{
 			name: "Success: a different owner does not own the value",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				return newIntOwnedPool(ctx).Get(ctx, NextOwner()), NextOwner()
 			},
 		},
 		{
 			name: "Success: owner 0 does not own an owned value",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				return newIntOwnedPool(ctx).Get(ctx, NextOwner()), 0
 			},
 		},
 		{
 			name: "Success: owner 0 does not own a value after Put",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				p := newIntOwnedPool(ctx)
 				o := NextOwner()
 				v := p.Get(ctx, o)
@@ -488,7 +489,7 @@ func TestOwnedBy(t *testing.T) {
 		},
 		{
 			name: "Success: no owner owns a zero value Owned",
-			run: func() (*Owned[*intType], uint64) {
+			run: func() (*Owned[*intType], OwnerID) {
 				return &Owned[*intType]{}, NextOwner()
 			},
 		},
